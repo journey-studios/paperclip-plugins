@@ -109,13 +109,15 @@ describe("Evolution data integrity and actions", () => {
     const target = await createSet("Relevant changes");
     const selectedAgentItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
     const secondSelectedAgentItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
-    const retainedIssueItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+    const thirdSelectedAgentItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+    const retainedIssueItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4";
     await fixture.db.query(
       `INSERT INTO ${NS}.change_items (id, company_id, change_set_id, entity_type, entity_id, change_kind, source_type, source_ref) VALUES ` +
         `($1, $2, $3, 'agent', $4, 'updated', 'test', 'selected-agent'), ` +
         `($5, $2, $3, 'agent', $4, 'updated', 'test', 'second-selected-agent'), ` +
-        `($6, $2, $3, 'issue', 'ISSUE-7', 'updated', 'test', 'retained-issue')`,
-      [selectedAgentItem, COMPANY, source.id, AGENT, secondSelectedAgentItem, retainedIssueItem],
+        `($6, $2, $3, 'agent', $4, 'updated', 'test', 'third-selected-agent'), ` +
+        `($7, $2, $3, 'issue', 'ISSUE-7', 'updated', 'test', 'retained-issue')`,
+      [selectedAgentItem, COMPANY, source.id, AGENT, secondSelectedAgentItem, thirdSelectedAgentItem, retainedIssueItem],
     );
     await fixture.action("add-evidence", { changeSetId: source.id, evidenceType: "observation", referenceId: "source-note" });
     await fixture.action("add-conclusion", { changeSetId: source.id, outcome: "inconclusive", summary: "Source context" });
@@ -131,6 +133,7 @@ describe("Evolution data integrity and actions", () => {
     expect((await fixture.db.query(`SELECT id FROM ${NS}.change_sets WHERE company_id = $1 AND id IN ($2, $3)`, [COMPANY, source.id, target.id])).rows).toHaveLength(2);
     expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [selectedAgentItem])).rows[0]!.change_set_id).toBe(target.id);
     expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [secondSelectedAgentItem])).rows[0]!.change_set_id).toBe(source.id);
+    expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [thirdSelectedAgentItem])).rows[0]!.change_set_id).toBe(source.id);
     expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_evidence WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, source.id])).rows[0]!.count).toBe(1);
     expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_conclusions WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, source.id])).rows[0]!.count).toBe(1);
     expect((await fixture.db.query(`SELECT metadata->'movedItemIds' AS ids FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2 AND link_type = 'change_set' AND reference_id = $3`, [COMPANY, target.id, source.id])).rows).toHaveLength(1);
@@ -138,14 +141,14 @@ describe("Evolution data integrity and actions", () => {
     await fixture.db.exec(`DROP TRIGGER fail_selected_move_metric_update ON ${NS}.change_metrics; DROP FUNCTION public.fail_selected_move_metric_update();`);
     await expect(fixture.action("move-selected-change-items", request)).resolves.toMatchObject({ ok: true, selectedCount: 1 });
     await expect(fixture.action("move-selected-change-items", {
-      ...request, changeItemIds: [secondSelectedAgentItem],
-    })).resolves.toMatchObject({ ok: true, selectedCount: 1 });
+      ...request, changeItemIds: [secondSelectedAgentItem, thirdSelectedAgentItem],
+    })).resolves.toMatchObject({ ok: true, selectedCount: 2 });
     const provenance = await fixture.db.query<{ ids: string[] }>(
       `SELECT metadata->'movedItemIds' AS ids FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2 AND link_type = 'change_set' AND reference_id = $3`,
       [COMPANY, target.id, source.id],
     );
     expect(provenance.rows).toHaveLength(1);
-    expect(provenance.rows[0]!.ids).toEqual([selectedAgentItem, secondSelectedAgentItem]);
+    expect(provenance.rows[0]!.ids).toEqual([selectedAgentItem, secondSelectedAgentItem, thirdSelectedAgentItem]);
     expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [retainedIssueItem])).rows[0]!.change_set_id).toBe(source.id);
     expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_metrics WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, target.id])).rows[0]!.count).toBeGreaterThan(0);
   });

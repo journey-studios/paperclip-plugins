@@ -1482,6 +1482,10 @@ function registerActions(ctx: PluginContext) {
     const sourceChangeSetId = requiredString(params, "sourceChangeSetId");
     const targetChangeSetId = requiredString(params, "targetChangeSetId");
     const changeItemIds = selectedChangeItemIds(params);
+    // The host SQL binder expands JavaScript arrays as a parameter list, not a
+    // PostgreSQL array. IDs are format-validated above, so this literal is safe
+    // as one scalar parameter for the explicit ::uuid[] casts below.
+    const changeItemIdsPgArray = `{${changeItemIds.join(",")}}`;
     if (sourceChangeSetId === targetChangeSetId) throw new Error("Source and target Change Sets must differ");
 
     // Lock both parents in UUID order to serialize overlapping moves without deadlocks.
@@ -1510,14 +1514,14 @@ function registerActions(ctx: PluginContext) {
             ') AS merged' +
           '), true) RETURNING id' +
       ') SELECT (SELECT count(*) FROM moved) AS moved_count, (SELECT count(*) FROM linked) AS link_count',
-      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIds],
+      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIdsPgArray],
     );
 
     const outcome = await ctx.db.query<{ parentCount: number; targetCount: number; linkCount: number }>(
       'SELECT (SELECT count(*)::int FROM change_sets WHERE company_id = $1 AND id IN ($2, $3)) AS "parentCount", ' +
         '(SELECT count(*)::int FROM change_items WHERE company_id = $1 AND id = ANY($4::uuid[]) AND change_set_id = $3) AS "targetCount", ' +
         '(SELECT count(*)::int FROM change_links WHERE company_id = $1 AND change_set_id = $3 AND link_type = \'change_set\' AND reference_id = $2::text) AS "linkCount"',
-      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIds],
+      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIdsPgArray],
     );
     if (outcome[0]?.parentCount !== 2) throw new Error("Source or target Change Set not found");
     if (outcome[0]?.targetCount !== changeItemIds.length || outcome[0]?.linkCount !== 1) {

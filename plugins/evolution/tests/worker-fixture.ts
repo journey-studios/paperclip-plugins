@@ -65,11 +65,13 @@ export async function createWorkerFixture() {
       namespace: NS,
       query: async (sql: string, params: unknown[] = []) => {
         logs.push(sql);
+        if (params.some(Array.isArray)) throw new Error("Host SQL binder expands JavaScript array parameters");
         validators?.validatePluginRuntimeQuery(sql, NS, CORE_READ_TABLES);
         return (await db.query<Record<string, unknown>>(sql, params)).rows;
       },
       execute: async (sql: string, params: unknown[] = []) => {
         logs.push(sql);
+        if (params.some(Array.isArray)) throw new Error("Host SQL binder expands JavaScript array parameters");
         validators?.validatePluginRuntimeExecute(sql, NS);
         return { rowCount: (await db.query(sql, params)).affectedRows ?? 0 };
       },
