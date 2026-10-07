@@ -28,10 +28,12 @@ jq --exit-status 'type == "array" and length > 0 and any(.[]; .RuleID == "github
   }
 
 history_report="$tmp_dir/history.json"
-git log -p -U0 --full-history --all --no-ext-diff --no-textconv \
-  | "$gitleaks_bin" detect --pipe --redact --no-banner \
-      --config "$config_file" \
-      --report-format json --report-path "$history_report"
+# Native Git mode keeps findings scoped to each diff and preserves file/commit
+# attribution, instead of interpreting concatenated patches as one key block.
+"$gitleaks_bin" detect --source "$(git rev-parse --show-toplevel)" --redact --no-banner \
+  --log-opts="--full-history --all --no-ext-diff --no-textconv" \
+  --config "$config_file" \
+  --report-format json --report-path "$history_report"
 
 source_dir="$tmp_dir/source"
 mkdir -p "$source_dir"
