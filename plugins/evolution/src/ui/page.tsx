@@ -62,6 +62,18 @@ type Metric = {
   baselineSampleSize?: number | null;
   currentSampleSize?: number | null;
   computedAt: string;
+  metadata?: {
+    windows?: {
+      baseline?: MetricWindow;
+      current?: MetricWindow;
+    };
+  };
+};
+
+type MetricWindow = {
+  startAt?: string;
+  endAt?: string;
+  durationSeconds?: number;
 };
 
 type Conclusion = {
@@ -160,12 +172,28 @@ function metricLabel(value: string): string {
   const labels: Record<string, string> = {
     run_success_rate: "Run success",
     avg_run_duration: "Avg. duration",
-    cost: "Cost",
+    cost: "Reported cost",
     input_tokens: "Input tokens",
     cached_input_tokens: "Cached input",
     output_tokens: "Output tokens",
   };
   return labels[value] ?? statusLabel(value);
+}
+
+function metricWindowLabel(window?: MetricWindow): string {
+  if (!window) return "Window unavailable";
+  const duration = typeof window.durationSeconds === "number" && Number.isFinite(window.durationSeconds)
+    ? `${(window.durationSeconds / 86_400).toFixed(1)}d`
+    : "duration unknown";
+  const range = window.startAt && window.endAt
+    ? `${fmtDate(window.startAt)} – ${fmtDate(window.endAt)}`
+    : "dates unavailable";
+  return `${duration} · ${range}`;
+}
+
+function metricValue(value: number | null | undefined, sampleSize: number | null | undefined, unit?: string | null): string {
+  if ((sampleSize ?? 0) === 0) return "Unknown (no telemetry)";
+  return fmtMetric(value, unit);
 }
 
 function fmtMetric(value: number | null | undefined, unit?: string | null): string {
@@ -181,6 +209,23 @@ function json(value: unknown): string {
   if (value == null) return "No snapshot";
   const text = JSON.stringify(value, null, 2);
   return text.length > 12000 ? text.slice(0, 12000) + "\n…truncated" : text;
+}
+
+function snapshotLimitation(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const safety = record._evolutionSnapshotSafety;
+  if (safety && typeof safety === "object" && (safety as Record<string, unknown>).truncated === true) {
+    return "Snapshot content was truncated by safety limits, so some fields or text may be missing.";
+  }
+  const activity = record.activity;
+  if (!activity || typeof activity !== "object") return null;
+  const activityRecord = activity as Record<string, unknown>;
+  if (activityRecord.partialSnapshot !== true) return null;
+  if (activityRecord.partialReason === "historical_instruction_content_unavailable") {
+    return "Historical instruction text was not persisted for this event. The Audit record proves a mutation happened, but cannot reconstruct its prior text.";
+  }
+  return "Historical state or content is incomplete; this current-state reading does not reconstruct event-time before/after values.";
 }
 
 function StatusPill({ value }: { value: string }) {
@@ -289,9 +334,15 @@ function DetailView({
     setError("");
     try {
       await fn();
-      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setBusy("");
+      return;
+    }
+    try {
+      await refresh();
+    } catch (err) {
+      setError(`Saved successfully, but the view could not refresh: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy("");
     }
@@ -347,6 +398,10 @@ function DetailView({
           </div>
         </div>
 
+        <div style={{ ...muted, fontSize: 11, lineHeight: 1.45, marginTop: 10 }}>
+          Observed means the change came before the outcome. Associated means relevant evidence is linked. Validated should be reserved for a sufficiently controlled comparison.
+        </div>
+
         {set.hypothesis ? (
           <div style={{ marginTop: 14 }}>
             <div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.6 }}>Hypothesis</div>
@@ -365,7 +420,7 @@ function DetailView({
               const type = window.prompt("Evidence type", "run")?.trim();
               if (!type) return;
               const referenceId = window.prompt("Reference ID, if any")?.trim() ?? "";
-              const verdict = window.prompt("Verdict: positive, neutral or negative", "positive")?.trim() ?? "neutral";
+              const verdict = window.prompt("Verdict: positive, neutral or negative", "neutral")?.trim() ?? "neutral";
               const notes = window.prompt("What does this evidence show?")?.trim() ?? "";
               void act("evidence", () => addEvidence({
                 companyId,
@@ -411,8 +466,14 @@ function DetailView({
                 companyId,
                 sourceChangeSetId: set.id,
                 targetChangeSetId,
-              }).then(() => {
-                nav.navigate("/evolution?change=" + encodeURIComponent(targetChangeSetId));
+              }).then(async () => {
+                try {
+                  await refresh();
+                } catch (err) {
+                  setError(`Merged successfully, but the overview could not refresh: ${err instanceof Error ? err.message : String(err)}`);
+                } finally {
+                  nav.navigate("/evolution?change=" + encodeURIComponent(targetChangeSetId));
+                }
               }).catch((err) => {
                 setError(err instanceof Error ? err.message : String(err));
               }).finally(() => setBusy(""));
@@ -464,8 +525,14 @@ function DetailView({
                 {data.metrics.map((metric) => (
                   <tr key={metric.metricKey} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "8px" }}>{metricLabel(metric.metricKey)}</td>
-                    <td style={{ padding: "8px" }}>{fmtMetric(metric.baselineValue, metric.unit)}</td>
-                    <td style={{ padding: "8px" }}>{fmtMetric(metric.currentValue, metric.unit)}</td>
+                    <td style={{ padding: "8px", minWidth: 150 }}>
+                      {metricValue(metric.baselineValue, metric.baselineSampleSize, metric.unit)}
+                      <div style={{ ...muted, fontSize: 9, marginTop: 3 }}>{metricWindowLabel(metric.metadata?.windows?.baseline)}</div>
+                    </td>
+                    <td style={{ padding: "8px", minWidth: 150 }}>
+                      {metricValue(metric.currentValue, metric.currentSampleSize, metric.unit)}
+                      <div style={{ ...muted, fontSize: 9, marginTop: 3 }}>{metricWindowLabel(metric.metadata?.windows?.current)}</div>
+                    </td>
                     <td style={{ padding: "8px" }}>{fmtMetric(metric.deltaValue, metric.unit)}</td>
                     <td style={{ padding: "8px", ...muted }}>
                       {metric.baselineSampleSize ?? 0} → {metric.currentSampleSize ?? 0}
@@ -476,8 +543,8 @@ function DetailView({
             </table>
           </div>
         )}
-        <div style={{ ...muted, fontSize: 10, marginTop: 9 }}>
-          Metrics are observational until the causality level is explicitly promoted to Associated or Validated.
+        <div style={{ ...muted, fontSize: 10, marginTop: 9, lineHeight: 1.45 }}>
+          Before uses the seven days before Applied. After covers only the observed time since Applied, up to seven days and the validation end date, so it may be incomplete. These aggregates show timing and direction, not that this change caused the result. Sample counts are runs for run metrics and cost events for cost and token metrics; zero or small samples are inconclusive. Reported cost is the sum of Paperclip cost events, not total resource consumption; no events means unknown, not zero cost. Association needs relevant linked evidence, while validation needs a controlled comparison.
         </div>
       </div>
 
@@ -497,6 +564,11 @@ function DetailView({
                   Changed: {Array.isArray(item.changedKeys) && item.changedKeys.length ? item.changedKeys.join(", ") : "snapshot"}
                   {item.sourceActivityId ? <> · Audit {item.sourceActivityId}</> : null}
                 </div>
+                {[snapshotLimitation(item.beforeSnapshot), snapshotLimitation(item.afterSnapshot)].filter((note, index, all): note is string => Boolean(note) && all.indexOf(note) === index).map((note) => (
+                  <div key={note} role="note" style={{ color: "var(--muted-foreground)", fontSize: 11, marginTop: 6 }}>
+                    {note}
+                  </div>
+                ))}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 8 }}>
                   <div>
                     <div style={{ ...muted, fontSize: 10, marginBottom: 4 }}>Before</div>
@@ -567,7 +639,7 @@ function DetailView({
       <div style={{ ...panel, padding: 14 }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Candidate run evidence</h3>
         <div style={{ ...muted, fontSize: 11, marginBottom: 9 }}>
-          Recent runs from agents affected by this Change Set. Attach only runs that are actually comparable evidence.
+          Recent runs from agents affected by this Change Set are candidates only. Review comparability, then choose a verdict; run success alone does not show that this change helped.
         </div>
         {data.suggestedRuns.length === 0 ? (
           <div style={{ ...muted, fontSize: 12 }}>No candidate runs found.</div>
@@ -582,15 +654,21 @@ function DetailView({
                 <button
                   type="button"
                   style={button}
-                  onClick={() => act("attach-run", () => addEvidence({
-                    companyId,
-                    changeSetId: set.id,
-                    evidenceType: "run",
-                    referenceId: run.id,
-                    label: run.agentName + " run",
-                    verdict: run.status === "succeeded" ? "positive" : "negative",
-                    observedAt: run.finishedAt ?? run.startedAt,
-                  }))}
+                  onClick={() => {
+                    const verdict = window.prompt("Evidence verdict: positive, neutral or negative", "neutral")?.trim();
+                    if (!verdict) return;
+                    const notes = window.prompt("Why is this run comparable evidence? (optional)")?.trim() ?? "";
+                    void act("attach-run", () => addEvidence({
+                      companyId,
+                      changeSetId: set.id,
+                      evidenceType: "run",
+                      referenceId: run.id,
+                      label: run.agentName + " run",
+                      verdict,
+                      observedAt: run.finishedAt ?? run.startedAt,
+                      ...(notes ? { notes } : {}),
+                    }));
+                  }}
                 >
                   Attach
                 </button>

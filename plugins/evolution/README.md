@@ -16,6 +16,10 @@ It keeps operational change metadata in a plugin-owned PostgreSQL namespace and 
 - Conclusions with confidence
 - Evolution timeline and detail UI
 
+In the detail view, compare the before and after snapshots and check for the partial-history notice. Candidate runs are suggestions: attach only comparable runs and choose their verdict deliberately. Run success and before/after metrics describe observations; they do not establish that a change caused an improvement.
+
+Metrics show sample counts for both windows. Run metrics count runs, while cost and token metrics count cost events. Interpret zero or small samples as inconclusive. See [the model and evidence guide](./EVOLUTION.md) for the status and causality meanings.
+
 ## Core extension
 
 Requires the Journey runtime read-only plugin database extension for activity_log, agent_config_revisions, company_skills, and company_skill_versions.
