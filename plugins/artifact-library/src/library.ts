@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { PluginContext, CompanyArtifact } from "@paperclipai/plugin-sdk";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+type CompanyArtifact = Awaited<ReturnType<PluginContext["artifacts"]["list"]>>["artifacts"][number];
 import type {
   ArtifactMetadata,
   LibraryFilters,
