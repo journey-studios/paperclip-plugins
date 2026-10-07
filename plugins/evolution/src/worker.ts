@@ -5,6 +5,9 @@ import {
   type PluginEvent,
 } from "@paperclipai/plugin-sdk";
 
+import { mergeChangeSets } from "./merge.ts";
+import { withCaptureRetry } from "./capture-retry.ts";
+
 const CHANGE_STATUSES = new Set([
   "draft",
   "applied",
@@ -17,6 +20,12 @@ const CHANGE_STATUSES = new Set([
 const CAUSALITY_LEVELS = new Set(["observed", "associated", "validated"]);
 const EVIDENCE_VERDICTS = new Set(["positive", "neutral", "negative"]);
 const CONFIDENCE_LEVELS = new Set(["low", "moderate", "high"]);
+
+function assertDatabaseNamespace(namespace: string): void {
+  if (!/^plugin_[a-z0-9_]+$/.test(namespace) || namespace.length > 63) {
+    throw new Error("Invalid plugin database namespace");
+  }
+}
 
 function stringParam(params: Record<string, unknown>, key: string): string | undefined {
   const value = params[key];
@@ -67,8 +76,13 @@ function asArray(value: unknown): unknown[] {
 }
 
 function isSensitiveKey(key: string): boolean {
-  const normalized = key.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
-  return /(^|_)(api_?key|access_token|refresh_token|id_token|token|secret|password|credential|authorization|cookie)($|_)/.test(normalized);
+  const normalized = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toLowerCase();
+  return /(^|_)(api_?key|access_token|refresh_token|id_token|token|secret|password|credential|authorization|cookie)($|_)/.test(normalized) ||
+    /(^|_)(private_?key|ssh_?key|passphrase|pwd|dsn|bearer|database_?url|connection_?string)$/.test(normalized);
 }
 
 function sanitize(value: unknown, key = ""): unknown {
@@ -137,34 +151,77 @@ async function ensureChangeSet(
     title?: string;
   },
 ): Promise<string> {
-  const existing = await ctx.db.query<{ id: string }>(
-    'SELECT id FROM change_sets WHERE company_id = $1 AND source_context_key = $2 LIMIT 1',
-    [input.companyId, input.sourceContextKey],
-  );
-  if (existing[0]) return existing[0].id;
+  const contextParams = [input.companyId, input.sourceContextKey];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const aliases = await ctx.db.query<{ id: string }>(
+      `SELECT change_set_id AS id FROM ${ctx.db.namespace}.change_context_aliases WHERE company_id = $1 AND source_context_key = $2 LIMIT 1`,
+      contextParams,
+    );
+    if (aliases[0]) return aliases[0].id;
 
-  const id = globalThis.crypto.randomUUID();
-  await ctx.db.execute(
-    'INSERT INTO change_sets (id, company_id, title, status, causality_level, source_context_key, applied_at, created_by_type, created_by_id) ' +
-      'VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9) ON CONFLICT DO NOTHING',
-    [
-      id,
-      input.companyId,
-      input.title ?? "Operational changes · " + humanTimestamp(input.occurredAt),
-      "applied",
-      "observed",
-      input.sourceContextKey,
-      input.occurredAt,
-      input.actorType ?? null,
-      input.actorId ?? null,
-    ],
-  );
-  const row = await ctx.db.query<{ id: string }>(
-    'SELECT id FROM change_sets WHERE company_id = $1 AND source_context_key = $2 LIMIT 1',
-    [input.companyId, input.sourceContextKey],
-  );
-  if (!row[0]) throw new Error("Could not create Change Set");
-  return row[0].id;
+    let candidate = (await ctx.db.query<{ id: string }>(
+      `SELECT id FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND source_context_key = $2 LIMIT 1`,
+      contextParams,
+    ))[0];
+    let createdId: string | undefined;
+    if (!candidate) {
+      const id = globalThis.crypto.randomUUID();
+      await ctx.db.execute(
+        `INSERT INTO ${ctx.db.namespace}.change_sets (id, company_id, title, status, causality_level, source_context_key, applied_at, created_by_type, created_by_id) ` +
+          'VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9) ON CONFLICT DO NOTHING',
+        [id, input.companyId, input.title ?? "Operational changes · " + humanTimestamp(input.occurredAt),
+          "applied", "observed", input.sourceContextKey, input.occurredAt, input.actorType ?? null, input.actorId ?? null],
+      );
+      candidate = (await ctx.db.query<{ id: string }>(
+        `SELECT id FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND source_context_key = $2 LIMIT 1`,
+        contextParams,
+      ))[0];
+      if (candidate?.id === id) createdId = id;
+    }
+    // A concurrent merge can remove the candidate before this lookup resolves.
+    if (!candidate) continue;
+
+    try {
+      await ctx.db.execute(
+        `INSERT INTO ${ctx.db.namespace}.change_context_aliases (company_id, source_context_key, change_set_id) ` +
+          'VALUES ($1, $2, $3) ON CONFLICT (company_id, source_context_key) DO NOTHING',
+        [...contextParams, candidate.id],
+      );
+    } catch (error) {
+      const failure = error && typeof error === "object" ? error as Record<string, unknown> : {};
+      const constraint = failure.constraint_name ?? failure.constraint ?? failure.constraintName;
+      const message = typeof error === "string" ? error : typeof failure.message === "string" ? failure.message : "";
+      const aliasConstraint = "evolution_change_context_aliases_company_set_fkey";
+      const code = failure.code === undefined ? undefined : String(failure.code);
+      const foreignKeyRace = code === "23503" && constraint === aliasConstraint ||
+        (code === undefined || code === "23503" || code === "-32603") &&
+        /foreign\s+key|\b23503\b/i.test(message) && new RegExp("\\b" + aliasConstraint + "\\b").test(message);
+      if (foreignKeyRace) continue;
+      throw error;
+    }
+
+    // The unique context registry is the authority. In particular, an alias
+    // inserted by a merge wins over a candidate created after the initial read.
+    const winner = (await ctx.db.query<{ id: string }>(
+      `SELECT change_set_id AS id FROM ${ctx.db.namespace}.change_context_aliases WHERE company_id = $1 AND source_context_key = $2 LIMIT 1`,
+      contextParams,
+    ))[0];
+    if (!winner) continue;
+    if (createdId && winner.id !== createdId) {
+      await ctx.db.execute(
+        `DELETE FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND id = $2 ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_items WHERE company_id = $1 AND change_set_id = $2) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_evidence WHERE company_id = $1 AND change_set_id = $2) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_conclusions WHERE company_id = $1 AND change_set_id = $2) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_links WHERE company_id = $1 AND change_set_id = $2) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_metrics WHERE company_id = $1 AND change_set_id = $2) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${ctx.db.namespace}.change_context_aliases WHERE company_id = $1 AND change_set_id = $2)`,
+        [input.companyId, createdId],
+      );
+    }
+    return winner.id;
+  }
+  throw new Error("Could not resolve Change Set after concurrent updates");
 }
 
 async function ensureChangeLink(
@@ -176,7 +233,7 @@ async function ensureChangeLink(
   label?: string | null,
 ) {
   await ctx.db.execute(
-    'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label) ' +
+    `INSERT INTO ${ctx.db.namespace}.change_links (id, company_id, change_set_id, link_type, reference_id, label) ` +
       'VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',
     [globalThis.crypto.randomUUID(), companyId, changeSetId, linkType, referenceId, label ?? null],
   );
@@ -203,8 +260,8 @@ async function attachRunContext(
       'p.id::text AS "projectId", p.name AS "projectName", g.id::text AS "goalId", g.title AS "goalTitle" ' +
       'FROM public.heartbeat_runs r ' +
       'LEFT JOIN public.issues i ON i.company_id = r.company_id AND i.id::text = coalesce(r.native_issue_id::text, r.context_snapshot->>\'issueId\') ' +
-      'LEFT JOIN public.projects p ON p.id::text = coalesce(i.project_id::text, r.context_snapshot->>\'projectId\') ' +
-      'LEFT JOIN public.goals g ON g.id::text = coalesce(i.goal_id::text, p.goal_id::text) ' +
+      'LEFT JOIN public.projects p ON p.company_id = r.company_id AND p.id::text = coalesce(i.project_id::text, r.context_snapshot->>\'projectId\') ' +
+      'LEFT JOIN public.goals g ON g.company_id = r.company_id AND g.id::text = coalesce(i.goal_id::text, p.goal_id::text) ' +
       'WHERE r.company_id = $1 AND r.id = $2 LIMIT 1',
     [companyId, runId],
   );
@@ -217,7 +274,7 @@ async function attachRunContext(
     await ensureChangeLink(ctx, companyId, changeSetId, "issue", row.issueId, issueLabel || null);
     if (issueLabel) {
       await ctx.db.execute(
-        'UPDATE change_sets SET title = $3, updated_at = now() ' +
+        `UPDATE ${ctx.db.namespace}.change_sets SET title = $3, updated_at = now() ` +
           'WHERE company_id = $1 AND id = $2 AND title LIKE \'Operational changes · %\'',
         [companyId, changeSetId, issueLabel],
       );
@@ -234,7 +291,7 @@ async function latestSnapshot(
   entityId: string,
 ): Promise<{ id: string; snapshotHash: string; snapshot: unknown } | null> {
   const rows = await ctx.db.query<{ id: string; snapshotHash: string; snapshot: unknown }>(
-    'SELECT id, snapshot_hash AS "snapshotHash", snapshot FROM change_snapshots ' +
+    `SELECT id, snapshot_hash AS "snapshotHash", snapshot FROM ${ctx.db.namespace}.change_snapshots ` +
       'WHERE company_id = $1 AND entity_type = $2 AND entity_id = $3 ORDER BY captured_at DESC, created_at DESC LIMIT 1',
     [companyId, entityType, entityId],
   );
@@ -261,7 +318,7 @@ async function writeSnapshot(
 
   const id = globalThis.crypto.randomUUID();
   await ctx.db.execute(
-    'INSERT INTO change_snapshots (id, company_id, entity_type, entity_id, entity_name, snapshot_hash, snapshot, source_type, source_ref, captured_at) ' +
+    `INSERT INTO ${ctx.db.namespace}.change_snapshots (id, company_id, entity_type, entity_id, entity_name, snapshot_hash, snapshot, source_type, source_ref, captured_at) ` +
       'VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::timestamptz)',
     [
       id,
@@ -299,13 +356,13 @@ async function writeItem(
 ): Promise<boolean> {
   if (input.sourceRef) {
     const prior = await ctx.db.query<{ id: string }>(
-      'SELECT id FROM change_items WHERE company_id = $1 AND source_type = $2 AND source_ref = $3 LIMIT 1',
+      `SELECT id FROM ${ctx.db.namespace}.change_items WHERE company_id = $1 AND source_type = $2 AND source_ref = $3 LIMIT 1`,
       [input.companyId, input.sourceType, input.sourceRef],
     );
     if (prior[0]) {
       if (input.sourceActivityId) {
         await ctx.db.execute(
-          'UPDATE change_items SET source_activity_id = coalesce(source_activity_id, $3) WHERE company_id = $1 AND id = $2',
+          `UPDATE ${ctx.db.namespace}.change_items SET source_activity_id = coalesce(source_activity_id, $3) WHERE company_id = $1 AND id = $2`,
           [input.companyId, prior[0].id, input.sourceActivityId],
         );
       }
@@ -314,7 +371,7 @@ async function writeItem(
   }
 
   await ctx.db.execute(
-    'INSERT INTO change_items ' +
+    `INSERT INTO ${ctx.db.namespace}.change_items ` +
       '(id, company_id, change_set_id, entity_type, entity_id, entity_name, change_kind, changed_keys, before_snapshot_id, after_snapshot_id, source_type, source_ref, source_activity_id, occurred_at) ' +
       'VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14::timestamptz) ON CONFLICT DO NOTHING',
     [
@@ -535,6 +592,7 @@ function compactVersionFiles(value: unknown): unknown {
 }
 
 async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
+  if (event.entityType !== "agent" && event.entityType !== "company_skill") return;
   const payload = asRecord(event.payload);
   const action = typeof payload.activityAction === "string" ? payload.activityAction : "";
   if (!action) return;
@@ -651,6 +709,10 @@ function authorBucket(
 }
 
 async function backfill(ctx: PluginContext, companyId: string, days: number) {
+  return withCaptureRetry(() => backfillOnce(ctx, companyId, days));
+}
+
+async function backfillOnce(ctx: PluginContext, companyId: string, days: number) {
   const boundedDays = Math.min(30, Math.max(1, Math.floor(days)));
   const agentRevisions = await ctx.db.query<{
     id: string;
@@ -666,7 +728,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     'SELECT r.id, r.agent_id AS "agentId", a.name AS "agentName", r.changed_keys AS "changedKeys", ' +
       'r.before_config AS "beforeConfig", r.after_config AS "afterConfig", r.created_by_agent_id AS "createdByAgentId", ' +
       'r.created_by_user_id AS "createdByUserId", r.created_at AS "createdAt" ' +
-      'FROM public.agent_config_revisions r JOIN public.agents a ON a.id = r.agent_id ' +
+      'FROM public.agent_config_revisions r JOIN public.agents a ON a.id = r.agent_id AND a.company_id = r.company_id ' +
       'WHERE r.company_id = $1 AND r.created_at >= now() - ($2::text || \' days\')::interval ' +
       'ORDER BY r.created_at ASC LIMIT 1000',
     [companyId, String(boundedDays)],
@@ -731,7 +793,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     'SELECT v.id, v.company_skill_id AS "skillId", s.name AS "skillName", v.revision_number AS "revisionNumber", ' +
       'v.file_inventory AS "fileInventory", v.author_agent_id AS "authorAgentId", v.author_user_id AS "authorUserId", ' +
       'v.created_at AS "createdAt" FROM public.company_skill_versions v ' +
-      'JOIN public.company_skills s ON s.id = v.company_skill_id ' +
+      'JOIN public.company_skills s ON s.id = v.company_skill_id AND s.company_id = v.company_id ' +
       'WHERE v.company_id = $1 AND v.created_at >= now() - ($2::text || \' days\')::interval ' +
       'ORDER BY v.company_skill_id ASC, v.revision_number ASC LIMIT 1000',
     [companyId, String(boundedDays)],
@@ -791,6 +853,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     'SELECT id, actor_type AS "actorType", actor_id AS "actorId", action, entity_type AS "entityType", entity_id AS "entityId", ' +
       'agent_id AS "agentId", run_id AS "runId", details, created_at AS "createdAt" FROM public.activity_log ' +
       'WHERE company_id = $1 AND created_at >= now() - ($2::text || \' days\')::interval ' +
+      'AND entity_type IN (\'agent\', \'company_skill\') ' +
       'AND (entity_type = \'company_skill\' OR action LIKE \'agent.instructions_%\' OR action IN ' +
       '(\'agent.skills_synced\',\'agent.permissions_updated\',\'agent.config_rolled_back\',\'agent.budget_updated\',\'plugin.managed_agent.reset\')) ' +
       'ORDER BY created_at ASC LIMIT 1500',
@@ -799,6 +862,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
 
   let activityItems = 0;
   for (const row of activityRows) {
+    if (row.entityType !== "agent" && row.entityType !== "company_skill") continue;
     const occurredAt = iso(row.createdAt);
     const entityType = row.entityType === "company_skill" ? "skill" : "agent";
     let entityName: string | null = null;
@@ -807,12 +871,12 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
       const revision = await latestAgentRevisionNear(ctx, companyId, row.entityId, occurredAt);
       if (revision) {
         const existingRevisionItem = await ctx.db.query<{ id: string; changeSetId: string }>(
-          'SELECT id, change_set_id AS "changeSetId" FROM change_items WHERE company_id = $1 AND source_type = \'agent_config_revision\' AND source_ref = $2 LIMIT 1',
+          `SELECT id, change_set_id AS "changeSetId" FROM ${ctx.db.namespace}.change_items WHERE company_id = $1 AND source_type = 'agent_config_revision' AND source_ref = $2 LIMIT 1`,
           [companyId, revision.id],
         );
         if (existingRevisionItem[0]) {
           await ctx.db.execute(
-            'UPDATE change_items SET source_activity_id = coalesce(source_activity_id, $3) WHERE company_id = $1 AND id = $2',
+            `UPDATE ${ctx.db.namespace}.change_items SET source_activity_id = coalesce(source_activity_id, $3) WHERE company_id = $1 AND id = $2`,
             [companyId, existingRevisionItem[0].id, row.id],
           );
           await attachRunContext(ctx, companyId, existingRevisionItem[0].changeSetId, row.runId);
@@ -939,12 +1003,13 @@ async function queryCostStats(
     params,
   );
   const row = rows[0];
+  const events = Number(row?.events ?? 0);
   return {
-    costUsd: Number(row?.costCents ?? 0) / 100,
-    inputTokens: Number(row?.inputTokens ?? 0),
-    cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
-    outputTokens: Number(row?.outputTokens ?? 0),
-    events: Number(row?.events ?? 0),
+    costUsd: events > 0 ? Number(row?.costCents ?? 0) / 100 : null,
+    inputTokens: events > 0 ? Number(row?.inputTokens ?? 0) : null,
+    cachedInputTokens: events > 0 ? Number(row?.cachedInputTokens ?? 0) : null,
+    outputTokens: events > 0 ? Number(row?.outputTokens ?? 0) : null,
+    events,
   };
 }
 
@@ -961,7 +1026,7 @@ async function upsertMetric(
 ) {
   const delta = baseline == null || current == null ? null : current - baseline;
   await ctx.db.execute(
-    'INSERT INTO change_metrics (id, company_id, change_set_id, metric_key, baseline_value, current_value, delta_value, unit, baseline_sample_size, current_sample_size, computed_at) ' +
+    `INSERT INTO ${ctx.db.namespace}.change_metrics (id, company_id, change_set_id, metric_key, baseline_value, current_value, delta_value, unit, baseline_sample_size, current_sample_size, computed_at) ` +
       'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ' +
       'ON CONFLICT (company_id, change_set_id, metric_key) DO UPDATE SET baseline_value = excluded.baseline_value, current_value = excluded.current_value, ' +
       'delta_value = excluded.delta_value, unit = excluded.unit, baseline_sample_size = excluded.baseline_sample_size, current_sample_size = excluded.current_sample_size, computed_at = now()',
@@ -982,7 +1047,7 @@ async function upsertMetric(
 
 async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSetId: string) {
   const sets = await ctx.db.query<{ appliedAt: string | Date; validationEndsAt: string | Date | null }>(
-    'SELECT applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt" FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+    `SELECT applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt" FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND id = $2 LIMIT 1`,
     [companyId, changeSetId],
   );
   const set = sets[0];
@@ -994,13 +1059,13 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
     : new Date(Math.min(Date.now(), appliedAt.getTime() + 7 * 86400000)).toISOString();
 
   const agentRows = await ctx.db.query<{ entityId: string }>(
-    'SELECT DISTINCT entity_id AS "entityId" FROM change_items WHERE company_id = $1 AND change_set_id = $2 AND entity_type = \'agent\'',
+    `SELECT DISTINCT entity_id AS "entityId" FROM ${ctx.db.namespace}.change_items WHERE company_id = $1 AND change_set_id = $2 AND entity_type = 'agent'`,
     [companyId, changeSetId],
   );
   const agentIds = agentRows.map((row) => row.entityId);
   if (agentIds.length === 0) {
     await ctx.db.execute(
-      'DELETE FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
+      `DELETE FROM ${ctx.db.namespace}.change_metrics WHERE company_id = $1 AND change_set_id = $2`,
       [companyId, changeSetId],
     );
     return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd };
@@ -1026,13 +1091,14 @@ async function overview(ctx: PluginContext, companyId: string) {
     'SELECT cs.id, cs.title, cs.description, cs.hypothesis, cs.status, cs.causality_level AS "causalityLevel", ' +
       'cs.applied_at AS "appliedAt", cs.validation_ends_at AS "validationEndsAt", cs.updated_at AS "updatedAt", ' +
       'count(DISTINCT ci.id)::int AS "itemCount", count(DISTINCT ce.id)::int AS "evidenceCount", count(DISTINCT cm.id)::int AS "metricCount" ' +
-      'FROM change_sets cs LEFT JOIN change_items ci ON ci.change_set_id = cs.id ' +
-      'LEFT JOIN change_evidence ce ON ce.change_set_id = cs.id LEFT JOIN change_metrics cm ON cm.change_set_id = cs.id ' +
+      `FROM ${ctx.db.namespace}.change_sets cs LEFT JOIN ${ctx.db.namespace}.change_items ci ON ci.change_set_id = cs.id AND ci.company_id = cs.company_id ` +
+      `LEFT JOIN ${ctx.db.namespace}.change_evidence ce ON ce.change_set_id = cs.id AND ce.company_id = cs.company_id ` +
+      `LEFT JOIN ${ctx.db.namespace}.change_metrics cm ON cm.change_set_id = cs.id AND cm.company_id = cs.company_id ` +
       'WHERE cs.company_id = $1 GROUP BY cs.id ORDER BY cs.applied_at DESC LIMIT 100',
     [companyId],
   );
   const counts = await ctx.db.query<{ status: string; count: number | string }>(
-    'SELECT status, count(*)::int AS count FROM change_sets WHERE company_id = $1 GROUP BY status',
+    `SELECT status, count(*)::int AS count FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 GROUP BY status`,
     [companyId],
   );
   return {
@@ -1045,7 +1111,7 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   const sets = await ctx.db.query<Record<string, unknown>>(
     'SELECT id, title, description, hypothesis, status, causality_level AS "causalityLevel", source_context_key AS "sourceContextKey", ' +
       'applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt", created_by_type AS "createdByType", created_by_id AS "createdById", ' +
-      'created_at AS "createdAt", updated_at AS "updatedAt" FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+      `created_at AS "createdAt", updated_at AS "updatedAt" FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND id = $2 LIMIT 1`,
     [companyId, changeSetId],
   );
   if (!sets[0]) throw new Error("Change Set not found");
@@ -1054,30 +1120,31 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
     ctx.db.query<Record<string, unknown>>(
       'SELECT ci.id, ci.entity_type AS "entityType", ci.entity_id AS "entityId", ci.entity_name AS "entityName", ci.change_kind AS "changeKind", ' +
         'ci.changed_keys AS "changedKeys", ci.source_type AS "sourceType", ci.source_ref AS "sourceRef", ci.source_activity_id AS "sourceActivityId", ci.occurred_at AS "occurredAt", ' +
-        'bs.snapshot AS "beforeSnapshot", asn.snapshot AS "afterSnapshot" FROM change_items ci ' +
-        'LEFT JOIN change_snapshots bs ON bs.id = ci.before_snapshot_id LEFT JOIN change_snapshots asn ON asn.id = ci.after_snapshot_id ' +
+        `bs.snapshot AS "beforeSnapshot", asn.snapshot AS "afterSnapshot" FROM ${ctx.db.namespace}.change_items ci ` +
+        `LEFT JOIN ${ctx.db.namespace}.change_snapshots bs ON bs.id = ci.before_snapshot_id AND bs.company_id = ci.company_id ` +
+        `LEFT JOIN ${ctx.db.namespace}.change_snapshots asn ON asn.id = ci.after_snapshot_id AND asn.company_id = ci.company_id ` +
         'WHERE ci.company_id = $1 AND ci.change_set_id = $2 ORDER BY ci.occurred_at ASC',
       [companyId, changeSetId],
     ),
     ctx.db.query<Record<string, unknown>>(
       'SELECT id, evidence_type AS "evidenceType", reference_id AS "referenceId", label, verdict, notes, metadata, observed_at AS "observedAt", created_at AS "createdAt" ' +
-        'FROM change_evidence WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at DESC',
+        `FROM ${ctx.db.namespace}.change_evidence WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at DESC`,
       [companyId, changeSetId],
     ),
     ctx.db.query<Record<string, unknown>>(
       'SELECT metric_key AS "metricKey", baseline_value::float AS "baselineValue", current_value::float AS "currentValue", delta_value::float AS "deltaValue", ' +
         'unit, baseline_sample_size AS "baselineSampleSize", current_sample_size AS "currentSampleSize", computed_at AS "computedAt" ' +
-        'FROM change_metrics WHERE company_id = $1 AND change_set_id = $2 ORDER BY metric_key',
+        `FROM ${ctx.db.namespace}.change_metrics WHERE company_id = $1 AND change_set_id = $2 ORDER BY metric_key`,
       [companyId, changeSetId],
     ),
     ctx.db.query<Record<string, unknown>>(
       'SELECT id, outcome, confidence, summary, evidence_summary AS "evidenceSummary", created_at AS "createdAt" ' +
-        'FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at DESC',
+        `FROM ${ctx.db.namespace}.change_conclusions WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at DESC`,
       [companyId, changeSetId],
     ),
     ctx.db.query<Record<string, unknown>>(
       'SELECT id, link_type AS "linkType", reference_id AS "referenceId", label, metadata, created_at AS "createdAt" ' +
-        'FROM change_links WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at ASC',
+        `FROM ${ctx.db.namespace}.change_links WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at ASC`,
       [companyId, changeSetId],
     ),
   ]);
@@ -1088,13 +1155,21 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
     const inSql = placeholders(3, agentIds.length);
     suggestedRuns = await ctx.db.query<Record<string, unknown>>(
       'SELECT r.id, r.agent_id AS "agentId", a.name AS "agentName", r.status, r.started_at AS "startedAt", r.finished_at AS "finishedAt", ' +
-        'r.invocation_source AS "invocationSource" FROM public.heartbeat_runs r JOIN public.agents a ON a.id = r.agent_id ' +
+        'r.invocation_source AS "invocationSource" FROM public.heartbeat_runs r JOIN public.agents a ON a.id = r.agent_id AND a.company_id = r.company_id ' +
         'WHERE r.company_id = $1 AND r.started_at >= $2::timestamptz AND r.agent_id IN (' + inSql + ') ORDER BY r.started_at DESC LIMIT 25',
       [companyId, String(sets[0].appliedAt), ...agentIds],
     );
   }
 
   return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns };
+}
+
+async function assertChangeSet(ctx: PluginContext, companyId: string, changeSetId: string): Promise<void> {
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND id = $2 LIMIT 1`,
+    [companyId, changeSetId],
+  );
+  if (!rows[0]) throw new Error("Change Set not found");
 }
 
 function registerActions(ctx: PluginContext) {
@@ -1107,7 +1182,7 @@ function registerActions(ctx: PluginContext) {
     const causality = stringParam(params, "causalityLevel") ?? "observed";
     if (!CAUSALITY_LEVELS.has(causality)) throw new Error("Invalid causality level");
     await ctx.db.execute(
-      'INSERT INTO change_sets (id, company_id, title, description, hypothesis, status, causality_level, applied_at, validation_ends_at, created_by_type, created_by_id) ' +
+      `INSERT INTO ${ctx.db.namespace}.change_sets (id, company_id, title, description, hypothesis, status, causality_level, applied_at, validation_ends_at, created_by_type, created_by_id) ` +
         'VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::timestamptz,now()),$9::timestamptz,$10,$11)',
       [
         id,
@@ -1130,7 +1205,7 @@ function registerActions(ctx: PluginContext) {
     const companyId = requiredString(params, "companyId");
     const changeSetId = requiredString(params, "changeSetId");
     const rows = await ctx.db.query<Record<string, unknown>>(
-      'SELECT title, description, hypothesis, status, causality_level AS "causalityLevel", validation_ends_at AS "validationEndsAt" FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+      `SELECT title, description, hypothesis, status, causality_level AS "causalityLevel", validation_ends_at AS "validationEndsAt" FROM ${ctx.db.namespace}.change_sets WHERE company_id = $1 AND id = $2 LIMIT 1`,
       [companyId, changeSetId],
     );
     const current = rows[0];
@@ -1140,7 +1215,7 @@ function registerActions(ctx: PluginContext) {
     if (!CHANGE_STATUSES.has(status)) throw new Error("Invalid status");
     if (!CAUSALITY_LEVELS.has(causality)) throw new Error("Invalid causality level");
     await ctx.db.execute(
-      'UPDATE change_sets SET title=$3, description=$4, hypothesis=$5, status=$6, causality_level=$7, validation_ends_at=$8::timestamptz, updated_at=now() ' +
+      `UPDATE ${ctx.db.namespace}.change_sets SET title=$3, description=$4, hypothesis=$5, status=$6, causality_level=$7, validation_ends_at=$8::timestamptz, updated_at=now() ` +
         'WHERE company_id=$1 AND id=$2',
       [
         companyId,
@@ -1159,12 +1234,13 @@ function registerActions(ctx: PluginContext) {
   ctx.actions.register("add-evidence", async (params) => {
     const companyId = requiredString(params, "companyId");
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const evidenceType = requiredString(params, "evidenceType");
     const verdict = stringParam(params, "verdict") ?? "neutral";
     if (!EVIDENCE_VERDICTS.has(verdict)) throw new Error("Invalid evidence verdict");
     const id = globalThis.crypto.randomUUID();
     await ctx.db.execute(
-      'INSERT INTO change_evidence (id, company_id, change_set_id, evidence_type, reference_id, label, verdict, notes, metadata, observed_at) ' +
+      `INSERT INTO ${ctx.db.namespace}.change_evidence (id, company_id, change_set_id, evidence_type, reference_id, label, verdict, notes, metadata, observed_at) ` +
         'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::timestamptz)',
       [
         id,
@@ -1185,10 +1261,11 @@ function registerActions(ctx: PluginContext) {
   ctx.actions.register("add-link", async (params) => {
     const companyId = requiredString(params, "companyId");
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const linkType = requiredString(params, "linkType");
     const referenceId = requiredString(params, "referenceId");
     await ctx.db.execute(
-      'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING',
+      `INSERT INTO ${ctx.db.namespace}.change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING`,
       [
         globalThis.crypto.randomUUID(),
         companyId,
@@ -1205,12 +1282,13 @@ function registerActions(ctx: PluginContext) {
   ctx.actions.register("add-conclusion", async (params) => {
     const companyId = requiredString(params, "companyId");
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const outcome = requiredString(params, "outcome");
     const confidence = stringParam(params, "confidence") ?? "low";
     if (!["proven", "regressed", "inconclusive", "reverted"].includes(outcome)) throw new Error("Invalid outcome");
     if (!CONFIDENCE_LEVELS.has(confidence)) throw new Error("Invalid confidence");
     await ctx.db.execute(
-      'INSERT INTO change_conclusions (id, company_id, change_set_id, outcome, confidence, summary, evidence_summary, created_by_type, created_by_id) ' +
+      `INSERT INTO ${ctx.db.namespace}.change_conclusions (id, company_id, change_set_id, outcome, confidence, summary, evidence_summary, created_by_type, created_by_id) ` +
         'VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)',
       [
         globalThis.crypto.randomUUID(),
@@ -1225,7 +1303,7 @@ function registerActions(ctx: PluginContext) {
       ],
     );
     await ctx.db.execute(
-      'UPDATE change_sets SET status=$3, updated_at=now() WHERE company_id=$1 AND id=$2',
+      `UPDATE ${ctx.db.namespace}.change_sets SET status=$3, updated_at=now() WHERE company_id=$1 AND id=$2`,
       [companyId, changeSetId, outcome],
     );
     return { ok: true };
@@ -1235,52 +1313,15 @@ function registerActions(ctx: PluginContext) {
     const companyId = requiredString(params, "companyId");
     const sourceChangeSetId = requiredString(params, "sourceChangeSetId");
     const targetChangeSetId = requiredString(params, "targetChangeSetId");
-    if (sourceChangeSetId === targetChangeSetId) throw new Error("Source and target Change Sets must differ");
-
-    const rows = await ctx.db.query<{ id: string }>(
-      'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3)',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    if (rows.length !== 2) throw new Error("Source or target Change Set not found");
-
-    await ctx.db.execute(
-      'UPDATE change_items SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    await ctx.db.execute(
-      'UPDATE change_evidence SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    await ctx.db.execute(
-      'UPDATE change_conclusions SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-
-    const sourceLinks = await ctx.db.query<{ linkType: string; referenceId: string; label: string | null; metadata: unknown }>(
-      'SELECT link_type AS "linkType", reference_id AS "referenceId", label, metadata FROM change_links WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId],
-    );
-    for (const link of sourceLinks) {
-      await ctx.db.execute(
-        'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING',
-        [globalThis.crypto.randomUUID(), companyId, targetChangeSetId, link.linkType, link.referenceId, link.label, JSON.stringify(asRecord(link.metadata))],
-      );
+    await mergeChangeSets(ctx, companyId, sourceChangeSetId, targetChangeSetId);
+    // The transfer is committed; stale derived metrics must not report a failed
+    // merge or leave the client retrying a source that has already been deleted.
+    try {
+      await recomputeMetrics(ctx, companyId, targetChangeSetId);
+      return { ok: true, targetChangeSetId };
+    } catch {
+      return { ok: true, targetChangeSetId, metricsStale: true };
     }
-    await ctx.db.execute(
-      'DELETE FROM change_links WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId],
-    );
-    await ctx.db.execute(
-      'DELETE FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId],
-    );
-    await ctx.db.execute(
-      'DELETE FROM change_sets WHERE company_id = $1 AND id = $2',
-      [companyId, sourceChangeSetId],
-    );
-    await recomputeMetrics(ctx, companyId, targetChangeSetId);
-    return { ok: true, targetChangeSetId };
   });
 
   ctx.actions.register("backfill-recent", async (params) => {
@@ -1294,17 +1335,18 @@ function registerActions(ctx: PluginContext) {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    assertDatabaseNamespace(ctx.db.namespace);
     ctx.data.register("changes-overview", async (params) => overview(ctx, requiredString(params, "companyId")));
     ctx.data.register("change-detail", async (params) =>
       detail(ctx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
 
     registerActions(ctx);
 
-    ctx.events.on("agent.created", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.updated", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.status_changed", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.error_cleared", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("activity.logged", async (event) => recordActivityEvent(ctx, event));
+    ctx.events.on("agent.created", async (event) => withCaptureRetry(() => recordAgentEvent(ctx, event)));
+    ctx.events.on("agent.updated", async (event) => withCaptureRetry(() => recordAgentEvent(ctx, event)));
+    ctx.events.on("agent.status_changed", async (event) => withCaptureRetry(() => recordAgentEvent(ctx, event)));
+    ctx.events.on("agent.error_cleared", async (event) => withCaptureRetry(() => recordAgentEvent(ctx, event)));
+    ctx.events.on("activity.logged", async (event) => withCaptureRetry(() => recordActivityEvent(ctx, event)));
 
     ctx.logger.info("Evolution Change Intelligence ready");
   },
@@ -1315,4 +1357,5 @@ const plugin = definePlugin({
 });
 
 export default plugin;
+export { sanitize, recordActivityEvent, backfill, queryCostStats, recomputeMetrics, overview, registerActions, attachRunContext, ensureChangeSet };
 runWorker(plugin, import.meta.url);

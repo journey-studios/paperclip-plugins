@@ -32,7 +32,10 @@ export function assertEvolutionCompatibilityPatch(patchText) {
   const required = [
     '"agent_config_revisions"',
     '"company_skill_versions"',
+    '"company_skills"',
     '"activity_log"',
+    '"activity.logged"',
+    "activityAction",
     '"journeystudios.evolution"',
     '"evolution"',
   ];

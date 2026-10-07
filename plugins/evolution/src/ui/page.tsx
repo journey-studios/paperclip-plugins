@@ -281,15 +281,17 @@ function DetailView({
   const recompute = usePluginAction("recompute-metrics");
   const mergeChangeSet = usePluginAction("merge-change-set");
   const nav = useHostNavigation();
+  const location = useHostLocation();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
-  async function act(label: string, fn: () => Promise<unknown>) {
+  async function act(label: string, fn: () => Promise<unknown>, afterRefresh?: () => void) {
     setBusy(label);
     setError("");
     try {
       await fn();
       await refresh();
+      afterRefresh?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -340,7 +342,13 @@ function DetailView({
               type="button"
               style={button}
               disabled={Boolean(busy)}
-              onClick={() => act("metrics", () => recompute({ companyId, changeSetId: set.id }))}
+              onClick={() => act("metrics", () => recompute({ companyId, changeSetId: set.id }), () => {
+                const search = new URLSearchParams(location.search);
+                if (!search.has("metrics")) return;
+                search.delete("metrics");
+                const query = search.toString();
+                nav.navigate("/evolution" + (query ? "?" + query : ""));
+              })}
             >
               Recompute metrics
             </button>
@@ -411,8 +419,16 @@ function DetailView({
                 companyId,
                 sourceChangeSetId: set.id,
                 targetChangeSetId,
-              }).then(() => {
-                nav.navigate("/evolution?change=" + encodeURIComponent(targetChangeSetId));
+              }).then(async (result) => {
+                await refresh().catch(() => undefined);
+                const metricsStale = result !== null
+                  && typeof result === "object"
+                  && "metricsStale" in result
+                  && result.metricsStale === true;
+                nav.navigate(
+                  "/evolution?change=" + encodeURIComponent(targetChangeSetId)
+                  + (metricsStale ? "&metrics=stale" : ""),
+                );
               }).catch((err) => {
                 setError(err instanceof Error ? err.message : String(err));
               }).finally(() => setBusy(""));
@@ -612,6 +628,8 @@ function SelectedChangeDetail({
   changeSetId: string;
   refreshOverview: () => void | Promise<void>;
 }) {
+  const location = useHostLocation();
+  const metricsStale = new URLSearchParams(location.search).get("metrics") === "stale";
   const detail = usePluginData<Detail>("change-detail", { companyId, changeSetId });
 
   if (detail.loading) {
@@ -627,13 +645,22 @@ function SelectedChangeDetail({
   if (!detail.data) return null;
 
   return (
-    <DetailView
-      companyId={companyId}
-      data={detail.data}
-      refresh={async () => {
-        await Promise.all([detail.refresh(), refreshOverview()]);
-      }}
-    />
+    <div style={{ display: "grid", gap: 12 }}>
+      {metricsStale ? (
+        <div role="status" style={{ ...panel, padding: 12, fontSize: 12 }}>
+          Merge completed. Recompute metrics to refresh measurements.
+        </div>
+      ) : null}
+      <DetailView
+        companyId={companyId}
+        data={detail.data}
+        refresh={async () => {
+          const results = await Promise.allSettled([detail.refresh(), refreshOverview()]);
+          const failed = results.find((result) => result.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+        }}
+      />
+    </div>
   );
 }
 

@@ -8,4 +8,4 @@ The CI and release workflows install Gitleaks `8.18.4` from its official release
 
 The release workflow uses the repository-provided `GITHUB_TOKEN` with only `contents: write`. It does not publish to npm or deploy a Paperclip service. To install a release tarball, verify `SHA256SUMS`, extract its `package/` contents, then install the extracted directory using `paperclipai plugin install <absolute-path>` on a compatible host. See Artifact Library's [installation notes](../plugins/artifact-library/README.md).
 
-Evolution packages include its migrations and require the Evolution host compatibility patch described in `docs/compatibility.md`.
+Evolution packages include their migrations and require the Evolution host compatibility patch described in `docs/compatibility.md`.
