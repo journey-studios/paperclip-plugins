@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync, symlinkSync } from "n
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  assertEvolutionCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertRepository,
   assertWorkspaceAlias,
@@ -13,7 +14,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localCheckout = resolve(root, ".paperclip");
 const externalCheckout = process.env.PAPERCLIP_HOST_DIR ? resolve(process.env.PAPERCLIP_HOST_DIR) : null;
 const checkout = externalCheckout ?? localCheckout;
-const patch = resolve(root, "compat/paperclip-artifacts-read.patch");
+const artifactPatch = resolve(root, "compat/paperclip-artifacts-read.patch");
+const evolutionPatch = resolve(root, "compat/paperclip-evolution.patch");
 const repository = "https://github.com/paperclipai/paperclip.git";
 const commit = "8f8a0ab7effbd6a0584107d8038736c134ee5047";
 
@@ -46,17 +48,24 @@ if (checkoutNeedsPin({ currentCommit, pinnedCommit: commit, status: git("status"
 }
 if (git("rev-parse", "HEAD") !== commit) throw new Error("Paperclip checkout does not match the required commit");
 
-const patchText = readFileSync(patch, "utf8");
-assertPublicCompatibilityPatch(patchText);
-try {
-  execFileSync("git", ["apply", "--reverse", "--check", patch], { cwd: checkout, stdio: "ignore" });
-} catch {
-  execFileSync("git", ["apply", "--check", patch], { cwd: checkout, stdio: "inherit" });
-  execFileSync("git", ["apply", "--whitespace=nowarn", patch], { cwd: checkout, stdio: "inherit" });
+const compatibilityPatches = [
+  { path: artifactPatch, validate: assertPublicCompatibilityPatch },
+  { path: evolutionPatch, validate: assertEvolutionCompatibilityPatch },
+];
+
+for (const compatibilityPatch of compatibilityPatches) {
+  const patchText = readFileSync(compatibilityPatch.path, "utf8");
+  compatibilityPatch.validate(patchText);
+  try {
+    execFileSync("git", ["apply", "--reverse", "--check", compatibilityPatch.path], { cwd: checkout, stdio: "ignore" });
+  } catch {
+    execFileSync("git", ["apply", "--check", compatibilityPatch.path], { cwd: checkout, stdio: "inherit" });
+    execFileSync("git", ["apply", "--whitespace=nowarn", compatibilityPatch.path], { cwd: checkout, stdio: "inherit" });
+  }
 }
 
 const sdkPackage = JSON.parse(readFileSync(resolve(checkout, "packages/plugins/sdk/package.json"), "utf8"));
 if (sdkPackage.version !== "1.0.0" || !existsSync(resolve(checkout, "packages/plugins/sdk/src/types.ts"))) {
   throw new Error("Pinned Paperclip checkout does not contain the expected Plugin SDK v1 source");
 }
-console.log(`Verified Paperclip ${commit} with the artifacts.read host compatibility patch.`);
+console.log(`Verified Paperclip ${commit} with Artifact Library and Evolution host compatibility patches.`);

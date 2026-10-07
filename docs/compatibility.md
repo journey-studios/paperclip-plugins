@@ -11,3 +11,11 @@ Apply the patch to a clean checkout at the pinned commit, then rebuild the host 
 The public plugin API remains flat: `ctx.artifacts.list({ companyId, kind, projectId, q, groupBy, groupIssueId, limit, cursor })`. The worker sends the allowlisted filters in both the legacy flat RPC envelope and the newer nested `query` envelope (`{ companyId, ...filters, query: filters }`). The pinned compatibility host reads the flat fields; newer hosts may read `params.query`. `companyId` remains at the envelope top level and is excluded from the nested query, and native per-user `starred` is not sent.
 
 The compatibility patch must be reviewed against each new upstream release before changing the pin. Do not infer support from the package version alone: the host service implementation and worker RPC contract must both include `artifacts.list`, and the plugin capability validator must recognize `artifacts.read`.
+
+## Evolution
+
+Evolution 0.1.0 uses a plugin-owned PostgreSQL namespace for Change Sets, snapshots, evidence, metrics, links, and conclusions. It references Paperclip core runs, costs, issues, goals, agents, skills, and Audit rows instead of duplicating them.
+
+The pinned upstream host does not expose activity_log, agent_config_revisions, company_skills, or company_skill_versions to plugin database reads and does not forward all Evolution-relevant Audit actions to activity.logged. compat/paperclip-evolution.patch adds only those read-only table allowlist entries, Audit event forwarding/provenance, and the self-hosted bundled-plugin registration used by the Journey runtime. It grants no core database write capability to the plugin.
+
+Agent configuration revisions provide exact before/after JSON. Historical instruction-file content may be partial because the pinned host did not previously version every instruction-file mutation; Evolution records the audited mutation and marks those snapshots as partial rather than inventing history.

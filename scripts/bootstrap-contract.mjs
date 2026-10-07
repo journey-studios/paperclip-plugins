@@ -27,3 +27,16 @@ export function assertWorkspaceAlias(workspacePath, hostPath) {
     throw new Error("When PAPERCLIP_HOST_DIR is set, .paperclip must point to that exact checkout");
   }
 }
+
+export function assertEvolutionCompatibilityPatch(patchText) {
+  const required = [
+    '"agent_config_revisions"',
+    '"company_skill_versions"',
+    '"activity_log"',
+    '"journeystudios.evolution"',
+    '"evolution"',
+  ];
+  if (required.some((token) => !patchText.includes(token))) {
+    throw new Error("Evolution compatibility patch is missing required read tables, Audit forwarding, or bundled-plugin registration");
+  }
+}
