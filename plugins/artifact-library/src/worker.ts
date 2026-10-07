@@ -1,3 +1,4 @@
+import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   definePlugin,
   runWorker,
@@ -36,8 +37,61 @@ function companySerialQueue() {
   };
 }
 
+let mcpCtx: PluginContext;
+const mcpHandler = createPluginMcpEndpoint({
+  name: "journeystudios.artifact-library",
+  version: "0.1.3",
+  tools: [
+    {
+      name: "artifactLibraryNavigation",
+      title: "Artifact Library Navigation",
+      description: "List company folders, tags, saved views, project and agent filters without writing data.",
+      readOnly: true,
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: (_args, { companyId }) => navigation(mcpCtx, { companyId }),
+    },
+    {
+      name: "artifactLibrarySearch",
+      title: "Search Artifact Library",
+      description: "Search bounded company artifacts; returns identifiers and safe metadata, not artifact contents or file bytes.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string", maxLength: 160 },
+          limit: { type: "integer", minimum: 1, maximum: 50 },
+          cursor: { type: "string", maxLength: 5000 },
+          kind: { type: "string", enum: ["all", "image", "video", "text", "document", "file"] },
+          starred: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+      execute: async (args, { companyId }) => {
+        const filters = Object.fromEntries(["q", "kind", "starred"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+        const result = await listLibrary(mcpCtx, { companyId, filters, limit: args.limit ?? 30, cursor: args.cursor });
+        return {
+          companyId,
+          artifacts: result.artifacts.map((artifact) => ({
+            id: artifact.id, source: artifact.source, mediaKind: artifact.mediaKind,
+            title: artifact.title, issue: artifact.issue, project: artifact.project,
+            createdByAgent: artifact.createdByAgent, updatedAt: artifact.updatedAt,
+            metadata: artifact.metadata,
+          })),
+          nextCursor: result.nextCursor,
+          coverage: { limit: args.limit ?? 30, moreAvailable: result.nextCursor !== null },
+        };
+      },
+    },
+  ],
+});
+
 const plugin = definePlugin({
+  async onApiRequest(input) {
+    if (input.routeKey !== "mcp") return { status: 404, body: { error: "Unknown Artifact Library API route" } };
+    return mcpHandler(input);
+  },
   async setup(ctx) {
+    mcpCtx = ctx;
     const serial = companySerialQueue();
     ctx.data.register("library", (params) => listLibrary(ctx, params));
     ctx.data.register("navigation", (params) => navigation(ctx, params));
