@@ -73,7 +73,9 @@ function validateConfig(env) {
   }
   let parsed;
   try { parsed = new URL(apiUrl); } catch { throw new Error('bridge configuration is invalid'); }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  const insecureHttpAllowed = parsed.protocol === 'http:' && (loopback || env.PAPERCLIP_ALLOW_INSECURE_HTTP === '1');
+  if (!(parsed.protocol === 'https:' || insecureHttpAllowed) || parsed.username || parsed.password) {
     throw new Error('bridge configuration is invalid');
   }
   return { apiBase: parsed.toString().replace(/\/$/, ''), apiKey, companyId };

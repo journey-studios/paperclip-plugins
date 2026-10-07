@@ -201,7 +201,7 @@ function summarizeAgent(agent, snapshot) {
     failures,
     interrupted: Number(stats.interrupted ?? 0),
     retries: Number(stats.retries ?? 0),
-    knownCostCents: snapshot.costByAgent.get(agent.id) ?? 0,
+    knownCostCents: snapshot.costByAgent.get(agent.id) ?? null,
     unknownCostRuns: Number(stats.unknownCostRuns ?? 0),
     avgDurationMs: stats.avgDurationMs == null ? null : Number(stats.avgDurationMs),
     lastError: safeError(lastRun?.lastError),

@@ -8,7 +8,7 @@ Required environment:
 
 | Variable | Purpose |
 | --- | --- |
-| `PAPERCLIP_API_URL` | Paperclip base URL reachable from this process. |
+| `PAPERCLIP_API_URL` | HTTPS Paperclip base URL reachable from this process. |
 | `PAPERCLIP_API_KEY` | Paperclip API bearer key. Never pass this as an argument or print it. |
 | `PAPERCLIP_COMPANY_ID` | One UUID pinned at deployment; callers cannot choose a company. |
 
@@ -16,6 +16,7 @@ Optional subprocess override for local tests or a host-specific CLI location:
 
 | Variable | Purpose |
 | --- | --- |
+| `PAPERCLIP_ALLOW_INSECURE_HTTP` | Set exactly `1` only to explicitly permit HTTP on a trusted private network; exposes the bearer key to that network. HTTPS is the default. Loopback HTTP (`localhost`, `127.0.0.1`, `[::1]`) is permitted for local use. |
 | `PAPERCLIP_MCP_COMMAND` | Executable; defaults to `/app/node_modules/.bin/paperclip-mcp-server`. |
 | `PAPERCLIP_MCP_ARGS` | JSON array of string arguments; defaults to `[]`. |
 

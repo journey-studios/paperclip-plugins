@@ -10,7 +10,7 @@ const companyId = 'd9f67265-9c8f-4cbe-b91c-b3e0ea26da02';
 const agentId = '7067603c-5ee4-4db8-87f1-8c16a54f44a2';
 const runId = '150c11ef-4863-4a50-b4a3-95c1bf2b6224';
 const env = {
-  PAPERCLIP_API_URL: 'http://paperclip.test',
+  PAPERCLIP_API_URL: 'https://paperclip.test',
   PAPERCLIP_API_KEY: 'secret-test-value',
   PAPERCLIP_COMPANY_ID: companyId,
 };
@@ -57,6 +57,20 @@ function makeBridge({ fetchImpl = async () => new Response('{}'), bridgeEnv = en
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const messages = (items) => items.join('').trim().split('\n').filter(Boolean).map(JSON.parse);
+
+test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () => {
+  const accepted = ['https://paperclip.test', 'http://localhost:3100', 'http://127.0.0.1:3100', 'http://[::1]:3100'];
+  for (const url of accepted) {
+    assert.doesNotThrow(() => makeBridge({ bridgeEnv: { ...env, PAPERCLIP_API_URL: url } }));
+  }
+  assert.doesNotThrow(() => makeBridge({ bridgeEnv: { ...env, PAPERCLIP_API_URL: 'http://paperclip:3100', PAPERCLIP_ALLOW_INSECURE_HTTP: '1' } }));
+  for (const url of ['http://paperclip.test', 'http://localhost.evil.test', 'ftp://paperclip.test', 'https://user:password@paperclip.test', 'http://user:password@localhost']) {
+    assert.throws(() => makeBridge({ bridgeEnv: { ...env, PAPERCLIP_API_URL: url } }), /configuration is invalid/);
+  }
+  for (const optIn of [undefined, '0', 'true']) {
+    assert.throws(() => makeBridge({ bridgeEnv: { ...env, PAPERCLIP_API_URL: 'http://paperclip:3100', PAPERCLIP_ALLOW_INSECURE_HTTP: optIn } }), /configuration is invalid/);
+  }
+});
 
 test('tools/list forwards stock tools and adds exactly the five fixed tools after initialize', async () => {
   const ctx = makeBridge();

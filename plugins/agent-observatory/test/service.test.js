@@ -90,9 +90,17 @@ test("zero reported cents is known while missing and unpriced costs remain unkno
   });
   const result = await getOverview(ctx, companyId);
   assert.equal(result.summary.knownCostCents, 0);
+  assert.equal(result.agents[0].knownCostCents, 0, "a reported zero must stay known");
   assert.equal(result.summary.unknownCostRuns, 0);
   assert.equal(result.coverage.metricsScope, "full_window_aggregates");
   assert.equal(result.coverage.rawLogsAvailable, false);
+
+  const missing = fakeContext();
+  const overview = await getOverview(missing.ctx, companyId);
+  const detail = await getAgent(missing.ctx, companyId, agentId);
+  assert.equal(overview.agents[0].knownCostCents, null, "missing reported agent cost stays unknown in overview");
+  assert.equal(detail.agent.knownCostCents, null, "missing reported agent cost stays unknown in detail");
+  assert.equal(overview.agents[0].unknownCostRuns, 1);
 });
 
 test("run-cost queries bind UUIDs as scalars and skip empty run lists", async () => {
