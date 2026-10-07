@@ -429,7 +429,7 @@ index 000000000..61d087907
 --- /dev/null
 +++ b/ui/src/plugins/SidebarSlot.tsx
 @@ -0,0 +1,28 @@
-+import { useEffect, useRef, type ReactNode } from "react";
++import React, { useEffect, useRef, type ReactNode } from "react";
 +import { useLocation } from "react-router-dom";
 +import "./sidebar-slot.css";
 +
@@ -511,7 +511,7 @@ index 000000000..fab5c00b4
 +++ b/ui/src/plugins/SidebarSlot.test.tsx
 @@ -0,0 +1,29 @@
 +// @vitest-environment jsdom
-+import { act } from "react";
++import React, { act } from "react";
 +import { createRoot } from "react-dom/client";
 +import { MemoryRouter } from "react-router-dom";
 +import { describe, expect, it } from "vitest";
