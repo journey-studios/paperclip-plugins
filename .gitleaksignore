@@ -1,0 +1,3 @@
+# Synthetic inline PEM fixture: Gitleaks 8.18.4 spans its escaped block across this file diff.
+# Scope the exception to that committed path, rule, and line; later matches keep distinct fingerprints.
+ad739a1828da9dba4e91b1e5ed01cc11845add83:tests/snapshot-safety.test.mjs:private-key:35

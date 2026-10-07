@@ -1,0 +1,542 @@
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1451,6 +1451,10 @@
+   "approvals",
+   "issue_approvals",
+   "budget_incidents",
++  "activity_log",
++  "agent_config_revisions",
++  "company_skills",
++  "company_skill_versions",
+ ] as const;
+ export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
+ 
+diff --git a/server/src/services/activity-log.ts b/server/src/services/activity-log.ts
+--- a/server/src/services/activity-log.ts
++++ b/server/src/services/activity-log.ts
+@@ -39,7 +39,22 @@
+ 
+ function eventTypeForActivityAction(action: string): PluginEventType | null {
+   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
+-  return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
++  const mapped = ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")];
++  if (mapped) return mapped;
++
++  const evolutionRelevantAction =
++    action.startsWith("company.skill_") ||
++    action.startsWith("company.skills_") ||
++    action.startsWith("agent.instructions_") ||
++    action === "agent.skills_synced" ||
++    action === "agent.permissions_updated" ||
++    action === "agent.config_rolled_back" ||
++    action === "agent.budget_updated" ||
++    action === "plugin.managed_agent.reset" ||
++    action === "plugin.managed_skill.reconciled" ||
++    action === "plugin.managed_skill.reset";
++
++  return evolutionRelevantAction ? "activity.logged" : null;
+ }
+ 
+ export function publishPluginDomainEvent(event: PluginEvent): void {
+@@ -174,6 +189,7 @@
+   }).returning({ id: activityLog.id });
+ 
+   const payload = {
++    activityId: activity.id,
+     actorType: input.actorType,
+     actorId: input.actorId,
+     action: input.action,
+@@ -197,6 +213,8 @@
+         companyId: input.companyId,
+         payload: {
+           ...redactedDetails,
++          activityId: activity.id,
++          activityAction: input.action,
+           agentId: input.agentId ?? null,
+           runId: input.runId ?? null,
+           responsibleUserId,
+diff --git a/server/src/services/bundled-plugins.ts b/server/src/services/bundled-plugins.ts
+--- a/server/src/services/bundled-plugins.ts
++++ b/server/src/services/bundled-plugins.ts
+@@ -64,6 +64,12 @@
+  */
+ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
+   {
++    key: "evolution",
++    pluginKey: "journeystudios.evolution",
++    relativePath: "evolution",
++    pathOverrideEnvVar: "PAPERCLIP_EVOLUTION_PLUGIN_PATH",
++  },
++  {
+     key: "createos",
+     pluginKey: "paperclip.createos-sandbox-provider",
+     relativePath: "sandbox-providers/createos",
+@@ -111,7 +117,7 @@
+  * Exactly the pre-refactor behavior: the kubernetes sandbox provider is
+  * auto-installed when its bundle is present, nothing else.
+  */
+-export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
++export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes", "evolution"];
+ 
+ export function resolveBundledCatalogRoot(
+   env: Record<string, string | undefined>,
+diff --git a/server/src/__tests__/bundled-plugins.test.ts b/server/src/__tests__/bundled-plugins.test.ts
+--- a/server/src/__tests__/bundled-plugins.test.ts
++++ b/server/src/__tests__/bundled-plugins.test.ts
+@@ -166,19 +166,25 @@
+     expect(resolved).toHaveLength(1);
+   });
+ 
+-  it("keeps the self-hosted default list to exactly the kubernetes bundle", () => {
+-    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).toEqual(["kubernetes"]);
+-    const [entry] = resolveBundledPluginInstalls(SELF_HOSTED_AUTO_INSTALL_KEYS, {
++  it("keeps kubernetes and Journey Evolution in the self-hosted auto-install list", () => {
++    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).toEqual(["kubernetes", "evolution"]);
++    const resolved = resolveBundledPluginInstalls(SELF_HOSTED_AUTO_INSTALL_KEYS, {
+       catalogRoot: resolveBundledCatalogRoot({}),
+-      env: {},
++      env: { PAPERCLIP_EVOLUTION_PLUGIN_PATH: "/opt/journey-plugins/evolution" },
+       enforceCatalogRoot: false,
+     });
+-    // Exactly the pre-refactor default path.
+-    expect(entry).toEqual({
+-      key: "kubernetes",
+-      pluginKey: "paperclip.kubernetes-sandbox-provider",
+-      localPath: "/app/packages/plugins/sandbox-providers/kubernetes",
+-    });
++    expect(resolved).toEqual([
++      {
++        key: "kubernetes",
++        pluginKey: "paperclip.kubernetes-sandbox-provider",
++        localPath: "/app/packages/plugins/sandbox-providers/kubernetes",
++      },
++      {
++        key: "evolution",
++        pluginKey: "journeystudios.evolution",
++        localPath: "/opt/journey-plugins/evolution",
++      },
++    ]);
+   });
+ 
+   it("covers every catalog entry with a path inside the default root", () => {
+diff --git a/server/src/__tests__/plugin-database.test.ts b/server/src/__tests__/plugin-database.test.ts
+--- a/server/src/__tests__/plugin-database.test.ts
++++ b/server/src/__tests__/plugin-database.test.ts
+@@ -129,6 +129,43 @@
+     ).toThrow(/namespace/i);
+   });
+ 
++  it("allows only namespace-scoped mutation CTEs through execute and keeps query read-only", () => {
++    const merge = `WITH moved AS (UPDATE plugin_test.change_items SET change_set_id = $1 WHERE id = $2 RETURNING id), removed AS (DELETE FROM plugin_test.change_sets WHERE id = $3 AND EXISTS (SELECT 1 FROM moved) RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(merge, "plugin_test")).not.toThrow();
++    expect(() => validatePluginRuntimeExecute(
++      "WITH moved AS (UPDATE public.issues SET title = 'x' WHERE id = $1 RETURNING id) SELECT 1",
++      "plugin_test",
++    )).toThrow(/namespace/i);
++    expect(() => validatePluginRuntimeExecute(
++      "WITH read_only AS (SELECT id FROM plugin_test.rows) SELECT 1",
++      "plugin_test",
++    )).toThrow(/INSERT, UPDATE, DELETE/i);
++    expect(() => validatePluginRuntimeQuery(merge, "plugin_test")).toThrow(/cannot contain mutation/i);
++  });
++
++  it("rejects a CTE with any unqualified mutation target even after a safe namespace mutation", () => {
++    const mixed = `WITH safe AS (UPDATE plugin_test.rows SET value = 'safe' WHERE id = $1 RETURNING id), unsafe AS (UPDATE issues SET title = 'unsafe' WHERE id = $2 RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(mixed, "plugin_test")).toThrow(/namespace/i);
++    const mixedPublic = `WITH safe AS (UPDATE plugin_test.rows SET value = 'safe' WHERE id = $1 RETURNING id), unsafe AS (DELETE FROM public.issues WHERE id = $2 RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(mixedPublic, "plugin_test")).toThrow(/namespace/i);
++  });
++
++  it("handles quoted targets and ignores mutation-looking text in comments and strings", () => {
++    const safe = `WITH written AS (INSERT INTO "plugin_test"."change_links" (id, metadata) VALUES ($1, '{"note":"UPDATE public.issues"}'::jsonb) ON CONFLICT (id) DO UPDATE SET metadata = excluded.metadata RETURNING id), changed AS (UPDATE "plugin_test"."change_sets" SET status = 'applied' WHERE id = $2 AND EXISTS (SELECT 1 FROM written) RETURNING id) SELECT 1 /* DELETE FROM public.issues */`;
++    expect(() => validatePluginRuntimeExecute(safe, "plugin_test")).not.toThrow();
++
++    const hiddenPublic = `WITH safe AS (UPDATE "plugin_test"."rows" SET value = 'UPDATE public.issues' /* DELETE FROM public.issues */ WHERE id = $1 RETURNING id), unsafe AS (UPDATE "public"."issues" SET title = 'bad' WHERE id = $2 RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(hiddenPublic, "plugin_test")).toThrow(/namespace/i);
++
++    const escapedString = `WITH changed AS (UPDATE "plugin_test"."rows" SET value = E'escaped \\' UPDATE public.issues' WHERE id = $1 RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(escapedString, "plugin_test")).not.toThrow();
++  });
++
++  it("does not treat row-lock clauses as mutation targets", () => {
++    const lockedMerge = `WITH locked AS MATERIALIZED (SELECT id FROM plugin_test.change_sets WHERE id = $1 FOR UPDATE), locked_no_key AS MATERIALIZED (SELECT id FROM plugin_test.change_sets WHERE id = $1 FOR NO KEY UPDATE), moved AS (UPDATE plugin_test.change_items SET change_set_id = $2 WHERE change_set_id = $1 AND EXISTS (SELECT 1 FROM locked) AND EXISTS (SELECT 1 FROM locked_no_key) RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(lockedMerge, "plugin_test")).not.toThrow();
++  });
++
+   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
+     expect(() =>
+       validatePluginRuntimeQuery(
+diff --git a/server/src/services/plugin-database.ts b/server/src/services/plugin-database.ts
+--- a/server/src/services/plugin-database.ts
++++ b/server/src/services/plugin-database.ts
+@@ -19,9 +19,7 @@
+ const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
+ 
+ type SqlRef = { schema: string; table: string; keyword: string };
+-type QualifiedRefPattern =
+-  | { pattern: RegExp; groups: "keyword-schema-table" }
+-  | { pattern: RegExp; groups: "schema-table"; keyword: string };
++type SqlToken = { value: string; kind: "word" | "identifier" | "string" | "symbol" };
+ 
+ export type PluginDatabaseRuntimeResult<T = Record<string, unknown>> = {
+   rows?: T[];
+@@ -124,36 +122,155 @@
+   return stripSqlForKeywordScan(input).replace(/\s+/g, " ").trim().toLowerCase();
+ }
+ 
+-function extractQualifiedRefs(statement: string): SqlRef[] {
+-  const refs: SqlRef[] = [];
+-  const patterns: QualifiedRefPattern[] = [
+-    {
+-      pattern: /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+-      groups: "keyword-schema-table",
+-    },
+-    {
+-      pattern: /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+-      groups: "keyword-schema-table",
+-    },
+-    {
+-      pattern: /\bcreate\s+(?:unique\s+)?index(?:\s+concurrently)?\s+(?:if\s+not\s+exists\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s+on\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+-      groups: "schema-table",
+-      keyword: "create index",
+-    },
+-  ];
++function tokenizeSql(input: string): SqlToken[] {
++  const tokens: SqlToken[] = [];
++  let i = 0;
++  while (i < input.length) {
++    const char = input[i]!;
++    const next = input[i + 1];
++    if (/\s/.test(char)) { i += 1; continue; }
++    if (char === "-" && next === "-") {
++      i += 2;
++      while (i < input.length && input[i] !== "\n") i += 1;
++      continue;
++    }
++    if (char === "/" && next === "*") {
++      i += 2;
++      let depth = 1;
++      while (i < input.length && depth > 0) {
++        if (input[i] === "/" && input[i + 1] === "*") { depth += 1; i += 2; }
++        else if (input[i] === "*" && input[i + 1] === "/") { depth -= 1; i += 2; }
++        else i += 1;
++      }
++      continue;
++    }
++    if (char === "'") {
++      const escapeString = i > 0 && /[eE]/.test(input[i - 1]!) &&
++        (i < 2 || !/[A-Za-z0-9_$]/.test(input[i - 2]!));
++      i += 1;
++      while (i < input.length) {
++        if (escapeString && input[i] === "\\") { i += 2; continue; }
++        if (input[i] === "'" && input[i + 1] === "'") { i += 2; continue; }
++        if (input[i] === "'") { i += 1; break; }
++        i += 1;
++      }
++      tokens.push({ value: "", kind: "string" });
++      continue;
++    }
++    if (char === '"') {
++      i += 1;
++      let value = "";
++      while (i < input.length) {
++        if (input[i] === '"' && input[i + 1] === '"') { value += '"'; i += 2; continue; }
++        if (input[i] === '"') { i += 1; break; }
++        value += input[i]!;
++        i += 1;
++      }
++      tokens.push({ value, kind: "identifier" });
++      continue;
++    }
++    if (char === "$") {
++      const delimiter = input.slice(i).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0];
++      if (delimiter) {
++        const end = input.indexOf(delimiter, i + delimiter.length);
++        i = end < 0 ? input.length : end + delimiter.length;
++        tokens.push({ value: "", kind: "string" });
++        continue;
++      }
++    }
++    if (/[A-Za-z_]/.test(char)) {
++      const start = i++;
++      while (i < input.length && /[A-Za-z0-9_$]/.test(input[i]!)) i += 1;
++      tokens.push({ value: input.slice(start, i).toLowerCase(), kind: "word" });
++      continue;
++    }
++    tokens.push({ value: char, kind: "symbol" });
++    i += 1;
++  }
++  return tokens;
++}
+ 
+-  for (const { pattern, ...mapping } of patterns) {
+-    for (const match of statement.matchAll(pattern)) {
+-      if (mapping.groups === "keyword-schema-table") {
+-        refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+-      } else {
+-        refs.push({ keyword: mapping.keyword, schema: match[1]!, table: match[2]! });
++function identifierToken(token: SqlToken | undefined): token is SqlToken {
++  return token?.kind === "word" || token?.kind === "identifier";
++}
++
++function isForUpdateLock(tokens: SqlToken[], index: number): boolean {
++  if (tokens[index]?.kind !== "word" || tokens[index]?.value !== "update") return false;
++  if (tokens[index - 1]?.kind === "word" && tokens[index - 1]?.value === "for") return true;
++  return tokens[index - 1]?.value === "key" && tokens[index - 2]?.value === "no" && tokens[index - 3]?.value === "for";
++}
++
++function parseObjectName(tokens: SqlToken[], start: number): { schema: string | null; table: string } | null {
++  let index = start;
++  if (tokens[index]?.kind === "word" && tokens[index]?.value === "only") index += 1;
++  const first = tokens[index];
++  if (!identifierToken(first)) return null;
++  const dot = tokens[index + 1];
++  const second = tokens[index + 2];
++  if (dot?.kind === "symbol" && dot.value === "." && identifierToken(second)) {
++    return { schema: first.value, table: second.value };
++  }
++  return { schema: null, table: first.value };
++}
++
++function extractQualifiedRefs(statement: string): SqlRef[] {
++  const refs: SqlRef[] = [];
++  const tokens = tokenizeSql(statement);
++  const addRef = (keyword: string, index: number) => {
++    const name = parseObjectName(tokens, index);
++    if (name?.schema) refs.push({ keyword, schema: name.schema, table: name.table });
++  };
++  for (let i = 0; i < tokens.length; i += 1) {
++    const token = tokens[i]!;
++    if (token.kind !== "word") continue;
++    if (["from", "join", "references", "into", "update"].includes(token.value)) {
++      if (token.value === "update" && tokens[i - 1]?.value === "do") continue;
++      if (isForUpdateLock(tokens, i)) continue;
++      addRef(token.value, i + 1);
++    } else if (["alter", "create", "drop", "truncate"].includes(token.value)) {
++      const next = tokens[i + 1];
++      if (next?.kind === "word" && ["table", "view"].includes(next.value)) {
++        let start = i + 2;
++        if (tokens[start]?.value === "if") start += tokens[start + 1]?.value === "not" ? 3 : 2;
++        addRef(`${token.value} ${next.value}`, start);
++      } else if (token.value === "create" && next?.value === "unique" && tokens[i + 2]?.value === "index") {
++        const on = tokens.findIndex((candidate, index) => index > i + 2 && candidate.kind === "word" && candidate.value === "on");
++        if (on >= 0) addRef("create index", on + 1);
++      } else if (token.value === "create" && next?.value === "index") {
++        const on = tokens.findIndex((candidate, index) => index > i + 1 && candidate.kind === "word" && candidate.value === "on");
++        if (on >= 0) addRef("create index", on + 1);
+       }
+     }
+   }
+   return refs;
+ }
+ 
++function extractMutationTargets(statement: string): Array<{ operation: string; schema: string | null; table: string }> {
++  const tokens = tokenizeSql(statement);
++  const targets: Array<{ operation: string; schema: string | null; table: string }> = [];
++  for (let i = 0; i < tokens.length; i += 1) {
++    const token = tokens[i]!;
++    if (token.kind !== "word") continue;
++    let operation: string | null = null;
++    let targetStart = -1;
++    if (token.value === "insert" && tokens[i + 1]?.value === "into") {
++      operation = "INSERT";
++      targetStart = i + 2;
++    } else if (token.value === "update" && tokens[i - 1]?.value !== "do" && !isForUpdateLock(tokens, i)) {
++      operation = "UPDATE";
++      targetStart = i + 1;
++    } else if (token.value === "delete" && tokens[i + 1]?.value === "from") {
++      operation = "DELETE";
++      targetStart = i + 2;
++    }
++    if (!operation) continue;
++    const name = parseObjectName(tokens, targetStart);
++    if (!name) throw new Error(`ctx.db.execute could not validate ${operation} target`);
++    targets.push({ operation, ...name });
++  }
++  return targets;
++}
++
+ function assertAllowedPublicRead(
+   ref: SqlRef,
+   allowedCoreReadTables: ReadonlySet<string>,
+@@ -274,6 +391,7 @@
+ }
+ 
+ export function validatePluginRuntimeExecute(query: string, namespace: string): void {
++  assertIdentifier(namespace, "namespace");
+   const statements = splitSqlStatements(query);
+   if (statements.length !== 1) {
+     throw new Error("Plugin runtime SQL must contain exactly one statement");
+@@ -281,18 +399,26 @@
+   const statement = statements[0]!;
+   assertNoBannedSql(statement);
+   const normalized = normaliseSql(statement);
+-  if (!/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
+-    throw new Error("ctx.db.execute only allows INSERT, UPDATE, or DELETE");
++  const mutationTargets = extractMutationTargets(statement);
++  const directMutation = /^(insert\s+into|update|delete\s+from)\b/.test(normalized);
++  const namespaceMutationCte = normalized.startsWith("with ") && mutationTargets.length > 0;
++  if (!directMutation && !namespaceMutationCte) {
++    throw new Error("ctx.db.execute only allows INSERT, UPDATE, DELETE, or namespace-scoped mutation CTEs");
+   }
+   if (/\b(alter|create|drop|truncate)\b/.test(normalized)) {
+     throw new Error("ctx.db.execute cannot contain DDL keywords");
+   }
+ 
+-  const refs = extractQualifiedRefs(statement);
+-  const target = refs.find((ref) => ["into", "update", "from"].includes(ref.keyword));
+-  if (!target || target.schema !== namespace) {
+-    throw new Error(`ctx.db.execute target must be inside plugin namespace "${namespace}"`);
++  if (mutationTargets.length === 0) {
++    throw new Error("ctx.db.execute must contain a mutation target inside the plugin namespace");
+   }
++  for (const target of mutationTargets) {
++    if (target.schema !== namespace) {
++      throw new Error(`ctx.db.execute ${target.operation} target must be qualified inside plugin namespace "${namespace}"`);
++    }
++  }
++
++  const refs = extractQualifiedRefs(statement);
+   for (const ref of refs) {
+     if (ref.schema !== namespace) {
+       throw new Error("ctx.db.execute cannot reference public or other non-plugin schemas");
+diff --git a/ui/src/plugins/slots.tsx b/ui/src/plugins/slots.tsx
+index f5bf01866..055bb0ae6 100644
+--- a/ui/src/plugins/slots.tsx
++++ b/ui/src/plugins/slots.tsx
+@@ -30,6 +30,7 @@ import {
+   type ComponentType,
+ } from "react";
+ import * as ReactModule from "react";
++import { SidebarSlot } from "./SidebarSlot";
+ import { useQuery } from "@tanstack/react-query";
+ import type {
+   PluginLauncherDeclaration,
+@@ -865,7 +866,8 @@ export function PluginSlotMount({
+     return (
+       <PluginSlotErrorBoundary slot={slot} className={className}>
+         <PluginBridgeScope pluginId={slot.pluginId} context={context}>
+-          {className ? <div className={className}>{node}</div> : node}
++          {slot.type === "sidebar" ? <SidebarSlot className={className}>{node}</SidebarSlot> :
++            className ? <div className={className}>{node}</div> : node}
+         </PluginBridgeScope>
+       </PluginSlotErrorBoundary>
+     );
+diff --git a/ui/src/plugins/SidebarSlot.tsx b/ui/src/plugins/SidebarSlot.tsx
+new file mode 100644
+index 000000000..61d087907
+--- /dev/null
++++ b/ui/src/plugins/SidebarSlot.tsx
+@@ -0,0 +1,28 @@
++import React, { useEffect, useRef, type ReactNode } from "react";
++import { useLocation } from "react-router-dom";
++import "./sidebar-slot.css";
++
++/** Keep plugin navigation behavior while applying the host sidebar contract. */
++export function SidebarSlot({ children, className = "" }: { children: ReactNode; className?: string }) {
++  const root = useRef<HTMLDivElement>(null);
++  const { pathname } = useLocation();
++  useEffect(() => {
++    const element = root.current;
++    if (!element) return;
++    const update = () => {
++      for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
++        const target = new URL(link.href, window.location.href);
++        const path = target.pathname.replace(/\/$/, "") || "/";
++        const active = target.origin === window.location.origin &&
++          (pathname === path || (path !== "/" && pathname.startsWith(`${path}/`)));
++        if (active) link.setAttribute("aria-current", "page");
++        else link.removeAttribute("aria-current");
++      }
++    };
++    update();
++    const observer = new MutationObserver(update);
++    observer.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
++    return () => observer.disconnect();
++  }, [pathname]);
++  return <div ref={root} className={`plugin-sidebar-nav-slot ${className}`}>{children}</div>;
++}
+diff --git a/ui/src/plugins/sidebar-slot.css b/ui/src/plugins/sidebar-slot.css
+new file mode 100644
+index 000000000..21d4d23b8
+--- /dev/null
++++ b/ui/src/plugins/sidebar-slot.css
+@@ -0,0 +1,41 @@
++/* Legacy plugins supply inline styles; normalize only primary sidebar slots. */
++.plugin-sidebar-nav-slot :is(a, button) {
++  display: flex !important;
++  align-items: center !important;
++  gap: 0.625rem !important;
++  margin: 0 0.5rem !important;
++  width: calc(100% - 1rem) !important;
++  padding: 0.375rem 0.5rem !important;
++  border: 0 !important;
++  border-radius: var(--radius) !important;
++  background: transparent !important;
++  color: color-mix(in srgb, var(--foreground) 80%, transparent) !important;
++  font-size: var(--text-compact) !important;
++  font-weight: 500 !important;
++  line-height: 1.5 !important;
++  text-decoration: none !important;
++  text-align: left !important;
++  box-shadow: none !important;
++  cursor: pointer;
++  transition: background-color 150ms, color 150ms;
++}
++.plugin-sidebar-nav-slot :is(a, button):hover,
++.plugin-sidebar-nav-slot a[aria-current="page"] {
++  background: var(--sidebar-accent) !important;
++  color: var(--sidebar-accent-foreground) !important;
++}
++.plugin-sidebar-nav-slot :is(a, button):focus-visible {
++  outline: 2px solid var(--ring);
++  outline-offset: 2px;
++}
++.plugin-sidebar-nav-slot :is(a, button) svg {
++  width: 1rem !important;
++  height: 1rem !important;
++  flex-shrink: 0;
++}
++@media (pointer: coarse) {
++  .plugin-sidebar-nav-slot :is(a, button) { padding-block: 0.25rem !important; }
++}
++@media (prefers-reduced-motion: reduce) {
++  .plugin-sidebar-nav-slot :is(a, button) { transition: none; }
++}
+diff --git a/ui/src/plugins/SidebarSlot.test.tsx b/ui/src/plugins/SidebarSlot.test.tsx
+new file mode 100644
+index 000000000..41a094906
+--- /dev/null
++++ b/ui/src/plugins/SidebarSlot.test.tsx
+@@ -0,0 +1,30 @@
++// @vitest-environment jsdom
++import React from "react";
++import { act } from "react-dom/test-utils";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter } from "react-router-dom";
++import { describe, expect, it } from "vitest";
++import { SidebarSlot } from "./SidebarSlot";
++
++describe("plugin sidebar navigation", () => {
++  it("recognizes company-prefixed descendants without matching siblings or external links", async () => {
++    const container = document.createElement("div");
++    document.body.append(container);
++    const root = createRoot(container);
++    await act(async () => root.render(<MemoryRouter initialEntries={["/JOU/evolution/change"]}>
++      <SidebarSlot><a href="/JOU/evolution?change=1">Evolution</a>
++        <a href="/JOU/evolution-other">Sibling</a>
++        <a href="https://example.com/JOU/evolution">External</a></SidebarSlot>
++    </MemoryRouter>));
++    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
++    expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Evolution");
++    const delayed = document.createElement("a");
++    delayed.href = "/JOU/evolution";
++    await act(async () => { container.firstElementChild!.append(delayed); });
++    expect(delayed.getAttribute("aria-current")).toBe("page");
++    await act(async () => { delayed.href = "/JOU/library"; });
++    expect(delayed.hasAttribute("aria-current")).toBe(false);
++    await act(async () => root.unmount());
++    container.remove();
++  });
++});
