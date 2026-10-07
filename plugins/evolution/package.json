@@ -1,6 +1,6 @@
 {
   "name": "@journeystudios/paperclip-evolution",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Change intelligence for Paperclip agents, skills, runs, evidence, and measurable improvement.",
   "type": "module",
   "private": false,
