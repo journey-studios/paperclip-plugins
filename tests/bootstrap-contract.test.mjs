@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  assertEvolutionCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertRepository,
   assertWorkspaceAlias,
@@ -33,6 +34,18 @@ test("rejects compatibility patches with missing API or organization fixtures", 
   assert.doesNotThrow(() => assertPublicCompatibilityPatch("artifacts.read\n\"artifacts.list\"\n"));
   assert.throws(() => assertPublicCompatibilityPatch("artifacts.read only"), /missing/);
   assert.throws(() => assertPublicCompatibilityPatch(`artifacts.read\n\"artifacts.list\"\n${"JOU-"}999999`), /fixtures/);
+});
+
+test("validates the Evolution compatibility patch contract", () => {
+  const valid = [
+    '"agent_config_revisions"',
+    '"company_skill_versions"',
+    '"activity_log"',
+    '"journeystudios.evolution"',
+    '"evolution"',
+  ].join("\n");
+  assert.doesNotThrow(() => assertEvolutionCompatibilityPatch(valid));
+  assert.throws(() => assertEvolutionCompatibilityPatch('"activity_log" only'), /Evolution compatibility/);
 });
 
 test("rejects a workspace alias that points away from the requested host checkout", () => {

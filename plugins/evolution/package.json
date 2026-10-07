@@ -1,0 +1,38 @@
+{
+  "name": "@journeystudios/paperclip-evolution",
+  "version": "0.1.0",
+  "description": "Change intelligence for Paperclip agents, skills, runs, evidence, and measurable improvement.",
+  "type": "module",
+  "private": false,
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "license": "MIT",
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "EVOLUTION.md"
+  ],
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^7.0.2"
+  }
+}

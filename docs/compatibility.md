@@ -15,3 +15,10 @@ The compatibility patch must be reviewed against each new upstream release befor
 Agent Observatory `0.1.0` uses the pinned SDK's existing company-scoped API routes, data handlers, agent tools, and restricted reads of `agents`, `heartbeat_runs`, and `cost_events`. It requires no additional host patch. The host requires `database.namespace.migrate` when a database declaration is present; the plugin supplies an empty migration directory, creates no core tables, and has no runtime database write capability.
 
 Historical run event rows are outside the SDK's core table allowlist. The Observatory plugin returns safe lifecycle metadata with explicit coverage. Its optional administrative MCP bridge can add safe event metadata through the existing authenticated heartbeat events REST endpoint. It never reads logs, provider prompts, event payloads, or API credentials from the plugin worker.
+## Evolution
+
+Evolution `0.1.0` uses a plugin-owned PostgreSQL namespace for Change Sets, snapshots, evidence, metrics, links, and conclusions. It references Paperclip core runs, costs, issues, goals, agents, skills, and Audit rows instead of duplicating them.
+
+The pinned upstream host does not expose `activity_log`, `agent_config_revisions`, `company_skills`, or `company_skill_versions` to plugin database reads and does not forward all Evolution-relevant Audit actions to `activity.logged`. [`compat/paperclip-evolution.patch`](../compat/paperclip-evolution.patch) adds only those read-only table allowlist entries, Audit event forwarding/provenance, and the self-hosted bundled-plugin registration used by the Journey runtime. It grants no core database write capability to the plugin.
+
+Agent configuration revisions provide exact before/after JSON. Historical instruction-file content may be partial because the pinned host did not previously version every instruction-file mutation; Evolution records the audited mutation and marks those snapshots as partial rather than inventing history.

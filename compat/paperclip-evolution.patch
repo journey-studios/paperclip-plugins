@@ -1,0 +1,122 @@
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1451,6 +1451,10 @@
+   "approvals",
+   "issue_approvals",
+   "budget_incidents",
++  "activity_log",
++  "agent_config_revisions",
++  "company_skills",
++  "company_skill_versions",
+ ] as const;
+ export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
+ 
+diff --git a/server/src/services/activity-log.ts b/server/src/services/activity-log.ts
+--- a/server/src/services/activity-log.ts
++++ b/server/src/services/activity-log.ts
+@@ -39,7 +39,22 @@
+ 
+ function eventTypeForActivityAction(action: string): PluginEventType | null {
+   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
+-  return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
++  const mapped = ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")];
++  if (mapped) return mapped;
++
++  const evolutionRelevantAction =
++    action.startsWith("company.skill_") ||
++    action.startsWith("company.skills_") ||
++    action.startsWith("agent.instructions_") ||
++    action === "agent.skills_synced" ||
++    action === "agent.permissions_updated" ||
++    action === "agent.config_rolled_back" ||
++    action === "agent.budget_updated" ||
++    action === "plugin.managed_agent.reset" ||
++    action === "plugin.managed_skill.reconciled" ||
++    action === "plugin.managed_skill.reset";
++
++  return evolutionRelevantAction ? "activity.logged" : null;
+ }
+ 
+ export function publishPluginDomainEvent(event: PluginEvent): void {
+@@ -174,6 +189,7 @@
+   }).returning({ id: activityLog.id });
+ 
+   const payload = {
++    activityId: activity.id,
+     actorType: input.actorType,
+     actorId: input.actorId,
+     action: input.action,
+@@ -197,6 +213,8 @@
+         companyId: input.companyId,
+         payload: {
+           ...redactedDetails,
++          activityId: activity.id,
++          activityAction: input.action,
+           agentId: input.agentId ?? null,
+           runId: input.runId ?? null,
+           responsibleUserId,
+diff --git a/server/src/services/bundled-plugins.ts b/server/src/services/bundled-plugins.ts
+--- a/server/src/services/bundled-plugins.ts
++++ b/server/src/services/bundled-plugins.ts
+@@ -64,6 +64,12 @@
+  */
+ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
+   {
++    key: "evolution",
++    pluginKey: "journeystudios.evolution",
++    relativePath: "evolution",
++    pathOverrideEnvVar: "PAPERCLIP_EVOLUTION_PLUGIN_PATH",
++  },
++  {
+     key: "createos",
+     pluginKey: "paperclip.createos-sandbox-provider",
+     relativePath: "sandbox-providers/createos",
+@@ -111,7 +117,7 @@
+  * Exactly the pre-refactor behavior: the kubernetes sandbox provider is
+  * auto-installed when its bundle is present, nothing else.
+  */
+-export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
++export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes", "evolution"];
+ 
+ export function resolveBundledCatalogRoot(
+   env: Record<string, string | undefined>,
+diff --git a/server/src/__tests__/bundled-plugins.test.ts b/server/src/__tests__/bundled-plugins.test.ts
+--- a/server/src/__tests__/bundled-plugins.test.ts
++++ b/server/src/__tests__/bundled-plugins.test.ts
+@@ -166,19 +166,25 @@
+     expect(resolved).toHaveLength(1);
+   });
+ 
+-  it("keeps the self-hosted default list to exactly the kubernetes bundle", () => {
+-    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).toEqual(["kubernetes"]);
+-    const [entry] = resolveBundledPluginInstalls(SELF_HOSTED_AUTO_INSTALL_KEYS, {
++  it("keeps kubernetes and Journey Evolution in the self-hosted auto-install list", () => {
++    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).toEqual(["kubernetes", "evolution"]);
++    const resolved = resolveBundledPluginInstalls(SELF_HOSTED_AUTO_INSTALL_KEYS, {
+       catalogRoot: resolveBundledCatalogRoot({}),
+-      env: {},
++      env: { PAPERCLIP_EVOLUTION_PLUGIN_PATH: "/opt/journey-plugins/evolution" },
+       enforceCatalogRoot: false,
+     });
+-    // Exactly the pre-refactor default path.
+-    expect(entry).toEqual({
+-      key: "kubernetes",
+-      pluginKey: "paperclip.kubernetes-sandbox-provider",
+-      localPath: "/app/packages/plugins/sandbox-providers/kubernetes",
+-    });
++    expect(resolved).toEqual([
++      {
++        key: "kubernetes",
++        pluginKey: "paperclip.kubernetes-sandbox-provider",
++        localPath: "/app/packages/plugins/sandbox-providers/kubernetes",
++      },
++      {
++        key: "evolution",
++        pluginKey: "journeystudios.evolution",
++        localPath: "/opt/journey-plugins/evolution",
++      },
++    ]);
+   });
+ 
+   it("covers every catalog entry with a path inside the default root", () => {
