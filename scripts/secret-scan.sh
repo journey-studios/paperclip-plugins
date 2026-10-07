@@ -6,7 +6,8 @@ tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
 git rev-parse --verify HEAD >/dev/null
-config_file="$(git rev-parse --show-toplevel)/.gitleaks.toml"
+repo_root="$(git rev-parse --show-toplevel)"
+config_file="$repo_root/.gitleaks.toml"
 
 canary_report="$tmp_dir/canary.json"
 printf -v canary '%s%s%s%s' 'ghp_' 'abcdefghijkl' 'mnopqrstuvwx' 'yz0123456789'
@@ -28,10 +29,14 @@ jq --exit-status 'type == "array" and length > 0 and any(.[]; .RuleID == "github
   }
 
 history_report="$tmp_dir/history.json"
-git log -p -U0 --full-history --all --no-ext-diff --no-textconv \
-  | "$gitleaks_bin" detect --pipe --redact --no-banner \
-      --config "$config_file" \
-      --report-format json --report-path "$history_report"
+# Native Git mode preserves file, line, and commit fingerprints for the one
+# synthetic historical PEM fixture recorded in .gitleaksignore.
+# Its exact commit fingerprint cannot suppress a different PEM at that line later.
+"$gitleaks_bin" detect --source "$repo_root" \
+  --log-opts="--full-history --all --no-ext-diff --no-textconv" \
+  --gitleaks-ignore-path "$repo_root/.gitleaksignore" \
+  --redact --no-banner --config "$config_file" \
+  --report-format json --report-path "$history_report"
 
 source_dir="$tmp_dir/source"
 mkdir -p "$source_dir"

@@ -1,13 +1,11 @@
-title = "Paperclip secret scan with narrow Evolution test-fixture exceptions"
+title = "Paperclip secret scan with exact Evolution test-fixture exception"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Exact synthetic credentials used only to exercise Evolution redaction tests"
-# Match only these known fixture literals, even in historical diffs. Do not exempt their paths.
-regexTarget = "line"
+description = "Exact synthetic AWS access key used by historical redaction tests"
+regexTarget = "match"
 regexes = [
-  '''"AKIAABCDEFGHIJKLMNOP"''',
-  '''const privateKey = "-----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----";''',
+  '''^\x41\x4b\x49\x41\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50$''',
 ]
