@@ -252,15 +252,17 @@ describe("Evolution capture and metrics", () => {
       entityId: AGENT,
       payload: { configRevisionId: "55555555-5555-4555-8555-555555555555", activityId: "66666666-6666-4666-8666-666666666666" },
     });
-    const row = (await fixture.db.query<{ sourceType: string; sourceActivityId: string | null; capturedAt: string; afterSnapshotId: string }>(
+    const row = (await fixture.db.query<{ sourceType: string; sourceActivityId: string | null; capturedAt: string | Date; afterSnapshotId: string }>(
       `SELECT ci.source_type AS "sourceType", ci.source_activity_id AS "sourceActivityId", s.captured_at AS "capturedAt", ci.after_snapshot_id AS "afterSnapshotId" FROM ${"plugin_evolution_4399b11512"}.change_items ci JOIN ${"plugin_evolution_4399b11512"}.change_snapshots s ON s.id = ci.after_snapshot_id`,
     )).rows[0]!;
     expect(row.sourceType).toBe("plugin_event");
     expect(row.sourceActivityId).toBe("66666666-6666-4666-8666-666666666666");
-    expect(row.capturedAt).not.toBe("2026-10-07T12:00:00.000Z");
     const snapshot = (await fixture.db.query(`SELECT snapshot FROM ${"plugin_evolution_4399b11512"}.change_snapshots WHERE id = $1`, [row.afterSnapshotId])).rows[0]!.snapshot as Record<string, unknown>;
     expect(snapshot.activity).toMatchObject({ partialSnapshot: true, partialReason: "activity_snapshot_is_current_state" });
     expect(typeof snapshot.activity.currentStateReadAt).toBe("string");
+    const capturedAt = row.capturedAt instanceof Date ? row.capturedAt.toISOString() : new Date(row.capturedAt).toISOString();
+    expect(capturedAt).toBe(snapshot.activity.currentStateReadAt);
+    expect(capturedAt).not.toBe(new Date("2026-10-07T12:00:00Z").toISOString());
   });
 
   it("does not mistake a generic rollback revisionId target for the applied rollback revision", async () => {
