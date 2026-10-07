@@ -401,3 +401,141 @@ diff --git a/server/src/services/plugin-database.ts b/server/src/services/plugin
    for (const ref of refs) {
      if (ref.schema !== namespace) {
        throw new Error("ctx.db.execute cannot reference public or other non-plugin schemas");
+diff --git a/ui/src/plugins/slots.tsx b/ui/src/plugins/slots.tsx
+index f5bf01866..055bb0ae6 100644
+--- a/ui/src/plugins/slots.tsx
++++ b/ui/src/plugins/slots.tsx
+@@ -30,6 +30,7 @@ import {
+   type ComponentType,
+ } from "react";
+ import * as ReactModule from "react";
++import { SidebarSlot } from "./SidebarSlot";
+ import { useQuery } from "@tanstack/react-query";
+ import type {
+   PluginLauncherDeclaration,
+@@ -865,7 +866,8 @@ export function PluginSlotMount({
+     return (
+       <PluginSlotErrorBoundary slot={slot} className={className}>
+         <PluginBridgeScope pluginId={slot.pluginId} context={context}>
+-          {className ? <div className={className}>{node}</div> : node}
++          {slot.type === "sidebar" ? <SidebarSlot className={className}>{node}</SidebarSlot> :
++            className ? <div className={className}>{node}</div> : node}
+         </PluginBridgeScope>
+       </PluginSlotErrorBoundary>
+     );
+diff --git a/ui/src/plugins/SidebarSlot.tsx b/ui/src/plugins/SidebarSlot.tsx
+new file mode 100644
+index 000000000..61d087907
+--- /dev/null
++++ b/ui/src/plugins/SidebarSlot.tsx
+@@ -0,0 +1,28 @@
++import { useEffect, useRef, type ReactNode } from "react";
++import { useLocation } from "react-router-dom";
++import "./sidebar-slot.css";
++
++/** Keep plugin navigation behavior while applying the host sidebar contract. */
++export function SidebarSlot({ children, className = "" }: { children: ReactNode; className?: string }) {
++  const root = useRef<HTMLDivElement>(null);
++  const { pathname } = useLocation();
++  useEffect(() => {
++    const element = root.current;
++    if (!element) return;
++    const update = () => {
++      for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
++        const target = new URL(link.href, window.location.href);
++        const path = target.pathname.replace(/\/$/, "") || "/";
++        const active = target.origin === window.location.origin &&
++          (pathname === path || (path !== "/" && pathname.startsWith(`${path}/`)));
++        if (active) link.setAttribute("aria-current", "page");
++        else link.removeAttribute("aria-current");
++      }
++    };
++    update();
++    const observer = new MutationObserver(update);
++    observer.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
++    return () => observer.disconnect();
++  }, [pathname]);
++  return <div ref={root} className={`plugin-sidebar-nav-slot ${className}`}>{children}</div>;
++}
+diff --git a/ui/src/plugins/sidebar-slot.css b/ui/src/plugins/sidebar-slot.css
+new file mode 100644
+index 000000000..21d4d23b8
+--- /dev/null
++++ b/ui/src/plugins/sidebar-slot.css
+@@ -0,0 +1,41 @@
++/* Legacy plugins supply inline styles; normalize only primary sidebar slots. */
++.plugin-sidebar-nav-slot :is(a, button) {
++  display: flex !important;
++  align-items: center !important;
++  gap: 0.625rem !important;
++  margin: 0 0.5rem !important;
++  width: calc(100% - 1rem) !important;
++  padding: 0.375rem 0.5rem !important;
++  border: 0 !important;
++  border-radius: var(--radius) !important;
++  background: transparent !important;
++  color: color-mix(in srgb, var(--foreground) 80%, transparent) !important;
++  font-size: var(--text-compact) !important;
++  font-weight: 500 !important;
++  line-height: 1.5 !important;
++  text-decoration: none !important;
++  text-align: left !important;
++  box-shadow: none !important;
++  cursor: pointer;
++  transition: background-color 150ms, color 150ms;
++}
++.plugin-sidebar-nav-slot :is(a, button):hover,
++.plugin-sidebar-nav-slot a[aria-current="page"] {
++  background: var(--sidebar-accent) !important;
++  color: var(--sidebar-accent-foreground) !important;
++}
++.plugin-sidebar-nav-slot :is(a, button):focus-visible {
++  outline: 2px solid var(--ring);
++  outline-offset: 2px;
++}
++.plugin-sidebar-nav-slot :is(a, button) svg {
++  width: 1rem !important;
++  height: 1rem !important;
++  flex-shrink: 0;
++}
++@media (pointer: coarse) {
++  .plugin-sidebar-nav-slot :is(a, button) { padding-block: 0.25rem !important; }
++}
++@media (prefers-reduced-motion: reduce) {
++  .plugin-sidebar-nav-slot :is(a, button) { transition: none; }
++}
+diff --git a/ui/src/plugins/SidebarSlot.test.tsx b/ui/src/plugins/SidebarSlot.test.tsx
+new file mode 100644
+index 000000000..fab5c00b4
+--- /dev/null
++++ b/ui/src/plugins/SidebarSlot.test.tsx
+@@ -0,0 +1,29 @@
++// @vitest-environment jsdom
++import { act } from "react";
++import { createRoot } from "react-dom/client";
++import { MemoryRouter } from "react-router-dom";
++import { describe, expect, it } from "vitest";
++import { SidebarSlot } from "./SidebarSlot";
++
++describe("plugin sidebar navigation", () => {
++  it("recognizes company-prefixed descendants without matching siblings or external links", async () => {
++    const container = document.createElement("div");
++    document.body.append(container);
++    const root = createRoot(container);
++    await act(async () => root.render(<MemoryRouter initialEntries={["/JOU/evolution/change"]}>
++      <SidebarSlot><a href="/JOU/evolution?change=1">Evolution</a>
++        <a href="/JOU/evolution-other">Sibling</a>
++        <a href="https://example.com/JOU/evolution">External</a></SidebarSlot>
++    </MemoryRouter>));
++    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
++    expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Evolution");
++    const delayed = document.createElement("a");
++    delayed.href = "/JOU/evolution";
++    await act(async () => { container.firstElementChild!.append(delayed); });
++    expect(delayed.getAttribute("aria-current")).toBe("page");
++    await act(async () => { delayed.href = "/JOU/library"; });
++    expect(delayed.hasAttribute("aria-current")).toBe(false);
++    await act(async () => root.unmount());
++    container.remove();
++  });
++});
