@@ -1,3 +1,4 @@
+import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   definePlugin,
   runWorker,
@@ -1677,9 +1678,56 @@ function registerActions(ctx: PluginContext) {
   });
 }
 
+let mcpCtx: PluginContext;
+const mcpHandler = createPluginMcpEndpoint({
+  name: "journeystudios.evolution",
+  version: "0.1.1",
+  tools: [
+    {
+      name: "orgTrackerOverview",
+      title: "Org Tracker Overview",
+      description: "List up to 100 tracked change sets and status counts within the authorized company.",
+      readOnly: true,
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: async (_args, { companyId }) => ({ companyId, ...await overview(mcpCtx, companyId) }),
+    },
+    {
+      name: "orgTrackerChangeSummary",
+      title: "Org Tracker Change Summary",
+      description: "Read a bounded, redacted change set summary without raw before/after snapshots or metadata.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { changeSetId: { type: "string", format: "uuid" } },
+        required: ["changeSetId"], additionalProperties: false,
+      },
+      execute: async (args, { companyId }) => {
+        const raw = await detail(mcpCtx, companyId, args.changeSetId as string);
+        const { id, title, status, hypothesis, causalityLevel, appliedAt, validationEndsAt } = raw.changeSet;
+        return {
+          companyId,
+          changeSet: { id, title, status, hypothesis, causalityLevel, appliedAt, validationEndsAt },
+          items: raw.items.slice(0, 50).map(({ entityType, entityName, changeKind, occurredAt }) => ({ entityType, entityName, changeKind, occurredAt })),
+          metrics: raw.metrics.slice(0, 50).map(({ metricKey, baselineValue, currentValue, deltaValue, unit, baselineSampleSize, currentSampleSize }) => ({ metricKey, baselineValue, currentValue, deltaValue, unit, baselineSampleSize, currentSampleSize })),
+          conclusions: raw.conclusions.slice(0, 20).map(({ outcome, confidence, summary }) => ({ outcome, confidence, summary })),
+          coverage: {
+            itemCount: raw.items.length, metricCount: raw.metrics.length, conclusionCount: raw.conclusions.length,
+            itemsTruncated: raw.items.length > 50, metricsTruncated: raw.metrics.length > 50, conclusionsTruncated: raw.conclusions.length > 20,
+          },
+        };
+      },
+    },
+  ],
+});
+
 const plugin = definePlugin({
+  async onApiRequest(input) {
+    if (input.routeKey !== "mcp") return { status: 404, body: { error: "Unknown Org Tracker API route" } };
+    return mcpHandler(input);
+  },
   async setup(ctx) {
     const workerCtx = withEvolutionDatabaseNamespace(ctx);
+    mcpCtx = workerCtx;
     workerCtx.data.register("changes-overview", async (params) => overview(workerCtx, requiredString(params, "companyId")));
     workerCtx.data.register("change-detail", async (params) =>
       detail(workerCtx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
