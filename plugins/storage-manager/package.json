@@ -1,0 +1,24 @@
+{
+  "name": "@journey-studios/paperclip-storage-manager",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Read-only storage observability for Paperclip",
+  "license": "MIT",
+  "engines": { "node": ">=24.11.0" },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node --test",
+    "typecheck": "node --check src/service.js && node --check src/worker.js && node --check src/manifest.js && tsc -p tsconfig.json"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "esbuild": "^0.28.2"
+  }
+}

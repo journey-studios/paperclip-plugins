@@ -23,6 +23,7 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 - [`@journey-studios/founder-comms-router`](plugins/founder-comms-router/README.md): founder communications routing.
 - [`@journey-studios/agent-observatory`](plugins/agent-observatory/README.md): read-only agent health, failures, costs, anomaly evidence and safe run summaries.
 - [`@journey-studios/paperclip-evolution`](plugins/evolution/README.md): Change Intelligence for agent/skill diffs, Audit provenance, evidence, metrics, and conclusions.
+- [`@journey-studios/paperclip-storage-manager`](plugins/storage-manager/README.md): read-only VPS disk, Docker storage, growth and operator-configured warnings via the native local-folder API and a [separate host collector](services/storage-collector/README.md).
 
 ## Administrative MCP tools
 

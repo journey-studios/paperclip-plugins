@@ -161,7 +161,18 @@ importers:
         specifier: ^0.28.2
         version: 0.28.2
 
+  plugins/storage-manager:
+    devDependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../.paperclip/packages/plugins/sdk
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+
   services/plugin-mcp-bridge: {}
+
+  services/storage-collector: {}
 
 packages:
 
