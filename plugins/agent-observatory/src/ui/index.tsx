@@ -96,6 +96,49 @@ const tabs: Array<{ id: Tab; label: string }> = [
 
 const css = `
 .jao{--jao-green:#178653;--jao-amber:#b7791f;--jao-red:#c44545;color:var(--foreground);font:inherit;min-width:0}.jao *{box-sizing:border-box}.jao button,.jao select{font:inherit}.jao h1,.jao h2,.jao h3,.jao p{margin:0}.jao h1{font-size:1.7rem;letter-spacing:-.04em;font-weight:650}.jao h2{font-size:1rem;font-weight:600}.jao button,.jao select{border:1px solid var(--border);border-radius:.45rem;background:var(--background);color:var(--foreground);padding:.55rem .75rem}.jao button{cursor:pointer}.jao button:hover{background:var(--accent)}.jao button:disabled{opacity:.55;cursor:wait}.jao button:focus-visible,.jao select:focus-visible,.jao a:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.jao .muted{color:var(--muted-foreground)}.jao .small{font-size:.75rem}.jao .header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1.25rem}.jao .intro{display:flex;align-items:center;gap:.85rem}.jao .logo{width:2.5rem;height:2.5rem;border:1px solid var(--border);border-radius:.7rem;display:grid;place-items:center;background:var(--card);color:var(--primary)}.jao .logo svg{width:1.35rem;height:1.35rem}.jao .subtitle{margin-top:.3rem;color:var(--muted-foreground);font-size:.82rem}.jao .actions{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}.jao .tabs{display:flex;gap:.25rem;overflow:auto;border-bottom:1px solid var(--border);margin-bottom:1.2rem}.jao .tabs button{border:0;border-radius:.35rem .35rem 0 0;background:transparent;color:var(--muted-foreground);padding:.65rem .8rem;white-space:nowrap;border-bottom:2px solid transparent}.jao .tabs button[aria-selected=true]{color:var(--foreground);border-bottom-color:var(--primary);font-weight:600}.jao .summary{display:grid;grid-template-columns:repeat(5,minmax(8rem,1fr));gap:.75rem;margin-bottom:1rem}.jao .card{background:var(--card);border:1px solid var(--border);border-radius:.65rem;padding:1rem;min-width:0}.jao .metric-label{font-size:.72rem;color:var(--muted-foreground)}.jao .metric-value{font-size:1.5rem;font-weight:650;letter-spacing:-.04em;margin-top:.4rem}.jao .metric-foot{font-size:.7rem;color:var(--muted-foreground);margin-top:.25rem}.jao .section{border:1px solid var(--border);border-radius:.65rem;background:var(--card);overflow:hidden;margin-top:1rem}.jao .section-head{padding:.85rem 1rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:.75rem}.jao .section-head p{margin-top:.25rem}.jao .scroll{overflow:auto;max-width:100%}.jao table{width:100%;border-collapse:collapse;min-width:950px;font-size:.78rem}.jao th{text-align:left;font-weight:500;color:var(--muted-foreground);font-size:.68rem;white-space:nowrap;padding:.72rem .8rem;background:var(--muted);position:sticky;top:0}.jao td{padding:.72rem .8rem;border-top:1px solid var(--border);vertical-align:middle;white-space:nowrap}.jao tbody tr:hover{background:var(--accent)}.jao .agent-name{font-weight:600}.jao .agent-id{font-size:.67rem;color:var(--muted-foreground);margin-top:.15rem}.jao .link-button{border:0;background:transparent;padding:0;color:var(--primary);font-weight:600;text-align:left;white-space:normal}.jao .link-button:hover{text-decoration:underline;background:transparent}.jao .pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:99px;padding:.2rem .5rem;background:var(--secondary);color:var(--secondary-foreground);font-size:.68rem}.jao .dot{width:.42rem;height:.42rem;border-radius:50%;background:currentColor}.jao .pill.good{color:var(--jao-green)}.jao .pill.warn{color:var(--jao-amber)}.jao .pill.bad{color:var(--jao-red)}.jao .notice{padding:.7rem .9rem;border-bottom:1px solid var(--border);font-size:.75rem;color:var(--muted-foreground);background:var(--muted)}.jao .notice strong{color:var(--foreground)}.jao .list{display:grid}.jao .row{display:grid;grid-template-columns:minmax(9rem,1.1fr) minmax(12rem,2fr) minmax(9rem,1fr) minmax(6rem,.7fr);gap:1rem;align-items:start;padding:.85rem 1rem;border-top:1px solid var(--border);font-size:.8rem}.jao .row:first-child{border-top:0}.jao .row p{overflow-wrap:anywhere}.jao .empty{padding:3rem 1rem;text-align:center;color:var(--muted-foreground)}.jao .error{margin:1rem 0;padding:.85rem 1rem;border:1px solid var(--destructive);border-radius:.5rem;color:var(--destructive);background:var(--card);font-size:.82rem}.jao .detail{display:grid;grid-template-columns:minmax(15rem,1fr) minmax(17rem,1.2fr);gap:1rem;margin-top:1rem}.jao .detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem;margin-top:.9rem}.jao .detail-item{min-width:0}.jao .detail-item strong{display:block;font-size:.88rem;margin-top:.22rem;overflow-wrap:anywhere}.jao .timeline{padding:.25rem 1rem 1rem}.jao .event{position:relative;padding:.75rem 0 .75rem 1.2rem;border-left:1px solid var(--border);font-size:.78rem}.jao .event:before{content:"";position:absolute;left:-.25rem;top:1rem;width:.45rem;height:.45rem;border-radius:50%;background:var(--primary)}.jao .event p{margin-top:.22rem;color:var(--muted-foreground);white-space:pre-wrap;overflow-wrap:anywhere}.jao .nav-link{display:flex;align-items:center;gap:.55rem;padding:.55rem .65rem;border-radius:.4rem;text-decoration:none;color:var(--muted-foreground);font-size:.82rem}.jao .nav-link:hover,.jao .nav-link[aria-current=page]{background:var(--accent);color:var(--foreground)}.jao .nav-link svg{width:1rem;height:1rem}.jao .loading{padding:2rem;text-align:center;color:var(--muted-foreground)}@media(max-width:1000px){.jao .summary{grid-template-columns:repeat(3,minmax(7rem,1fr))}}@media(max-width:700px){.jao .header{flex-direction:column}.jao .summary{grid-template-columns:repeat(2,minmax(7rem,1fr))}.jao .detail{grid-template-columns:1fr}.jao .row{grid-template-columns:1fr 1fr}.jao h1{font-size:1.4rem}}@media(prefers-reduced-motion:reduce){.jao *{scroll-behavior:auto!important}}
+
+/* Keep icon size independent of the host application's SVG defaults. */
+.jao svg{width:1rem;height:1rem;display:inline-block;vertical-align:middle;flex-shrink:0}
+.jao .logo svg{width:1.35rem;height:1.35rem}
+.jao .header{align-items:center}
+.jao .intro{min-width:0}
+.jao .intro>div:last-child{min-width:0}
+.jao .actions{justify-content:flex-end}
+.jao .actions .refresh-button{display:inline-flex;align-items:center;justify-content:center;gap:.45rem;min-height:2.4rem;white-space:nowrap;line-height:1.25}
+.jao .actions select{max-width:100%;min-height:2.4rem}
+.jao .summary{grid-template-columns:repeat(auto-fit,minmax(min(100%,10rem),1fr))}
+.jao .metric-value{overflow-wrap:anywhere}
+.jao .section-head{flex-wrap:wrap}
+.jao .notice{overflow-wrap:anywhere}
+.jao .scroll{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+.jao .scroll:focus-visible{outline:2px solid var(--ring);outline-offset:-2px}
+.jao .agent-table{table-layout:fixed;min-width:1080px}
+.jao .agent-table th:nth-child(1){width:22%}
+.jao .agent-table th:nth-child(2){width:13%}
+.jao .agent-table th:nth-child(3),.jao .agent-table th:nth-child(4),.jao .agent-table th:nth-child(5){width:6%}
+.jao .agent-table th:nth-child(6){width:11%}
+.jao .agent-table th:nth-child(7){width:8%}
+.jao .agent-table th:nth-child(8){width:10%}
+.jao .agent-table th:nth-child(9){width:18%}
+.jao .agent-table td{overflow:hidden}
+.jao .link-button.agent-link{display:block;width:100%;min-width:0;overflow:hidden}
+.jao .agent-link .agent-name,.jao .agent-link .agent-id{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.jao .agent-link .agent-name{color:var(--foreground)}
+.jao .agent-link .agent-id{margin-top:.2rem;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:400;letter-spacing:0}
+.jao .last-error-text{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jao .agent-table td:last-child .link-button{display:inline-block;max-width:100%;overflow-wrap:anywhere}
+.jao .detail{padding:1rem;margin-top:0}
+.jao .detail .card{min-width:0}
+.jao .event,.jao .event .link-button,.jao .row .link-button{overflow-wrap:anywhere}
+@media(max-width:700px){
+  .jao .header{align-items:stretch}
+  .jao .actions{justify-content:flex-start}
+  .jao .section-head{align-items:flex-start}
+}
+@media(max-width:540px){
+  .jao .row{grid-template-columns:1fr;gap:.45rem}
+  .jao .tabs button{padding:.65rem .7rem}
+}
 `;
 
 function Icon({ name }: { name: "pulse" | "refresh" | "arrow" }) {
@@ -158,7 +201,7 @@ function ObservatoryDashboard({ companyId }: { companyId: string }) {
         <select id="jao-window" value={windowHours} onChange={(event) => { setWindowHours(Number(event.target.value)); setAgentId(null); setRunId(null); }}>
           <option value={1}>Última hora</option><option value={24}>24 horas</option><option value={168}>7 dias</option>
         </select>
-        <button type="button" onClick={() => query.refresh()} disabled={query.loading} aria-label="Atualizar dados"><Icon name="refresh" /> Atualizar</button>
+        <button className="refresh-button" type="button" onClick={() => query.refresh()} disabled={query.loading} aria-label="Atualizar dados"><Icon name="refresh" /> Atualizar</button>
       </div>
     </header>
     <div className="tabs" role="tablist" aria-label="Seções do Observatório">
@@ -202,8 +245,8 @@ function Summary({ summary }: { summary?: Overview["summary"] }) {
 }
 function AgentTable({ agents, onSelect, onRun }: { agents: AgentRow[]; onSelect: (id: string) => void; onRun: (id: string) => void }) {
   return <section className="section"><div className="section-head"><div><h2>Agentes</h2><p className="small muted">Selecione um agente para ver o detalhe e as execuções recentes.</p></div><span className="pill">{count(agents.length)} agentes</span></div>
-    {!agents.length ? <div className="empty">Nenhum agente com dados nesta janela.</div> : <div className="scroll"><table><thead><tr><th>Agente</th><th>Saúde / status</th><th>Runs</th><th>Falhas</th><th>Retries</th><th>Custo conhecido</th><th>Sem custo</th><th>Duração média</th><th>Último erro</th></tr></thead><tbody>
-      {agents.map((agent) => <tr key={agent.id}><td><button className="link-button" type="button" onClick={() => onSelect(agent.id)}><span className="agent-name">{agent.name || "Agente sem nome"}</span><span className="agent-id">{agent.id}</span></button></td><td>{health(agent.health)}<div className="small muted" style={{ marginTop: ".25rem" }}>{agent.status || "Estado desconhecido"}</div></td><td>{count(agent.runs)}</td><td>{count(agent.failures)}</td><td>{count(agent.retries)}</td><td>{money(agent.knownCostCents)}</td><td>{count(agent.unknownCostRuns)}</td><td>{duration(agent.avgDurationMs)}</td><td title={safeError(agent.lastError)}>{agent.lastError ? `${agent.lastError.slice(0, 72)}${agent.lastError.length > 72 ? "…" : ""}` : "—"}{agent.lastRunId && <button className="link-button small" style={{ display: "block", marginTop: ".2rem" }} onClick={() => onRun(agent.lastRunId!)} type="button">Ver último run</button>}</td></tr>)}
+    {!agents.length ? <div className="empty">Nenhum agente com dados nesta janela.</div> : <div className="scroll" role="region" aria-label="Tabela de agentes; navegue horizontalmente para ver todas as colunas" tabIndex={0}><table className="agent-table"><thead><tr><th>Agente</th><th>Saúde / status</th><th>Runs</th><th>Falhas</th><th>Retries</th><th>Custo conhecido</th><th>Sem custo</th><th>Duração média</th><th>Último erro</th></tr></thead><tbody>
+      {agents.map((agent) => <tr key={agent.id}><td><button className="link-button agent-link" type="button" onClick={() => onSelect(agent.id)} title={agent.name || "Agente sem nome"}><span className="agent-name">{agent.name || "Agente sem nome"}</span><span className="agent-id" title={agent.id}>{agent.id}</span></button></td><td>{health(agent.health)}<div className="small muted" style={{ marginTop: ".25rem" }}>{agent.status || "Estado desconhecido"}</div></td><td>{count(agent.runs)}</td><td>{count(agent.failures)}</td><td>{count(agent.retries)}</td><td>{money(agent.knownCostCents)}</td><td>{count(agent.unknownCostRuns)}</td><td>{duration(agent.avgDurationMs)}</td><td title={safeError(agent.lastError)}><span className="last-error-text">{agent.lastError || "—"}</span>{agent.lastRunId && <button className="link-button small" style={{ display: "block", marginTop: ".2rem" }} onClick={() => onRun(agent.lastRunId!)} type="button">Ver último run</button>}</td></tr>)}
     </tbody></table></div>}
   </section>;
 }
