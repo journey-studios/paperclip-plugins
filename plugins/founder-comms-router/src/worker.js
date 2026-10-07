@@ -1,5 +1,6 @@
+import { executeFounderCommand } from "./commands.js";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { companyConfig, flushDigest, flushPendingImmediate, processEvent, runDigestJob, validateConfig } from "./core.js";
+import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
 
 const companyLocks = new Map();
 
@@ -22,6 +23,8 @@ const plugin = definePlugin({
       "approval.created",
       "approval.decided",
       "budget.incident.opened",
+      "agent.run.finished",
+      "agent.run.failed",
     ]) {
       ctx.events.on(eventName, (event) => serializeCompany(event?.companyId, () => processEvent(ctx, event)));
     }
@@ -37,7 +40,25 @@ const plugin = definePlugin({
       });
     });
 
+    ctx.actions.register("telegram-command", (params, invocation) =>
+      executeFounderCommand(ctx, params, invocation));
+    ctx.actions.register("reconcile-founder-publications", async (params, invocation) => {
+      const companyId = invocation?.companyId;
+      if (!companyId || invocation?.actor?.type !== "user") throw new Error("Authenticated company user required");
+      const config = await companyConfig(ctx, companyId);
+      if (invocation.actor.userId !== config.founderUserId) throw new Error("Founder access required");
+      return serializeCompany(companyId, async () => {
+        await reconcilePendingPublications(ctx, companyId, config);
+        return { ok: true };
+      });
+    });
     ctx.jobs.register("founder-digest", (job) => runDigestJob(ctx, job, serializeCompany));
+    // Recovery uses the same per-company lock as live events, but must not
+    // delay worker setup or block Telegram commands on provider publication.
+    void reconcileKnownPublications(ctx, serializeCompany).catch((error) =>
+      ctx.logger.error("Founder publication startup reconciliation failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }));
   },
 
   async onValidateConfig(config) {
@@ -45,7 +66,7 @@ const plugin = definePlugin({
   },
 
   async onHealth() {
-    return { status: "ok", message: "Founder comms router is running" };
+    return { status: "ok", message: "Founder Gateway is running" };
   },
 });
 

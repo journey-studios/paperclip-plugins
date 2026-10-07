@@ -1,11 +1,13 @@
 import test from "node:test";
+import { executeFounderCommand } from "../src/commands.js";
 import assert from "node:assert/strict";
-import { companyConfig, getLocalSlot, processEvent, runDigestJob, validateConfig } from "../src/core.js";
+import { companyConfig, getLocalSlot, processEvent, reconcilePendingPublications, runDigestJob, validateConfig } from "../src/core.js";
 
 function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
   const state = new Map();
   const comments = [];
   const wakes = [];
+  const publications = [];
   const companyIssueKey = (companyId, issueId) => `${companyId}:${issueId}`;
   const ctx = {
     config: { get: async (companyId) => configs[companyId] },
@@ -31,7 +33,11 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
         if (overrides.createComment) return overrides.createComment(entry, comments);
         comments.push(entry);
       },
-      requestWakeup: async (issueId, companyId, options) => wakes.push({ issueId, companyId, options }),
+      requestWakeup: async (issueId, companyId, options) => {
+        const runId = `run-${wakes.length + 1}`;
+        wakes.push({ issueId, companyId, options, runId });
+        return { queued: true, runId };
+      },
     },
     approvals: { get: async (id, companyId) => approvals[companyIssueKey(companyId, id)] ?? null },
     companies: {
@@ -55,8 +61,16 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
       get: async (id, companyId) => overrides.project ? overrides.project(id, companyId) :
         (configs[companyId]?.projectId === id ? { id, companyId } : null),
     },
+    chat: {
+      publishComment: async (commentId, companyId) => {
+        publications.push({ commentId, companyId });
+        return overrides.publishComment
+          ? overrides.publishComment(commentId, companyId)
+          : { state: "published", commentId, companyId };
+      },
+    },
     logger: { error() {} },
-    inspect: { state, comments, wakes },
+    inspect: { state, comments, wakes, publications },
   };
   return ctx;
 }

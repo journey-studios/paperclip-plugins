@@ -1,9 +1,9 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.1.2",
-  displayName: "Founder Comms Router",
-  description: "Routes high-signal Paperclip events to a configured liaison and batches meaningful updates into scheduled digests.",
+  version: "0.2.0",
+  displayName: "Founder Gateway",
+  description: "Bridges founder command routing and native chat publication with event-driven liaison notifications.",
   author: "Journey Studios",
   categories: ["automation"],
   capabilities: [
@@ -14,6 +14,7 @@ const manifest = {
     "issues.read",
     "issue.comments.read",
     "issue.comments.create",
+    "chat.publications.publish_existing_comment",
     "issues.wakeup",
     "approvals.read",
     "agents.read",
@@ -67,6 +68,18 @@ const manifest = {
       digestEnabled: {
         type: "boolean",
         title: "Scheduled digests",
+        default: true,
+      },
+      publicationEnabled: {
+        type: "boolean",
+        title: "Automatic native chat publication",
+        description: "Safe rollout gate. Publishes only the Liaison comment linked to a plugin-requested run using Paperclip's native publication bridge.",
+        default: false,
+      },
+      commandsEnabled: {
+        type: "boolean",
+        title: "Direct Telegram commands",
+        description: "Allow owner-authenticated read-only /agents, /tasks and /help without a model invocation.",
         default: true,
       },
       digestTimezone: {
