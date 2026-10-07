@@ -3,7 +3,19 @@ import {
   runWorker,
   type PluginContext,
   type PluginEvent,
+  type PluginPerformActionContext,
 } from "@paperclipai/plugin-sdk";
+import {
+  agentActivitySnapshot,
+  captureTimestamp,
+  isRevisionProducingActivity,
+  revisionReferenceFromActivity,
+  RUN_METRIC_AGGREGATION_SQL,
+  skillActivitySnapshot,
+  sourceItemExists,
+  sourceSnapshotId,
+} from "./capture.mjs";
+import { sanitizeSnapshot, sanitizeTextSnapshot } from "./snapshot-safety.js";
 
 const CHANGE_STATUSES = new Set([
   "draft",
@@ -17,6 +29,16 @@ const CHANGE_STATUSES = new Set([
 const CAUSALITY_LEVELS = new Set(["observed", "associated", "validated"]);
 const EVIDENCE_VERDICTS = new Set(["positive", "neutral", "negative"]);
 const CONFIDENCE_LEVELS = new Set(["low", "moderate", "high"]);
+const EVOLUTION_TABLES = [
+  "change_sets",
+  "change_snapshots",
+  "change_items",
+  "change_links",
+  "change_evidence",
+  "change_metrics",
+  "change_conclusions",
+  "merge_operations",
+] as const;
 
 function stringParam(params: Record<string, unknown>, key: string): string | undefined {
   const value = params[key];
@@ -29,15 +51,48 @@ function requiredString(params: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function authorizedCompanyId(params: Record<string, unknown>, context: PluginPerformActionContext): string {
+  const companyId = requiredString(params, "companyId");
+  if (!context.companyId || context.companyId !== companyId) {
+    throw new Error("Authorized company scope is required");
+  }
+  return companyId;
+}
+
+function qualifyEvolutionTables(statement: string, namespace: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(namespace)) throw new Error("Invalid Evolution database namespace");
+  const tables = EVOLUTION_TABLES.join("|");
+  const tableReference = new RegExp(`\\b(from|join|into|update|references)\\s+((?:[A-Za-z_][A-Za-z0-9_]*)\\.)?(${tables})\\b`, "gi");
+  return statement.replace(tableReference, (match, keyword: string, schema: string | undefined, table: string) =>
+    schema ? match : `${keyword} ${namespace}.${table}`,
+  );
+}
+
+export function withEvolutionDatabaseNamespace(ctx: PluginContext): PluginContext {
+  const namespace = ctx.db.namespace;
+  return {
+    ...ctx,
+    db: {
+      ...ctx.db,
+      query: (statement, params) => ctx.db.query(qualifyEvolutionTables(statement, namespace), params),
+      execute: (statement, params) => ctx.db.execute(qualifyEvolutionTables(statement, namespace), params),
+    },
+  };
+}
+
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
   const value = params[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function iso(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "string") return value;
-  return new Date().toISOString();
+function iso(value: unknown): string | null {
+  return captureTimestamp(value);
+}
+
+function requiredIso(value: unknown): string {
+  const timestamp = iso(value);
+  if (!timestamp) throw new Error("Invalid timestamp in Evolution data");
+  return timestamp;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -232,9 +287,9 @@ async function latestSnapshot(
   companyId: string,
   entityType: string,
   entityId: string,
-): Promise<{ id: string; snapshotHash: string; snapshot: unknown } | null> {
-  const rows = await ctx.db.query<{ id: string; snapshotHash: string; snapshot: unknown }>(
-    'SELECT id, snapshot_hash AS "snapshotHash", snapshot FROM change_snapshots ' +
+): Promise<{ id: string; snapshotHash: string; snapshot: unknown; sourceType: string; sourceRef: string | null } | null> {
+  const rows = await ctx.db.query<{ id: string; snapshotHash: string; snapshot: unknown; sourceType: string; sourceRef: string | null }>(
+    'SELECT id, snapshot_hash AS "snapshotHash", snapshot, source_type AS "sourceType", source_ref AS "sourceRef" FROM change_snapshots ' +
       'WHERE company_id = $1 AND entity_type = $2 AND entity_id = $3 ORDER BY captured_at DESC, created_at DESC LIMIT 1',
     [companyId, entityType, entityId],
   );
@@ -254,10 +309,12 @@ async function writeSnapshot(
     capturedAt: string;
   },
 ): Promise<string> {
-  const clean = sanitize(input.snapshot);
+  const clean = sanitizeSnapshot(input.snapshot);
   const hash = snapshotHash(clean);
   const previous = await latestSnapshot(ctx, input.companyId, input.entityType, input.entityId);
-  if (previous?.snapshotHash === hash) return previous.id;
+  if (previous?.snapshotHash === hash && previous.sourceType === input.sourceType && previous.sourceRef === (input.sourceRef ?? null)) {
+    return previous.id;
+  }
 
   const id = globalThis.crypto.randomUUID();
   await ctx.db.execute(
@@ -400,11 +457,27 @@ async function latestAgentRevisionNear(
   return rows[0] ?? null;
 }
 
+async function agentRevisionById(ctx: PluginContext, companyId: string, agentId: string, revisionId: string) {
+  const rows = await ctx.db.query<{
+    id: string;
+    changedKeys: unknown;
+    beforeConfig: unknown;
+    afterConfig: unknown;
+    createdAt: string | Date;
+  }>(
+    'SELECT id, changed_keys AS "changedKeys", before_config AS "beforeConfig", after_config AS "afterConfig", created_at AS "createdAt" ' +
+      'FROM public.agent_config_revisions WHERE company_id = $1 AND agent_id = $2 AND id::text = $3 LIMIT 1',
+    [companyId, agentId, revisionId],
+  );
+  return rows[0] ?? null;
+}
+
 async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
   const companyId = event.companyId;
   const agentId = event.entityId;
   if (!companyId || !agentId) return;
-  const occurredAt = event.occurredAt;
+  const occurredAt = iso(event.occurredAt);
+  if (!occurredAt) return;
   const payload = asRecord(event.payload);
   const runId = typeof payload.runId === "string" ? payload.runId : null;
   const agent = await currentAgent(ctx, companyId, agentId);
@@ -430,7 +503,7 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
       snapshot: revision.beforeConfig,
       sourceType: "agent_config_revision_before",
       sourceRef: revision.id,
-      capturedAt: iso(revision.createdAt),
+      capturedAt: requiredIso(revision.createdAt),
     });
     afterId = await writeSnapshot(ctx, {
       companyId,
@@ -440,7 +513,7 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
       snapshot: revision.afterConfig,
       sourceType: "agent_config_revision_after",
       sourceRef: revision.id,
-      capturedAt: iso(revision.createdAt),
+      capturedAt: requiredIso(revision.createdAt),
     });
   } else {
     const previous = await latestSnapshot(ctx, companyId, "agent", agentId);
@@ -479,6 +552,7 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
     afterSnapshotId: afterId,
     sourceType: revision ? "agent_config_revision" : "plugin_event",
     sourceRef,
+    sourceActivityId: typeof payload.activityId === "string" ? payload.activityId : null,
     occurredAt,
   });
 }
@@ -513,7 +587,7 @@ function compactSkillSnapshot(skill: Awaited<ReturnType<typeof currentSkill>>) {
     slug: skill.slug,
     name: skill.name,
     description: skill.description,
-    markdown: skill.markdown,
+    markdown: sanitizeTextSnapshot(skill.markdown),
     sourceType: skill.sourceType,
     sourceRef: skill.sourceRef,
     compatibility: skill.compatibility,
@@ -529,7 +603,9 @@ function compactVersionFiles(value: unknown): unknown {
     return {
       path,
       kind: typeof row.kind === "string" ? row.kind : null,
-      content: path === "SKILL.md" && typeof row.content === "string" ? row.content : undefined,
+      content: path === "SKILL.md" && typeof row.content === "string"
+        ? sanitizeTextSnapshot(row.content)
+        : undefined,
     };
   });
 }
@@ -553,7 +629,8 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
 
   const companyId = event.companyId;
   if (!companyId || !event.entityId) return;
-  const occurredAt = event.occurredAt;
+  const occurredAt = iso(event.occurredAt);
+  if (!occurredAt) return;
   const runId = typeof payload.runId === "string" ? payload.runId : null;
   const entityType = event.entityType === "company_skill" ? "skill" : "agent";
   let entityName: string | null = null;
@@ -569,28 +646,39 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
   if (entityType === "skill") {
     const skill = await currentSkill(ctx, companyId, event.entityId);
     entityName = skill?.name ?? null;
-    if (skill) afterSnapshot = compactSkillSnapshot(skill);
+    afterSnapshot = skillActivitySnapshot(
+      skill ? compactSkillSnapshot(skill) : {},
+      action,
+      sanitize(payload),
+      new Date().toISOString(),
+      skill ? iso(skill.updatedAt) : null,
+    );
   } else {
     const agent = await currentAgent(ctx, companyId, event.entityId);
     entityName = agent?.name ?? null;
-    revision = await latestAgentRevisionNear(ctx, companyId, event.entityId, occurredAt);
+    if (isRevisionProducingActivity(action)) {
+      const revisionId = revisionReferenceFromActivity(payload);
+      revision = revisionId
+        ? await agentRevisionById(ctx, companyId, event.entityId, revisionId)
+        : await latestAgentRevisionNear(ctx, companyId, event.entityId, occurredAt);
+    }
     if (revision) {
       afterSnapshot = revision.afterConfig;
     } else if (agent) {
-      afterSnapshot = {
-        ...asRecord(compactAgentSnapshot(agent)),
-        activity: {
-          action,
-          details: sanitize(payload),
-          partialSnapshot: action.startsWith("agent.instructions_"),
-        },
-      };
+      afterSnapshot = agentActivitySnapshot(
+        asRecord(compactAgentSnapshot(agent)),
+        action,
+        sanitize(payload),
+        new Date().toISOString(),
+        agent ? iso(agent.updatedAt) : null,
+      );
     }
   }
 
   const previous = await latestSnapshot(ctx, companyId, entityType, event.entityId);
   let beforeId = previous?.id ?? null;
   if (revision) {
+    const revisionCapturedAt = requiredIso(revision.createdAt);
     beforeId = await writeSnapshot(ctx, {
       companyId,
       entityType: "agent",
@@ -599,7 +687,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
       snapshot: revision.beforeConfig,
       sourceType: "agent_config_revision_before",
       sourceRef: revision.id,
-      capturedAt: occurredAt,
+      capturedAt: revisionCapturedAt,
     });
   }
 
@@ -610,8 +698,8 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
     entityName,
     snapshot: afterSnapshot,
     sourceType: revision ? "agent_config_revision_after" : "activity",
-    sourceRef: revision?.id ?? event.eventId,
-    capturedAt: occurredAt,
+    sourceRef: revision?.id ?? (typeof payload.activityId === "string" ? payload.activityId : event.eventId),
+    capturedAt: revision ? requiredIso(revision.createdAt) : occurredAt,
   });
   const changeSetId = await ensureChangeSet(ctx, {
     companyId,
@@ -634,7 +722,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
     beforeSnapshotId: beforeId,
     afterSnapshotId: afterId,
     sourceType: revision ? "agent_config_revision" : "activity",
-    sourceRef: revision?.id ?? event.eventId,
+    sourceRef: revision?.id ?? (typeof payload.activityId === "string" ? payload.activityId : event.eventId),
     sourceActivityId: typeof payload.activityId === "string" ? payload.activityId : null,
     occurredAt,
   });
@@ -674,7 +762,9 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
 
   let agentItems = 0;
   for (const revision of agentRevisions) {
+    if (await sourceItemExists(ctx.db, companyId, "agent_config_revision", revision.id)) continue;
     const occurredAt = iso(revision.createdAt);
+    if (!occurredAt) continue;
     const changeSetId = await ensureChangeSet(ctx, {
       companyId,
       sourceContextKey: authorBucket(occurredAt, revision.createdByAgentId, revision.createdByUserId),
@@ -740,7 +830,50 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
   const previousVersion = new Map<string, { id: string; snapshotId: string }>();
   let skillItems = 0;
   for (const version of versions) {
+    const prior = previousVersion.get(version.skillId);
+    if (await sourceItemExists(ctx.db, companyId, "company_skill_version", version.id)) {
+      const existingAfterId = await sourceSnapshotId(
+        ctx.db,
+        companyId,
+        "skill",
+        version.skillId,
+        "company_skill_version",
+        version.id,
+      );
+      if (existingAfterId) previousVersion.set(version.skillId, { id: version.id, snapshotId: existingAfterId });
+      continue;
+    }
     const occurredAt = iso(version.createdAt);
+    if (!occurredAt) continue;
+    let priorSnapshotId = prior?.snapshotId ?? null;
+    if (!priorSnapshotId) {
+      const priorVersions = await ctx.db.query<{
+        id: string;
+        revisionNumber: number;
+        fileInventory: unknown;
+        createdAt: string | Date;
+      }>(
+        'SELECT id, revision_number AS "revisionNumber", file_inventory AS "fileInventory", created_at AS "createdAt" ' +
+          'FROM public.company_skill_versions WHERE company_id = $1 AND company_skill_id = $2 ' +
+          'AND created_at < $3::timestamptz ORDER BY created_at DESC, revision_number DESC LIMIT 1',
+        [companyId, version.skillId, occurredAt],
+      );
+      const priorVersion = priorVersions[0];
+      const priorAt = priorVersion ? iso(priorVersion.createdAt) : null;
+      if (priorVersion && priorAt) {
+        priorSnapshotId = await writeSnapshot(ctx, {
+          companyId,
+          entityType: "skill",
+          entityId: version.skillId,
+          entityName: version.skillName,
+          snapshot: { revisionNumber: priorVersion.revisionNumber, files: compactVersionFiles(priorVersion.fileInventory) },
+          sourceType: "company_skill_version",
+          sourceRef: priorVersion.id,
+          capturedAt: priorAt,
+        });
+        previousVersion.set(version.skillId, { id: priorVersion.id, snapshotId: priorSnapshotId });
+      }
+    }
     const afterId = await writeSnapshot(ctx, {
       companyId,
       entityType: "skill",
@@ -751,7 +884,6 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
       sourceRef: version.id,
       capturedAt: occurredAt,
     });
-    const prior = previousVersion.get(version.skillId);
     const changeSetId = await ensureChangeSet(ctx, {
       companyId,
       sourceContextKey: authorBucket(occurredAt, version.authorAgentId, version.authorUserId),
@@ -767,7 +899,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
       entityName: version.skillName,
       changeKind: "company.skill_version_created",
       changedKeys: ["files"],
-      beforeSnapshotId: prior?.snapshotId ?? null,
+      beforeSnapshotId: priorSnapshotId,
       afterSnapshotId: afterId,
       sourceType: "company_skill_version",
       sourceRef: version.id,
@@ -799,12 +931,17 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
 
   let activityItems = 0;
   for (const row of activityRows) {
+    if (await sourceItemExists(ctx.db, companyId, "activity", row.id)) continue;
     const occurredAt = iso(row.createdAt);
+    if (!occurredAt) continue;
     const entityType = row.entityType === "company_skill" ? "skill" : "agent";
     let entityName: string | null = null;
 
-    if (entityType === "agent") {
-      const revision = await latestAgentRevisionNear(ctx, companyId, row.entityId, occurredAt);
+    if (entityType === "agent" && isRevisionProducingActivity(row.action)) {
+      const revisionId = revisionReferenceFromActivity(asRecord(row.details));
+      const revision = revisionId
+        ? await agentRevisionById(ctx, companyId, row.entityId, revisionId)
+        : await latestAgentRevisionNear(ctx, companyId, row.entityId, occurredAt);
       if (revision) {
         const existingRevisionItem = await ctx.db.query<{ id: string; changeSetId: string }>(
           'SELECT id, change_set_id AS "changeSetId" FROM change_items WHERE company_id = $1 AND source_type = \'agent_config_revision\' AND source_ref = $2 LIMIT 1',
@@ -825,19 +962,24 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     if (entityType === "skill") {
       const skill = await currentSkill(ctx, companyId, row.entityId);
       entityName = skill?.name ?? null;
-      if (skill) activitySnapshot = compactSkillSnapshot(skill);
+      activitySnapshot = skillActivitySnapshot(
+        skill ? compactSkillSnapshot(skill) : {},
+        row.action,
+        sanitize(asRecord(row.details)),
+        new Date().toISOString(),
+        skill ? iso(skill.updatedAt) : null,
+      );
     } else {
       const agent = await currentAgent(ctx, companyId, row.entityId);
       entityName = agent?.name ?? null;
       if (agent) {
-        activitySnapshot = {
-          ...asRecord(compactAgentSnapshot(agent)),
-          activity: {
-            action: row.action,
-            details: sanitize(asRecord(row.details)),
-            partialSnapshot: row.action.startsWith("agent.instructions_"),
-          },
-        };
+        activitySnapshot = agentActivitySnapshot(
+          asRecord(compactAgentSnapshot(agent)),
+          row.action,
+          sanitize(asRecord(row.details)),
+          new Date().toISOString(),
+          iso(agent.updatedAt),
+        );
       }
     }
 
@@ -882,7 +1024,7 @@ function placeholders(start: number, count: number): string {
   return Array.from({ length: count }, (_, i) => "$" + String(start + i)).join(",");
 }
 
-async function queryRunStats(
+export async function queryRunStats(
   ctx: PluginContext,
   companyId: string,
   agentIds: string[],
@@ -898,7 +1040,7 @@ async function queryRunStats(
     successes: number | string;
     avgDuration: number | string | null;
   }>(
-    'SELECT count(*)::int AS runs, count(*) FILTER (WHERE status = \'succeeded\')::int AS successes, ' +
+    'SELECT ' + RUN_METRIC_AGGREGATION_SQL + ', ' +
       'avg(extract(epoch from (finished_at - started_at))) FILTER (WHERE finished_at IS NOT NULL)::float AS "avgDuration" ' +
       'FROM public.heartbeat_runs WHERE company_id = $1 AND started_at >= $2::timestamptz AND started_at < $3::timestamptz' +
       agentFilter,
@@ -914,7 +1056,7 @@ async function queryRunStats(
   };
 }
 
-async function queryCostStats(
+export async function queryCostStats(
   ctx: PluginContext,
   companyId: string,
   agentIds: string[],
@@ -926,25 +1068,31 @@ async function queryCostStats(
     ? " AND agent_id IN (" + placeholders(4, agentIds.length) + ")"
     : "";
   const rows = await ctx.db.query<{
-    costCents: number | string;
+    costCents: number | string | null;
     inputTokens: number | string;
     cachedInputTokens: number | string;
     outputTokens: number | string;
+    pricedEvents: number | string;
     events: number | string;
   }>(
-    'SELECT coalesce(sum(cost_cents),0)::float AS "costCents", coalesce(sum(input_tokens),0)::float AS "inputTokens", ' +
+    'SELECT sum(cost_cents) FILTER (WHERE cost_status = \'reported\')::float AS "costCents", ' +
+      'coalesce(sum(input_tokens),0)::float AS "inputTokens", ' +
       'coalesce(sum(cached_input_tokens),0)::float AS "cachedInputTokens", coalesce(sum(output_tokens),0)::float AS "outputTokens", ' +
+      'count(*) FILTER (WHERE cost_status = \'reported\')::int AS "pricedEvents", ' +
       'count(*)::int AS events FROM public.cost_events WHERE company_id = $1 AND occurred_at >= $2::timestamptz AND occurred_at < $3::timestamptz' +
       agentFilter,
     params,
   );
   const row = rows[0];
+  const pricedEvents = Number(row?.pricedEvents ?? 0);
+  const events = Number(row?.events ?? 0);
   return {
-    costUsd: Number(row?.costCents ?? 0) / 100,
-    inputTokens: Number(row?.inputTokens ?? 0),
-    cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
-    outputTokens: Number(row?.outputTokens ?? 0),
-    events: Number(row?.events ?? 0),
+    costUsd: pricedEvents > 0 && row?.costCents != null ? Number(row.costCents) / 100 : null,
+    inputTokens: events > 0 ? Number(row?.inputTokens ?? 0) : null,
+    cachedInputTokens: events > 0 ? Number(row?.cachedInputTokens ?? 0) : null,
+    outputTokens: events > 0 ? Number(row?.outputTokens ?? 0) : null,
+    pricedEvents,
+    events,
   };
 }
 
@@ -958,13 +1106,14 @@ async function upsertMetric(
   unit: string,
   baselineSample: number,
   currentSample: number,
+  metadata: Record<string, unknown>,
 ) {
   const delta = baseline == null || current == null ? null : current - baseline;
   await ctx.db.execute(
-    'INSERT INTO change_metrics (id, company_id, change_set_id, metric_key, baseline_value, current_value, delta_value, unit, baseline_sample_size, current_sample_size, computed_at) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ' +
+    'INSERT INTO change_metrics (id, company_id, change_set_id, metric_key, baseline_value, current_value, delta_value, unit, baseline_sample_size, current_sample_size, metadata, computed_at) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now()) ' +
       'ON CONFLICT (company_id, change_set_id, metric_key) DO UPDATE SET baseline_value = excluded.baseline_value, current_value = excluded.current_value, ' +
-      'delta_value = excluded.delta_value, unit = excluded.unit, baseline_sample_size = excluded.baseline_sample_size, current_sample_size = excluded.current_sample_size, computed_at = now()',
+      'delta_value = excluded.delta_value, unit = excluded.unit, baseline_sample_size = excluded.baseline_sample_size, current_sample_size = excluded.current_sample_size, metadata = excluded.metadata, computed_at = now()',
     [
       globalThis.crypto.randomUUID(),
       companyId,
@@ -976,6 +1125,7 @@ async function upsertMetric(
       unit,
       baselineSample,
       currentSample,
+      JSON.stringify(metadata),
     ],
   );
 }
@@ -987,10 +1137,10 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
   );
   const set = sets[0];
   if (!set) throw new Error("Change Set not found");
-  const appliedAt = new Date(iso(set.appliedAt));
+  const appliedAt = new Date(requiredIso(set.appliedAt));
   const baselineStart = new Date(appliedAt.getTime() - 7 * 86400000).toISOString();
   const currentEnd = set.validationEndsAt
-    ? new Date(Math.min(Date.now(), new Date(iso(set.validationEndsAt)).getTime())).toISOString()
+    ? new Date(Math.min(Date.now(), new Date(requiredIso(set.validationEndsAt)).getTime())).toISOString()
     : new Date(Math.min(Date.now(), appliedAt.getTime() + 7 * 86400000)).toISOString();
 
   const agentRows = await ctx.db.query<{ entityId: string }>(
@@ -1012,12 +1162,26 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
     queryCostStats(ctx, companyId, agentIds, appliedAt.toISOString(), currentEnd),
   ]);
 
-  await upsertMetric(ctx, companyId, changeSetId, "run_success_rate", baselineRuns.successRate, currentRuns.successRate, "%", baselineRuns.runs, currentRuns.runs);
-  await upsertMetric(ctx, companyId, changeSetId, "avg_run_duration", baselineRuns.avgDuration, currentRuns.avgDuration, "seconds", baselineRuns.runs, currentRuns.runs);
-  await upsertMetric(ctx, companyId, changeSetId, "cost", baselineCosts.costUsd, currentCosts.costUsd, "USD", baselineCosts.events, currentCosts.events);
-  await upsertMetric(ctx, companyId, changeSetId, "input_tokens", baselineCosts.inputTokens, currentCosts.inputTokens, "tokens", baselineCosts.events, currentCosts.events);
-  await upsertMetric(ctx, companyId, changeSetId, "cached_input_tokens", baselineCosts.cachedInputTokens, currentCosts.cachedInputTokens, "tokens", baselineCosts.events, currentCosts.events);
-  await upsertMetric(ctx, companyId, changeSetId, "output_tokens", baselineCosts.outputTokens, currentCosts.outputTokens, "tokens", baselineCosts.events, currentCosts.events);
+  const windows = {
+    baseline: {
+      startAt: baselineStart,
+      endAt: appliedAt.toISOString(),
+      durationSeconds: Math.max(0, (appliedAt.getTime() - new Date(baselineStart).getTime()) / 1000),
+    },
+    current: {
+      startAt: appliedAt.toISOString(),
+      endAt: currentEnd,
+      durationSeconds: Math.max(0, (new Date(currentEnd).getTime() - appliedAt.getTime()) / 1000),
+    },
+  };
+  const metricMetadata = { windows };
+
+  await upsertMetric(ctx, companyId, changeSetId, "run_success_rate", baselineRuns.successRate, currentRuns.successRate, "%", baselineRuns.runs, currentRuns.runs, metricMetadata);
+  await upsertMetric(ctx, companyId, changeSetId, "avg_run_duration", baselineRuns.avgDuration, currentRuns.avgDuration, "seconds", baselineRuns.runs, currentRuns.runs, metricMetadata);
+  await upsertMetric(ctx, companyId, changeSetId, "cost", baselineCosts.costUsd, currentCosts.costUsd, "USD", baselineCosts.pricedEvents, currentCosts.pricedEvents, metricMetadata);
+  await upsertMetric(ctx, companyId, changeSetId, "input_tokens", baselineCosts.inputTokens, currentCosts.inputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
+  await upsertMetric(ctx, companyId, changeSetId, "cached_input_tokens", baselineCosts.cachedInputTokens, currentCosts.cachedInputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
+  await upsertMetric(ctx, companyId, changeSetId, "output_tokens", baselineCosts.outputTokens, currentCosts.outputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
   return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd };
 }
 
@@ -1066,7 +1230,7 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
     ),
     ctx.db.query<Record<string, unknown>>(
       'SELECT metric_key AS "metricKey", baseline_value::float AS "baselineValue", current_value::float AS "currentValue", delta_value::float AS "deltaValue", ' +
-        'unit, baseline_sample_size AS "baselineSampleSize", current_sample_size AS "currentSampleSize", computed_at AS "computedAt" ' +
+        'unit, baseline_sample_size AS "baselineSampleSize", current_sample_size AS "currentSampleSize", metadata, computed_at AS "computedAt" ' +
         'FROM change_metrics WHERE company_id = $1 AND change_set_id = $2 ORDER BY metric_key',
       [companyId, changeSetId],
     ),
@@ -1097,15 +1261,55 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns };
 }
 
+async function assertChangeSet(ctx: PluginContext, companyId: string, changeSetId: string) {
+  const rows = await ctx.db.query<{ id: string }>(
+    'SELECT id FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+    [companyId, changeSetId],
+  );
+  if (!rows[0]) throw new Error("Change Set not found");
+}
+
+function actorAttribution(context: PluginPerformActionContext) {
+  const actor = context.actor;
+  return {
+    type: actor.type,
+    id: actor.userId ?? actor.agentId ?? actor.runId ?? null,
+  };
+}
+
+async function conclusionIdempotencyKey(
+  params: Record<string, unknown>,
+  companyId: string,
+  changeSetId: string,
+  context: PluginPerformActionContext,
+) {
+  const requestKey = stringParam(params, "idempotencyKey");
+  if (requestKey) return requestKey;
+  const actor = actorAttribution(context);
+  const material = JSON.stringify([
+    companyId,
+    changeSetId,
+    requiredString(params, "outcome"),
+    stringParam(params, "confidence") ?? "low",
+    requiredString(params, "summary"),
+    sortDeep(asRecord(params.evidenceSummary)),
+    actor.type,
+    actor.id,
+  ]);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function registerActions(ctx: PluginContext) {
-  ctx.actions.register("create-change-set", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("create-change-set", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const title = requiredString(params, "title").slice(0, 180);
     const id = globalThis.crypto.randomUUID();
     const status = stringParam(params, "status") ?? "draft";
     if (!CHANGE_STATUSES.has(status)) throw new Error("Invalid status");
     const causality = stringParam(params, "causalityLevel") ?? "observed";
     if (!CAUSALITY_LEVELS.has(causality)) throw new Error("Invalid causality level");
+    const actor = actorAttribution(actionContext);
     await ctx.db.execute(
       'INSERT INTO change_sets (id, company_id, title, description, hypothesis, status, causality_level, applied_at, validation_ends_at, created_by_type, created_by_id) ' +
         'VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::timestamptz,now()),$9::timestamptz,$10,$11)',
@@ -1119,15 +1323,15 @@ function registerActions(ctx: PluginContext) {
         causality,
         stringParam(params, "appliedAt") ?? null,
         stringParam(params, "validationEndsAt") ?? null,
-        stringParam(params, "createdByType") ?? "user",
-        stringParam(params, "createdById") ?? null,
+        actor.type,
+        actor.id,
       ],
     );
     return { ok: true, id };
   });
 
-  ctx.actions.register("update-change-set", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("update-change-set", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const changeSetId = requiredString(params, "changeSetId");
     const rows = await ctx.db.query<Record<string, unknown>>(
       'SELECT title, description, hypothesis, status, causality_level AS "causalityLevel", validation_ends_at AS "validationEndsAt" FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
@@ -1156,9 +1360,10 @@ function registerActions(ctx: PluginContext) {
     return { ok: true };
   });
 
-  ctx.actions.register("add-evidence", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("add-evidence", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const evidenceType = requiredString(params, "evidenceType");
     const verdict = stringParam(params, "verdict") ?? "neutral";
     if (!EVIDENCE_VERDICTS.has(verdict)) throw new Error("Invalid evidence verdict");
@@ -1182,9 +1387,10 @@ function registerActions(ctx: PluginContext) {
     return { ok: true, id };
   });
 
-  ctx.actions.register("add-link", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("add-link", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const linkType = requiredString(params, "linkType");
     const referenceId = requiredString(params, "referenceId");
     await ctx.db.execute(
@@ -1202,16 +1408,26 @@ function registerActions(ctx: PluginContext) {
     return { ok: true };
   });
 
-  ctx.actions.register("add-conclusion", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("add-conclusion", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const changeSetId = requiredString(params, "changeSetId");
+    await assertChangeSet(ctx, companyId, changeSetId);
     const outcome = requiredString(params, "outcome");
     const confidence = stringParam(params, "confidence") ?? "low";
     if (!["proven", "regressed", "inconclusive", "reverted"].includes(outcome)) throw new Error("Invalid outcome");
     if (!CONFIDENCE_LEVELS.has(confidence)) throw new Error("Invalid confidence");
+    const idempotencyKey = await conclusionIdempotencyKey(params, companyId, changeSetId, actionContext);
+    const actor = actorAttribution(actionContext);
     await ctx.db.execute(
-      'INSERT INTO change_conclusions (id, company_id, change_set_id, outcome, confidence, summary, evidence_summary, created_by_type, created_by_id) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)',
+      'WITH inserted AS (' +
+        'INSERT INTO change_conclusions (id, company_id, change_set_id, outcome, confidence, summary, evidence_summary, created_by_type, created_by_id, idempotency_key) ' +
+        'SELECT $1, cs.company_id, cs.id, $4, $5, $6, $7::jsonb, $8, $9, $10 FROM change_sets cs WHERE cs.company_id = $2 AND cs.id = $3 ' +
+        'ON CONFLICT (company_id, change_set_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET idempotency_key = excluded.idempotency_key ' +
+        'RETURNING id, company_id, change_set_id, outcome' +
+      '), updated AS (' +
+        'UPDATE change_sets cs SET status = inserted.outcome, updated_at = now() FROM inserted ' +
+        'WHERE cs.company_id = inserted.company_id AND cs.id = inserted.change_set_id RETURNING cs.id' +
+      ') SELECT inserted.id FROM inserted JOIN updated ON updated.id = inserted.change_set_id LIMIT 1',
       [
         globalThis.crypto.randomUUID(),
         companyId,
@@ -1220,93 +1436,112 @@ function registerActions(ctx: PluginContext) {
         confidence,
         requiredString(params, "summary"),
         JSON.stringify(asRecord(params.evidenceSummary)),
-        stringParam(params, "createdByType") ?? "user",
-        stringParam(params, "createdById") ?? null,
+        actor.type,
+        actor.id,
+        idempotencyKey,
       ],
     );
-    await ctx.db.execute(
-      'UPDATE change_sets SET status=$3, updated_at=now() WHERE company_id=$1 AND id=$2',
-      [companyId, changeSetId, outcome],
+    const rows = await ctx.db.query<{ id: string }>(
+      'SELECT id FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2 AND idempotency_key = $3 LIMIT 1',
+      [companyId, changeSetId, idempotencyKey],
     );
-    return { ok: true };
+    if (!rows[0]) throw new Error("Change Set not found");
+    return { ok: true, id: rows[0].id };
   });
 
-  ctx.actions.register("merge-change-set", async (params) => {
-    const companyId = requiredString(params, "companyId");
+  ctx.actions.register("merge-change-set", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
     const sourceChangeSetId = requiredString(params, "sourceChangeSetId");
     const targetChangeSetId = requiredString(params, "targetChangeSetId");
     if (sourceChangeSetId === targetChangeSetId) throw new Error("Source and target Change Sets must differ");
-
-    const rows = await ctx.db.query<{ id: string }>(
-      'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3)',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    if (rows.length !== 2) throw new Error("Source or target Change Set not found");
-
-    await ctx.db.execute(
-      'UPDATE change_items SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    await ctx.db.execute(
-      'UPDATE change_evidence SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-    await ctx.db.execute(
-      'UPDATE change_conclusions SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId, targetChangeSetId],
-    );
-
-    const sourceLinks = await ctx.db.query<{ linkType: string; referenceId: string; label: string | null; metadata: unknown }>(
-      'SELECT link_type AS "linkType", reference_id AS "referenceId", label, metadata FROM change_links WHERE company_id = $1 AND change_set_id = $2',
+    const prior = await ctx.db.query<{ targetChangeSetId: string }>(
+      'SELECT target_change_set_id AS "targetChangeSetId" FROM merge_operations WHERE company_id = $1 AND source_change_set_id = $2 LIMIT 1',
       [companyId, sourceChangeSetId],
     );
-    for (const link of sourceLinks) {
-      await ctx.db.execute(
-        'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING',
-        [globalThis.crypto.randomUUID(), companyId, targetChangeSetId, link.linkType, link.referenceId, link.label, JSON.stringify(asRecord(link.metadata))],
-      );
+    if (prior[0] && prior[0].targetChangeSetId !== targetChangeSetId) {
+      throw new Error("Source Change Set was already merged into another target");
     }
+
     await ctx.db.execute(
-      'DELETE FROM change_links WHERE company_id = $1 AND change_set_id = $2',
+      'WITH locked_sets AS MATERIALIZED (' +
+        'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3) FOR UPDATE' +
+      '), prior_merge AS MATERIALIZED (' +
+        'SELECT target_change_set_id FROM merge_operations WHERE company_id = $1 AND source_change_set_id = $2' +
+      '), valid AS MATERIALIZED (' +
+        'SELECT count(*) = 2 AS parents_exist FROM locked_sets' +
+      '), operation AS (' +
+        'INSERT INTO merge_operations (company_id, source_change_set_id, target_change_set_id) ' +
+        'SELECT $1, $2, $3 FROM valid WHERE parents_exist AND NOT EXISTS (SELECT 1 FROM prior_merge) ' +
+        'ON CONFLICT (company_id, source_change_set_id) DO NOTHING RETURNING source_change_set_id' +
+      '), moved_items AS (' +
+        'UPDATE change_items SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
+        'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+      '), moved_evidence AS (' +
+        'UPDATE change_evidence SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
+        'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+      '), moved_conclusions AS (' +
+        'UPDATE change_conclusions SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
+        'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+      '), copied_links AS (' +
+        'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) ' +
+        'SELECT gen_random_uuid(), company_id, $3, link_type, reference_id, label, metadata FROM change_links ' +
+        'WHERE company_id = $1 AND change_set_id = $2 AND EXISTS (SELECT 1 FROM operation) ' +
+        'ON CONFLICT (company_id, change_set_id, link_type, reference_id) DO NOTHING RETURNING id' +
+      '), removed_links AS (' +
+        'DELETE FROM change_links WHERE company_id = $1 AND change_set_id = $2 AND EXISTS (SELECT 1 FROM operation) ' +
+        'AND (SELECT count(*) FROM copied_links) >= 0 RETURNING id' +
+      '), removed_metrics AS (' +
+        'DELETE FROM change_metrics WHERE company_id = $1 AND change_set_id = $2 AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+      '), retargeted_history AS (' +
+        'UPDATE merge_operations SET target_change_set_id = $3 WHERE company_id = $1 AND target_change_set_id = $2 ' +
+        'AND EXISTS (SELECT 1 FROM operation) RETURNING source_change_set_id' +
+      '), removed_source AS (' +
+      'DELETE FROM change_sets WHERE company_id = $1 AND id = $2 AND EXISTS (SELECT 1 FROM operation) ' +
+        'AND (SELECT count(*) FROM moved_items) >= 0 AND (SELECT count(*) FROM moved_evidence) >= 0 ' +
+        'AND (SELECT count(*) FROM moved_conclusions) >= 0 AND (SELECT count(*) FROM removed_links) >= 0 ' +
+        'AND (SELECT count(*) FROM removed_metrics) >= 0 AND (SELECT count(*) FROM retargeted_history) >= 0 RETURNING id' +
+      ') SELECT 1',
+      [companyId, sourceChangeSetId, targetChangeSetId],
+    );
+    const merged = await ctx.db.query<{ targetChangeSetId: string }>(
+      'SELECT target_change_set_id AS "targetChangeSetId" FROM merge_operations WHERE company_id = $1 AND source_change_set_id = $2 LIMIT 1',
       [companyId, sourceChangeSetId],
     );
-    await ctx.db.execute(
-      'DELETE FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, sourceChangeSetId],
-    );
-    await ctx.db.execute(
-      'DELETE FROM change_sets WHERE company_id = $1 AND id = $2',
-      [companyId, sourceChangeSetId],
-    );
+    if (!merged[0]) {
+      throw new Error("Source or target Change Set not found, or source was merged elsewhere");
+    }
+    if (merged[0].targetChangeSetId !== targetChangeSetId) {
+      throw new Error("Source Change Set was already merged into another target");
+    }
     await recomputeMetrics(ctx, companyId, targetChangeSetId);
-    return { ok: true, targetChangeSetId };
+    return { ok: true, targetChangeSetId, alreadyMerged: prior.length > 0 };
   });
 
-  ctx.actions.register("backfill-recent", async (params) => {
-    return backfill(ctx, requiredString(params, "companyId"), numberParam(params, "days", 7));
+  ctx.actions.register("backfill-recent", async (params, actionContext) => {
+    return backfill(ctx, authorizedCompanyId(params, actionContext), numberParam(params, "days", 7));
   });
 
-  ctx.actions.register("recompute-metrics", async (params) => {
-    return recomputeMetrics(ctx, requiredString(params, "companyId"), requiredString(params, "changeSetId"));
+  ctx.actions.register("recompute-metrics", async (params, actionContext) => {
+    return recomputeMetrics(ctx, authorizedCompanyId(params, actionContext), requiredString(params, "changeSetId"));
   });
 }
 
 const plugin = definePlugin({
   async setup(ctx) {
-    ctx.data.register("changes-overview", async (params) => overview(ctx, requiredString(params, "companyId")));
-    ctx.data.register("change-detail", async (params) =>
-      detail(ctx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
+    const workerCtx = withEvolutionDatabaseNamespace(ctx);
+    workerCtx.data.register("changes-overview", async (params) => overview(workerCtx, requiredString(params, "companyId")));
+    workerCtx.data.register("change-detail", async (params) =>
+      detail(workerCtx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
 
-    registerActions(ctx);
+    registerActions(workerCtx);
 
-    ctx.events.on("agent.created", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.updated", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.status_changed", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("agent.error_cleared", async (event) => recordAgentEvent(ctx, event));
-    ctx.events.on("activity.logged", async (event) => recordActivityEvent(ctx, event));
+    workerCtx.events.on("agent.created", async (event) => recordAgentEvent(workerCtx, event));
+    workerCtx.events.on("agent.updated", async (event) => recordAgentEvent(workerCtx, event));
+    workerCtx.events.on("agent.status_changed", async (event) => recordAgentEvent(workerCtx, event));
+    workerCtx.events.on("agent.error_cleared", async (event) => recordAgentEvent(workerCtx, event));
+    workerCtx.events.on("activity.logged", async (event) => recordActivityEvent(workerCtx, event));
 
-    ctx.logger.info("Evolution Change Intelligence ready");
+    workerCtx.logger.info("Evolution Change Intelligence ready");
   },
 
   async onHealth() {
@@ -1316,3 +1551,5 @@ const plugin = definePlugin({
 
 export default plugin;
 runWorker(plugin, import.meta.url);
+
+export { backfill, recordActivityEvent };

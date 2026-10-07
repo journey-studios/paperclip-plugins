@@ -120,3 +120,55 @@ diff --git a/server/src/__tests__/bundled-plugins.test.ts b/server/src/__tests__
    });
  
    it("covers every catalog entry with a path inside the default root", () => {
+diff --git a/server/src/__tests__/plugin-database.test.ts b/server/src/__tests__/plugin-database.test.ts
+index 6d0417aba..44504457b 100644
+--- a/server/src/__tests__/plugin-database.test.ts
++++ b/server/src/__tests__/plugin-database.test.ts
+@@ -129,6 +129,20 @@ describe("plugin database SQL validation", () => {
+     ).toThrow(/namespace/i);
+   });
+ 
++  it("allows only namespace-scoped mutation CTEs through execute and keeps query read-only", () => {
++    const merge = `WITH moved AS (UPDATE plugin_test.change_items SET change_set_id = $1 WHERE id = $2 RETURNING id), removed AS (DELETE FROM plugin_test.change_sets WHERE id = $3 AND EXISTS (SELECT 1 FROM moved) RETURNING id) SELECT 1`;
++    expect(() => validatePluginRuntimeExecute(merge, "plugin_test")).not.toThrow();
++    expect(() => validatePluginRuntimeExecute(
++      "WITH moved AS (UPDATE public.issues SET title = 'x' WHERE id = $1 RETURNING id) SELECT 1",
++      "plugin_test",
++    )).toThrow(/namespace/i);
++    expect(() => validatePluginRuntimeExecute(
++      "WITH read_only AS (SELECT id FROM plugin_test.rows) SELECT 1",
++      "plugin_test",
++    )).toThrow(/INSERT, UPDATE, DELETE/i);
++    expect(() => validatePluginRuntimeQuery(merge, "plugin_test")).toThrow(/cannot contain mutation/i);
++  });
++
+   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
+     expect(() =>
+       validatePluginRuntimeQuery(
+diff --git a/server/src/services/plugin-database.ts b/server/src/services/plugin-database.ts
+index d6b4cdda1..a50c0e633 100644
+--- a/server/src/services/plugin-database.ts
++++ b/server/src/services/plugin-database.ts
+@@ -274,6 +274,7 @@ export function validatePluginRuntimeQuery(
+ }
+ 
+ export function validatePluginRuntimeExecute(query: string, namespace: string): void {
++  assertIdentifier(namespace, "namespace");
+   const statements = splitSqlStatements(query);
+   if (statements.length !== 1) {
+     throw new Error("Plugin runtime SQL must contain exactly one statement");
+@@ -281,8 +282,12 @@ export function validatePluginRuntimeExecute(query: string, namespace: string):
+   const statement = statements[0]!;
+   assertNoBannedSql(statement);
+   const normalized = normaliseSql(statement);
+-  if (!/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
+-    throw new Error("ctx.db.execute only allows INSERT, UPDATE, or DELETE");
++  const directMutation = /^(insert\s+into|update|delete\s+from)\b/.test(normalized);
++  const namespaceMutationCte = normalized.startsWith("with ") && new RegExp(
++    `\\b(insert\\s+into|update|delete\\s+from)\\s+"?${namespace}"?\\.`,
++  ).test(statement.toLowerCase());
++  if (!directMutation && !namespaceMutationCte) {
++    throw new Error("ctx.db.execute only allows INSERT, UPDATE, DELETE, or namespace-scoped mutation CTEs");
+   }
+   if (/\b(alter|create|drop|truncate)\b/.test(normalized)) {
+     throw new Error("ctx.db.execute cannot contain DDL keywords");
