@@ -3,7 +3,9 @@ export function isRevisionProducingActivity(action) {
 }
 
 export function revisionReferenceFromActivity(payload) {
-  for (const key of ["agentConfigRevisionId", "agent_config_revision_id", "configRevisionId", "revisionId", "revision_id"]) {
+  // Generic revisionId fields can mean the rollback target, rather than the new
+  // revision that records the rollback transition.
+  for (const key of ["agentConfigRevisionId", "agent_config_revision_id", "configRevisionId"]) {
     const value = payload?.[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }

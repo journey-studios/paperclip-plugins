@@ -29,6 +29,27 @@ const CHANGE_STATUSES = new Set([
 const CAUSALITY_LEVELS = new Set(["observed", "associated", "validated"]);
 const EVIDENCE_VERDICTS = new Set(["positive", "neutral", "negative"]);
 const CONFIDENCE_LEVELS = new Set(["low", "moderate", "high"]);
+const SKILL_ACTIVITY_ACTIONS = new Set([
+  "company.skill_created",
+  "company.skill_updated",
+  "company.skill_version_created",
+  "company.skill_file_updated",
+  "company.skill_file_deleted",
+  "company.skill_deleted",
+  "company.skill_forked",
+  "company.skill_renamed",
+  "company.skill_update_installed",
+  "company.skill_reset",
+  "plugin.managed_skill.reconciled",
+  "plugin.managed_skill.reset",
+]);
+const AGENT_ACTIVITY_ACTIONS = new Set([
+  "agent.skills_synced",
+  "agent.permissions_updated",
+  "agent.config_rolled_back",
+  "agent.budget_updated",
+  "plugin.managed_agent.reset",
+]);
 const EVOLUTION_TABLES = [
   "change_sets",
   "change_snapshots",
@@ -364,6 +385,7 @@ async function writeItem(
     sourceType: string;
     sourceRef?: string | null;
     sourceActivityId?: string | null;
+    metadata?: Record<string, unknown>;
     occurredAt: string;
   },
 ): Promise<boolean> {
@@ -385,8 +407,8 @@ async function writeItem(
 
   await ctx.db.execute(
     'INSERT INTO change_items ' +
-      '(id, company_id, change_set_id, entity_type, entity_id, entity_name, change_kind, changed_keys, before_snapshot_id, after_snapshot_id, source_type, source_ref, source_activity_id, occurred_at) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14::timestamptz) ON CONFLICT DO NOTHING',
+      '(id, company_id, change_set_id, entity_type, entity_id, entity_name, change_kind, changed_keys, before_snapshot_id, after_snapshot_id, source_type, source_ref, source_activity_id, metadata, occurred_at) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14::jsonb,$15::timestamptz) ON CONFLICT DO NOTHING',
     [
       globalThis.crypto.randomUUID(),
       input.companyId,
@@ -401,6 +423,7 @@ async function writeItem(
       input.sourceType,
       input.sourceRef ?? null,
       input.sourceActivityId ?? null,
+      JSON.stringify(input.metadata ?? {}),
       input.occurredAt,
     ],
   );
@@ -496,17 +519,41 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
   const agent = await currentAgent(ctx, companyId, agentId);
   if (!agent) return;
 
+  const explicitRevisionId = revisionReferenceFromActivity(payload);
   const revision = event.eventType === "agent.updated"
-    ? await latestAgentRevisionNear(ctx, companyId, agentId, occurredAt)
+    ? explicitRevisionId
+      ? await agentRevisionById(ctx, companyId, agentId, explicitRevisionId)
+      : await latestAgentRevisionNear(ctx, companyId, agentId, occurredAt)
     : null;
+  const temporalRevisionMatch = Boolean(revision && !explicitRevisionId);
+  const activityReadAt = new Date().toISOString();
+  // Temporal candidates are identified by their plugin event. Their native
+  // revision is metadata/evidence only; it must not contend for the canonical
+  // revision item's identity or suppress another distinct event.
+  const sourceType = revision && !temporalRevisionMatch ? "agent_config_revision" : "plugin_event";
+  const sourceRef = revision && !temporalRevisionMatch ? revision.id : event.eventId;
+  const existing = await ctx.db.query<{ id: string; changeSetId: string }>(
+    'SELECT id, change_set_id AS "changeSetId" FROM change_items WHERE company_id = $1 AND source_type = $2 AND source_ref = $3 LIMIT 1',
+    [companyId, sourceType, sourceRef],
+  );
+  if (existing[0]) {
+    const activityId = typeof payload.activityId === "string" ? payload.activityId : null;
+    if (revision && explicitRevisionId && activityId) {
+      await ctx.db.execute(
+        'UPDATE change_items SET source_activity_id = coalesce(source_activity_id, $3), change_kind = $4, ' +
+          'metadata = $5::jsonb WHERE company_id = $1 AND id = $2',
+        [companyId, existing[0].id, activityId, event.eventType, JSON.stringify({ activityAssociation: "explicit_revision_id" })],
+      );
+      await attachRunContext(ctx, companyId, existing[0].changeSetId, runId);
+    }
+    return;
+  }
 
   let beforeId: string | null = null;
   let afterId: string | null = null;
-  let sourceRef = event.eventId;
   let changedKeys: unknown[] = [];
 
   if (revision) {
-    sourceRef = revision.id;
     changedKeys = asArray(revision.changedKeys);
     beforeId = await writeSnapshot(ctx, {
       companyId,
@@ -536,22 +583,29 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
       entityType: "agent",
       entityId: agentId,
       entityName: agent.name,
-      snapshot: compactAgentSnapshot(agent),
+      snapshot: agentActivitySnapshot(
+        asRecord(compactAgentSnapshot(agent)),
+        event.eventType,
+        sanitize(payload),
+        activityReadAt,
+        iso(agent.updatedAt),
+      ),
       sourceType: event.eventType,
       sourceRef: event.eventId,
-      capturedAt: occurredAt,
+      capturedAt: activityReadAt,
     });
   }
 
-  const sourceContextKey = bucketContext(occurredAt, event.actorType, event.actorId, runId);
+  const itemOccurredAt = temporalRevisionMatch ? occurredAt : revision ? requiredIso(revision.createdAt) : occurredAt;
+  const sourceContextKey = bucketContext(itemOccurredAt, event.actorType, event.actorId, temporalRevisionMatch ? null : runId);
   const changeSetId = await ensureChangeSet(ctx, {
     companyId,
     sourceContextKey,
-    occurredAt,
-    actorType: event.actorType,
-    actorId: event.actorId,
+    occurredAt: itemOccurredAt,
+    actorType: temporalRevisionMatch ? null : event.actorType,
+    actorId: temporalRevisionMatch ? null : event.actorId,
   });
-  await attachRunContext(ctx, companyId, changeSetId, runId);
+  if (!temporalRevisionMatch) await attachRunContext(ctx, companyId, changeSetId, runId);
 
   await writeItem(ctx, {
     companyId,
@@ -559,14 +613,27 @@ async function recordAgentEvent(ctx: PluginContext, event: PluginEvent) {
     entityType: "agent",
     entityId: agentId,
     entityName: agent.name,
-    changeKind: event.eventType,
+    changeKind: temporalRevisionMatch ? event.eventType + " (temporal revision candidate)" : event.eventType,
     changedKeys,
     beforeSnapshotId: beforeId,
     afterSnapshotId: afterId,
-    sourceType: revision ? "agent_config_revision" : "plugin_event",
+    sourceType,
     sourceRef,
-    sourceActivityId: typeof payload.activityId === "string" ? payload.activityId : null,
-    occurredAt,
+    sourceActivityId: temporalRevisionMatch ? null : (typeof payload.activityId === "string" ? payload.activityId : null),
+    metadata: temporalRevisionMatch
+      ? {
+          partialSnapshot: true,
+          activityAssociation: "temporal_candidate",
+          candidateRevisionId: revision!.id,
+          reason: "No revision ID was supplied; this same-agent revision is a time-proximity candidate only. The event retains its own identity and is not linked to the revision's Audit or run provenance.",
+          activityTimestamp: occurredAt,
+          revisionTimestamp: requiredIso(revision!.createdAt),
+          matchWindowSeconds: 10,
+        }
+      : revision && explicitRevisionId
+        ? { activityAssociation: "explicit_revision_id" }
+        : {},
+    occurredAt: itemOccurredAt,
   });
 }
 
@@ -628,24 +695,21 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
   const action = typeof payload.activityAction === "string" ? payload.activityAction : "";
   if (!action) return;
   const relevant =
-    action.startsWith("company.skill_") ||
-    action.startsWith("company.skills_") ||
+    SKILL_ACTIVITY_ACTIONS.has(action) ||
     action.startsWith("agent.instructions_") ||
-    action === "agent.skills_synced" ||
-    action === "agent.permissions_updated" ||
-    action === "agent.config_rolled_back" ||
-    action === "agent.budget_updated" ||
-    action === "plugin.managed_agent.reset" ||
-    action === "plugin.managed_skill.reconciled" ||
-    action === "plugin.managed_skill.reset";
+    AGENT_ACTIVITY_ACTIONS.has(action);
   if (!relevant) return;
 
   const companyId = event.companyId;
   if (!companyId || !event.entityId) return;
+  const isSkillAction = SKILL_ACTIVITY_ACTIONS.has(action);
+  const isAgentAction = action.startsWith("agent.instructions_") || AGENT_ACTIVITY_ACTIONS.has(action);
+  if ((isSkillAction && event.entityType !== "company_skill") || (isAgentAction && event.entityType !== "agent")) return;
   const occurredAt = iso(event.occurredAt);
   if (!occurredAt) return;
+  const currentStateReadAt = new Date().toISOString();
   const runId = typeof payload.runId === "string" ? payload.runId : null;
-  const entityType = event.entityType === "company_skill" ? "skill" : "agent";
+  const entityType = isSkillAction ? "skill" : "agent";
   let entityName: string | null = null;
   let afterSnapshot: unknown = { activityAction: action, details: sanitize(payload) };
   let revision: {
@@ -663,7 +727,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
       skill ? compactSkillSnapshot(skill) : {},
       action,
       sanitize(payload),
-      new Date().toISOString(),
+      currentStateReadAt,
       skill ? iso(skill.updatedAt) : null,
     );
   } else {
@@ -671,9 +735,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
     entityName = agent?.name ?? null;
     if (isRevisionProducingActivity(action)) {
       const revisionId = revisionReferenceFromActivity(payload);
-      revision = revisionId
-        ? await agentRevisionById(ctx, companyId, event.entityId, revisionId)
-        : await latestAgentRevisionNear(ctx, companyId, event.entityId, occurredAt);
+      revision = revisionId ? await agentRevisionById(ctx, companyId, event.entityId, revisionId) : null;
     }
     if (revision) {
       afterSnapshot = revision.afterConfig;
@@ -682,7 +744,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
         asRecord(compactAgentSnapshot(agent)),
         action,
         sanitize(payload),
-        new Date().toISOString(),
+        currentStateReadAt,
         agent ? iso(agent.updatedAt) : null,
       );
     }
@@ -712,7 +774,7 @@ async function recordActivityEvent(ctx: PluginContext, event: PluginEvent) {
     snapshot: afterSnapshot,
     sourceType: revision ? "agent_config_revision_after" : "activity",
     sourceRef: revision?.id ?? (typeof payload.activityId === "string" ? payload.activityId : event.eventId),
-    capturedAt: revision ? requiredIso(revision.createdAt) : occurredAt,
+    capturedAt: revision ? requiredIso(revision.createdAt) : currentStateReadAt,
   });
   const changeSetId = await ensureChangeSet(ctx, {
     companyId,
@@ -753,6 +815,8 @@ function authorBucket(
 
 async function backfill(ctx: PluginContext, companyId: string, days: number) {
   const boundedDays = Math.min(30, Math.max(1, Math.floor(days)));
+  const skillActionsSql = [...SKILL_ACTIVITY_ACTIONS].map((action) => "'" + action + "'").join(",");
+  const agentActionsSql = [...AGENT_ACTIVITY_ACTIONS].map((action) => "'" + action + "'").join(",");
   const agentRevisions = await ctx.db.query<{
     id: string;
     agentId: string;
@@ -936,8 +1000,8 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     'SELECT id, actor_type AS "actorType", actor_id AS "actorId", action, entity_type AS "entityType", entity_id AS "entityId", ' +
       'agent_id AS "agentId", run_id AS "runId", details, created_at AS "createdAt" FROM public.activity_log ' +
       'WHERE company_id = $1 AND created_at >= now() - ($2::text || \' days\')::interval ' +
-      'AND (entity_type = \'company_skill\' OR action LIKE \'agent.instructions_%\' OR action IN ' +
-      '(\'agent.skills_synced\',\'agent.permissions_updated\',\'agent.config_rolled_back\',\'agent.budget_updated\',\'plugin.managed_agent.reset\')) ' +
+      'AND ((entity_type = \'company_skill\' AND action IN (' + skillActionsSql + ')) OR ' +
+      '(entity_type = \'agent\' AND (action LIKE \'agent.instructions_%\' OR action IN (' + agentActionsSql + ')))) ' +
       'ORDER BY created_at ASC LIMIT 1500',
     [companyId, String(boundedDays)],
   );
@@ -954,7 +1018,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
       const revisionId = revisionReferenceFromActivity(asRecord(row.details));
       const revision = revisionId
         ? await agentRevisionById(ctx, companyId, row.entityId, revisionId)
-        : await latestAgentRevisionNear(ctx, companyId, row.entityId, occurredAt);
+        : null;
       if (revision) {
         const existingRevisionItem = await ctx.db.query<{ id: string; changeSetId: string }>(
           'SELECT id, change_set_id AS "changeSetId" FROM change_items WHERE company_id = $1 AND source_type = \'agent_config_revision\' AND source_ref = $2 LIMIT 1',
@@ -972,6 +1036,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
     }
 
     let activitySnapshot: unknown = { activityAction: row.action, details: sanitize(asRecord(row.details)) };
+    const currentStateReadAt = new Date().toISOString();
     if (entityType === "skill") {
       const skill = await currentSkill(ctx, companyId, row.entityId);
       entityName = skill?.name ?? null;
@@ -979,7 +1044,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
         skill ? compactSkillSnapshot(skill) : {},
         row.action,
         sanitize(asRecord(row.details)),
-        new Date().toISOString(),
+        currentStateReadAt,
         skill ? iso(skill.updatedAt) : null,
       );
     } else {
@@ -990,7 +1055,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
           asRecord(compactAgentSnapshot(agent)),
           row.action,
           sanitize(asRecord(row.details)),
-          new Date().toISOString(),
+          currentStateReadAt,
           iso(agent.updatedAt),
         );
       }
@@ -1004,7 +1069,7 @@ async function backfill(ctx: PluginContext, companyId: string, days: number) {
       snapshot: activitySnapshot,
       sourceType: "activity",
       sourceRef: row.id,
-      capturedAt: occurredAt,
+      capturedAt: currentStateReadAt,
     });
     const changeSetId = await ensureChangeSet(ctx, {
       companyId,
@@ -1230,7 +1295,7 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   const [items, evidence, metrics, conclusions, links] = await Promise.all([
     ctx.db.query<Record<string, unknown>>(
       'SELECT ci.id, ci.entity_type AS "entityType", ci.entity_id AS "entityId", ci.entity_name AS "entityName", ci.change_kind AS "changeKind", ' +
-        'ci.changed_keys AS "changedKeys", ci.source_type AS "sourceType", ci.source_ref AS "sourceRef", ci.source_activity_id AS "sourceActivityId", ci.occurred_at AS "occurredAt", ' +
+        'ci.changed_keys AS "changedKeys", ci.source_type AS "sourceType", ci.source_ref AS "sourceRef", ci.source_activity_id AS "sourceActivityId", ci.metadata, ci.occurred_at AS "occurredAt", ' +
         'bs.snapshot AS "beforeSnapshot", asn.snapshot AS "afterSnapshot" FROM change_items ci ' +
         'LEFT JOIN change_snapshots bs ON bs.id = ci.before_snapshot_id LEFT JOIN change_snapshots asn ON asn.id = ci.after_snapshot_id ' +
         'WHERE ci.company_id = $1 AND ci.change_set_id = $2 ORDER BY ci.occurred_at ASC',

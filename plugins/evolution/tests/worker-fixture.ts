@@ -29,6 +29,7 @@ async function nativeHostValidators(): Promise<NativeHostValidators | null> {
 
 const migration001 = await readFile(new URL("../migrations/001_evolution.sql", import.meta.url), "utf8");
 const migration002 = await readFile(new URL("../migrations/002_evolution_integrity.sql", import.meta.url), "utf8");
+const migration003 = await readFile(new URL("../migrations/003_change_item_capture_metadata.sql", import.meta.url), "utf8");
 
 export async function createWorkerFixture() {
   const validators = await nativeHostValidators();
@@ -48,13 +49,14 @@ export async function createWorkerFixture() {
     `INSERT INTO public.companies VALUES ('${COMPANY}'), ('${OTHER_COMPANY}');` +
     `CREATE SCHEMA ${NS};`,
   );
-  for (const migration of [migration001, migration002]) {
+  for (const migration of [migration001, migration002, migration003]) {
     for (const statement of migration.split(";").map((part) => part.trim()).filter(Boolean)) {
       validators?.validatePluginMigrationStatement(statement, NS, CORE_READ_TABLES);
     }
   }
   await db.exec(migration001);
   await db.exec(migration002);
+  await db.exec(migration003);
 
   const actions = new Map<string, Handler>();
   const data = new Map<string, Handler>();

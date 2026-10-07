@@ -43,10 +43,13 @@ test("only rollback activities can inherit an agent config revision", () => {
   }
 });
 
-test("revision reference accepts explicit host IDs and rejects blank values", () => {
-  assert.equal(revisionReferenceFromActivity({ revisionId: "rev-7" }), "rev-7");
+test("revision reference accepts applied revision IDs and rejects rollback target IDs", () => {
+  assert.equal(revisionReferenceFromActivity({ agentConfigRevisionId: "rev-7" }), "rev-7");
+  assert.equal(revisionReferenceFromActivity({ configRevisionId: "rev-7b" }), "rev-7b");
   assert.equal(revisionReferenceFromActivity({ agent_config_revision_id: " rev-8 " }), "rev-8");
-  assert.equal(revisionReferenceFromActivity({ revisionId: "  " }), null);
+  assert.equal(revisionReferenceFromActivity({ revisionId: "rollback-target-rev" }), null);
+  assert.equal(revisionReferenceFromActivity({ revision_id: "rollback-target-rev" }), null);
+  assert.equal(revisionReferenceFromActivity({ configRevisionId: "  " }), null);
   assert.equal(revisionReferenceFromActivity({ activityId: "activity-3" }), null);
 });
 

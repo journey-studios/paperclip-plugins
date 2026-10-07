@@ -33,7 +33,7 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => ({
           causalityLevel: "observed",
           appliedAt: "2026-10-01T00:00:00.000Z",
           updatedAt: "2026-10-01T00:00:00.000Z",
-          itemCount: 0,
+          itemCount: 4,
           evidenceCount: 0,
           metricCount: 0,
           createdAt: "2026-10-01T00:00:00.000Z",
@@ -58,6 +58,27 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => ({
             changedKeys: ["files"],
             sourceType: "company_skill_version",
             occurredAt: "2026-10-01T00:45:00.000Z",
+          },
+          {
+            id: "item-skill-audit",
+            entityType: "skill",
+            entityId: "skill-1",
+            entityName: "Research",
+            changeKind: "company.skills_synced",
+            changedKeys: ["revisionNumber"],
+            sourceType: "activity",
+            sourceActivityId: "audit-1",
+            occurredAt: "2026-10-01T00:45:01.000Z",
+          },
+          {
+            id: "item-plugin-event",
+            entityType: "agent",
+            entityId: "agent-2",
+            entityName: "Agent lifecycle",
+            changeKind: "agent.created",
+            changedKeys: [],
+            sourceType: "plugin_event",
+            occurredAt: "2026-10-01T00:45:02.000Z",
           },
         ],
         evidence: [],
@@ -166,6 +187,17 @@ describe("Evolution detail actions", () => {
 
     await act(async () => clickButton(container, "Attach"));
     expect(mocks.actions["add-evidence"]).not.toHaveBeenCalled();
+  });
+
+  it("labels each timeline record by source, including a separate version and Audit activity", async () => {
+    const container = await renderPage();
+    expect(container.textContent).toContain("Native Agent revision");
+    expect(container.textContent).toContain("Native Skill version");
+    expect(container.textContent).toContain("Audit activity");
+    expect(container.textContent).toContain("Plugin event");
+    expect(container.textContent).toContain("One edit can appear as a native version and a separate Audit activity");
+    expect(container.textContent).toContain("Rows count captured Change Items, not distinct edits.");
+    expect(container.textContent).toContain("Audit audit-1");
   });
 
   it("routes only selected timeline item IDs to the move action and opens the target after refresh", async () => {

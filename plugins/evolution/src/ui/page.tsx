@@ -37,6 +37,7 @@ type ChangeItem = {
   sourceType: string;
   sourceRef?: string | null;
   sourceActivityId?: string | null;
+  metadata?: Record<string, unknown>;
   occurredAt: string;
   beforeSnapshot?: unknown;
   afterSnapshot?: unknown;
@@ -166,6 +167,16 @@ function fmtDate(value?: string | null): string {
 
 function statusLabel(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function sourceLabel(value: string): string {
+  const labels: Record<string, string> = {
+    agent_config_revision: "Native Agent revision",
+    company_skill_version: "Native Skill version",
+    activity: "Audit activity",
+    plugin_event: "Plugin event",
+  };
+  return labels[value] ?? statusLabel(value);
 }
 
 function metricLabel(value: string): string {
@@ -598,6 +609,9 @@ function DetailView({
             </button>
           </div>
         </div>
+        <div style={{ ...muted, fontSize: 10, lineHeight: 1.4, marginBottom: 10 }}>
+          One edit can appear as a native version and a separate Audit activity. Rows count captured Change Items, not distinct edits.
+        </div>
         {showMoveForm ? (
           <form onSubmit={(event) => void moveItems(event)} style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
             <label htmlFor="evolution-move-target" style={{ ...muted, fontSize: 11 }}>Target Change Set ID</label>
@@ -637,12 +651,17 @@ function DetailView({
                 <details style={{ flex: 1, minWidth: 0 }}>
                   <summary style={{ cursor: "pointer", fontSize: 12 }}>
                     <strong>{item.entityName || item.entityId}</strong>
-                    <span style={{ ...muted }}> · {statusLabel(item.entityType)} · {statusLabel(item.changeKind)} · {fmtDate(item.occurredAt)}</span>
+                    <span style={{ ...muted }}> · {sourceLabel(item.sourceType)} · {statusLabel(item.entityType)} · {statusLabel(item.changeKind)} · {fmtDate(item.occurredAt)}</span>
                   </summary>
                   <div style={{ ...muted, fontSize: 11, marginTop: 7 }}>
                     Changed: {Array.isArray(item.changedKeys) && item.changedKeys.length ? item.changedKeys.join(", ") : "snapshot"}
                     {item.sourceActivityId ? <> · Audit {item.sourceActivityId}</> : null}
                   </div>
+                  {item.metadata?.activityAssociation === "temporal_candidate" ? (
+                    <div role="note" style={{ color: "var(--muted-foreground)", fontSize: 11, marginTop: 6 }}>
+                      This is a real config revision matched by time proximity only. Its Audit activity and run context are not linked as proven provenance.
+                    </div>
+                  ) : null}
                   {[snapshotLimitation(item.beforeSnapshot), snapshotLimitation(item.afterSnapshot)].filter((note, index, all): note is string => Boolean(note) && all.indexOf(note) === index).map((note) => (
                     <div key={note} role="note" style={{ color: "var(--muted-foreground)", fontSize: 11, marginTop: 6 }}>
                       {note}

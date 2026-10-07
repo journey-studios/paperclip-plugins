@@ -53,6 +53,8 @@ Automatic Change Sets are grouped by originating run when possible, otherwise by
 
 Actor/time groups are a convenience and can contain unrelated agents, skills, or changes. Select only the relevant timeline items and move them into a conceptual Change Set when curating a mixed group. The source Change Set remains, its other items and evidence/conclusions stay in place, and the target records a provenance link to the source with the moved item IDs. Metrics are recomputed for both sets.
 
+Backfill keeps native versions and Audit activity as separate Change Items. A single skill edit can therefore appear as both a Native Skill version and a separate Audit activity; each row preserves its source provenance, and Change Item counts are captured records rather than distinct edits. Evolution does not heuristically merge or discard these records.
+
 Use Merge into… only when the whole source set belongs in the target. Whole-set merge moves all change items, evidence, conclusions, and links, removes the source set, and recomputes target metrics.
 
 ## Evidence and causality
