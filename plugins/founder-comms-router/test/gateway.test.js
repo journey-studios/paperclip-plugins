@@ -190,3 +190,14 @@ test("transient publication errors have a bounded retry budget persisted in plug
   assert.equal(f.errors.filter((entry) => entry.message === "Founder publication reconciliation failed").length, 4);
   assert.equal(f.errors.filter((entry) => entry.message === "Founder comms event failed").length, 1);
 });
+
+test("an unconfigured Founder gate fails closed without a misleading restriction message", async () => {
+  const f = fixture();
+  const invoke = () => executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "agents", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "other-user" } });
+  f.ctx.config.get = async () => ({ founderUserId: "founder" });
+  assert.deepEqual(await invoke(), { handled: false });
+  f.ctx.config.get = async () => ({ liaisonAgentId: "liaison" });
+  assert.deepEqual(await invoke(), { handled: false });
+});
