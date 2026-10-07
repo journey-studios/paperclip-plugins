@@ -64,5 +64,5 @@ export async function executeFounderCommand(ctx, params, invocation) {
     text: "Este comando é restrito ao Founder vinculado no Paperclip.",
   };
   const text = await command(ctx, companyId);
-  return { handled: true, text: compact(text, MAX_TEXT) };
+  return { handled: true, text: String(text).slice(0, MAX_TEXT) };
 }
