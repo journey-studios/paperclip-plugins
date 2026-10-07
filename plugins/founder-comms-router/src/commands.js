@@ -57,7 +57,8 @@ export async function executeFounderCommand(ctx, params, invocation) {
     return { handled: false };
   }
   const config = await companyConfig(ctx, companyId);
-  if (!config.commandsEnabled || !config.chatChannels.includes("telegram") ||
+  if (!config.liaisonAgentId || !config.founderUserId ||
+      !config.commandsEnabled || !config.chatChannels.includes("telegram") ||
       params?.assigneeAgentId !== config.liaisonAgentId) return { handled: false };
   if (actor.userId !== config.founderUserId) return {
     handled: true,

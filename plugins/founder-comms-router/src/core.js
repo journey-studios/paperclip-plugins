@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const EVENT_PREFIX = "[FOUNDER_COMMS_EVENT]";
 const MAX_PROCESSED = 500;
 const MAX_QUEUE = 100;
@@ -275,7 +277,8 @@ async function publishForRun(ctx, companyId, config, runId) {
       throw error;
     }
   }
-  await ctx.state.set(key, (Array.isArray(queue) ? queue : []).filter((entry) =>
+  const latest = await ctx.state.get(key);
+  await ctx.state.set(key, (Array.isArray(latest) ? latest : []).filter((entry) =>
     stringValue(asObject(entry).runId) !== runId));
   return { status: "accepted", commentId: comment.id };
 }
@@ -331,6 +334,52 @@ async function handleAgentRunFinished(ctx, event, config) {
   }
 }
 
+/**
+ * Replay-safe company-scoped system comment creation.
+ *
+ * The delivery marker is persisted immediately after a successful write and
+ * before the wakeup. A stable marker in the original comment also repairs the
+ * crash window between the issue write and the plugin-state update. The
+ * conversation ID is part of the token: a retired conversation never prevents
+ * delivery to a newly bound conversation.
+ */
+async function ensureSystemInputComment(ctx, companyId, issueId, deliveryId, body) {
+  const token = createHash("sha256")
+    .update(JSON.stringify([companyId, issueId, deliveryId]))
+    .digest("hex");
+  const key = companyScope(companyId, `comment-created:${token}`);
+  const prior = asObject(await ctx.state.get(key));
+  if (prior.created === true && prior.issueId === issueId) return prior;
+
+  if (!body.startsWith(`${EVENT_PREFIX}\n`)) throw new Error("Invalid founder system event marker");
+  const tagged = body.replace(`${EVENT_PREFIX}\n`, `${EVENT_PREFIX}\ndelivery=${token}\n`);
+  const existing = (await ctx.issues.listComments(issueId, companyId)).find((comment) =>
+    comment.issueId === issueId && comment.companyId === companyId &&
+    !comment.deletedAt && typeof comment.body === "string" &&
+    comment.body.startsWith(`${EVENT_PREFIX}\ndelivery=${token}\n`));
+  const created = existing ?? await ctx.issues.createComment(issueId, tagged, companyId);
+  const record = { created: true, issueId, commentId: stringValue(created?.id) };
+  await ctx.state.set(key, record);
+  return record;
+}
+
+/** Remove only delivered items, preserving later additions while awaiting I/O. */
+async function removeDeliveredQueueItems(ctx, companyId, queueKey, batch) {
+  const key = companyScope(companyId, queueKey);
+  const delivered = new Set(batch.map((raw) => stringValue(asObject(raw).id)));
+  const latest = await ctx.state.get(key);
+  await ctx.state.set(key, (Array.isArray(latest) ? latest : []).filter((entry) =>
+    !delivered.has(stringValue(asObject(entry).id))));
+}
+
+/** A batch id must include *only* the items sent in that batch. */
+function batchDeliveryId(kind, items) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(items.map((raw) => stringValue(asObject(raw).id))))
+    .digest("hex");
+  return `${kind}-${digest}`;
+}
+
 async function publishToConversation(ctx, companyId, config, item) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) {
@@ -349,7 +398,7 @@ async function publishToConversation(ctx, companyId, config, item) {
     "This is a system-originated founder communication event, not a message written by the founder. Validate the original Paperclip object before acting."
   ].join("\n");
 
-  await ctx.issues.createComment(conversation.id, body, companyId);
+  await ensureSystemInputComment(ctx, companyId, conversation.id, `event:${item.id}`, body);
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_event",
     contextSource: "plugin.founder-comms-router",
@@ -368,23 +417,21 @@ async function flushPendingImmediate(ctx, companyId, config) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) return;
 
-  const lines = queue.slice(0, 20).map((raw) => {
+  const batch = queue.slice(0, 20);
+  const lines = batch.map((raw) => {
     const item = asObject(raw);
     return `- [${stringValue(item.priority) ?? "P1"}] ${stringValue(item.message) ?? "Founder attention event"} (source: ${stringValue(item.sourceRef) ?? "unknown"})`;
   });
-  const id = `pending-${queue.map((raw) => stringValue(asObject(raw).id) ?? "").join("-").slice(0, 180)}`;
-  await ctx.issues.createComment(
-    conversation.id,
-    [EVENT_PREFIX, "priority=P1", "event=pending.flush", "", "Pending founder attention:", ...lines, "", "Validate each original Paperclip object before acting."].join("\n"),
-    companyId,
-  );
+  const id = batchDeliveryId("pending", batch);
+  await ensureSystemInputComment(ctx, companyId, conversation.id, id,
+    [EVENT_PREFIX, "priority=P1", "event=pending.flush", "", "Pending founder attention:", ...lines, "", "Validate each original Paperclip object before acting."].join("\n"));
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_pending_flush",
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${id}`,
   });
   if (config.publicationEnabled) await rememberPublicationRun(ctx, companyId, conversation.id, wake, id);
-  await ctx.state.set(key, queue.slice(20));
+  await removeDeliveredQueueItems(ctx, companyId, "pending-immediate", batch);
 }
 
 async function handleIssueCreated(ctx, event, config) {
@@ -576,19 +623,16 @@ async function flushDigest(ctx, companyId, scheduledSlot = null) {
     const item = asObject(raw);
     return `- ${stringValue(item.message) ?? "Meaningful update"} (source: ${stringValue(item.sourceRef) ?? "unknown"})`;
   });
-  const digestId = batch.map((raw) => stringValue(asObject(raw).id) ?? "").join("-").slice(0, 180);
-  await ctx.issues.createComment(
-    conversation.id,
-    [EVENT_PREFIX, "priority=P2", "event=founder.digest", "", "Founder digest input:", ...lines, "", "Summarize and deduplicate. This input is system-originated, not founder-authored. Do not invent actions where none are required."].join("\n"),
-    companyId,
-  );
+  const digestId = batchDeliveryId("digest", batch);
+  await ensureSystemInputComment(ctx, companyId, conversation.id, digestId,
+    [EVENT_PREFIX, "priority=P2", "event=founder.digest", "", "Founder digest input:", ...lines, "", "Summarize and deduplicate. This input is system-originated, not founder-authored. Do not invent actions where none are required."].join("\n"));
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_digest",
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-digest:${digestId}`,
   });
   if (config.publicationEnabled) await rememberPublicationRun(ctx, companyId, conversation.id, wake, digestId);
-  await ctx.state.set(key, queue.slice(batch.length));
+  await removeDeliveredQueueItems(ctx, companyId, "digest-queue", batch);
   if (scheduledSlot) await ctx.state.set(companyScope(companyId, "last-digest-slot"), scheduledSlot);
 }
 
