@@ -1,0 +1,13 @@
+title = "Paperclip secret scan with narrow Evolution test-fixture exceptions"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exact synthetic credentials used only to exercise Evolution redaction tests"
+# Match only these known fixture literals, even in historical diffs. Do not exempt their paths.
+regexTarget = "line"
+regexes = [
+  '''"AKIAABCDEFGHIJKLMNOP"''',
+  '''const privateKey = "-----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----";''',
+]

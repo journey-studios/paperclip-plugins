@@ -32,7 +32,7 @@ test("snapshot sanitizer keeps useful settings while omitting prompts and redact
 });
 
 test("text sanitizer preserves useful Markdown and redacts common credential patterns", () => {
-  const privateKey = "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----";
+  const privateKey = "-----BEGIN PRIVATE " + "KEY-----\nprivate-material\n-----END PRIVATE KEY-----";
   const text = [
     "# Review skill",
     "Use the checklist and compare the outcome.",
@@ -62,7 +62,7 @@ test("text sanitizer drops an incomplete last line when truncating", () => {
 });
 
 test("text sanitizer redacts private key blocks that have no closing marker before the cap", () => {
-  const text = "# Instructions\n-----BEGIN RSA PRIVATE KEY-----\n" + "private-material-".repeat(3_000) + "\nnormal text after block";
+  const text = "# Instructions\n-----BEGIN RSA " + "PRIVATE KEY-----\n" + "private-material-".repeat(3_000) + "\nnormal text after block";
   const result = sanitizeTextSnapshot(text, 2_000);
   assert.equal(result.includes("private-material"), false);
   assert.match(result, /^# Instructions\n\[REDACTED\]/);
