@@ -5,12 +5,13 @@ export const PLUGIN_ID = "journeystudios.evolution";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.1",
   displayName: "Org Tracker",
   description: "Track operational changes, diffs, evidence, runs, metrics, and conclusions across Paperclip agents and skills.",
   author: "Journey Studios",
   categories: ["automation", "ui"],
   capabilities: [
+    "api.routes.register",
     "events.subscribe",
     "database.namespace.migrate",
     "database.namespace.read",
@@ -37,8 +38,18 @@ const manifest: PaperclipPluginManifestV1 = {
       "agent_config_revisions",
       "company_skills",
       "company_skill_versions"
-    ]
+    ] as unknown as NonNullable<PaperclipPluginManifestV1["database"]>["coreReadTables"]
   },
+  apiRoutes: [
+    ...(["POST", "GET"] as const).map((method) => ({
+      routeKey: "mcp",
+      method,
+      path: "/mcp",
+      auth: "board" as const,
+      capability: "api.routes.register" as const,
+      companyResolution: { from: "query" as const, key: "companyId" },
+    })),
+  ],
   ui: {
     slots: [
       {
