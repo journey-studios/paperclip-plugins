@@ -1,4 +1,4 @@
-# Evolution
+# Org Tracker
 
 Journey Studios Change Intelligence plugin for Paperclip.
 
@@ -16,14 +16,12 @@ It keeps operational change metadata in a plugin-owned PostgreSQL namespace and 
 - Conclusions with confidence
 - Evolution timeline and detail UI
 
+In the detail view, compare the before and after snapshots and check for the partial-history notice. Candidate runs are suggestions: attach only comparable runs and choose their verdict deliberately. Run success and before/after metrics describe observations; they do not establish that a change caused an improvement.
+
+Metrics show sample counts for both windows. Run metrics count runs, while cost and token metrics count cost events. Interpret zero or small samples as inconclusive. See [the model and evidence guide](./EVOLUTION.md) for the status and causality meanings.
+
 ## Core extension
 
 Requires the Journey runtime read-only plugin database extension for activity_log, agent_config_revisions, company_skills, and company_skill_versions.
 
 It also forwards skill mutation audit actions as the existing activity.logged plugin event.
-
-## Merge recovery
-
-Merges preserve their selected destination and can be retried there after concurrent captures finish. Migration `003_safe_merge.sql` prevents parent deletion from cascading into captured changes and keeps old capture contexts pointing at the destination, including after later merges. The SDK provides individual database statements, so a failed merge may already have transferred some rows; retry completes the remaining transfers.
-
-The test suite covers redaction, company ownership, missing metrics and merge recovery. CI also runs the migrations and concurrent-capture regressions against a dedicated PostgreSQL 16 service.
