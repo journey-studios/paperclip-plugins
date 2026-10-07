@@ -1,0 +1,16 @@
+.paperclip/
+node_modules/
+**/node_modules/
+**/dist/
+.package-output/
+.DS_Store
+.env
+.env.*
+*.dump
+*.log
+*.pem
+*.key
+backup/
+snapshots/
+credentials/
+secrets/

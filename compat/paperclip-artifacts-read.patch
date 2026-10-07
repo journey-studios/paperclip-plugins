@@ -1,0 +1,803 @@
+diff --git a/packages/plugins/sdk/README.md b/packages/plugins/sdk/README.md
+index 23f4a0311..d0a4558b4 100644
+--- a/packages/plugins/sdk/README.md
++++ b/packages/plugins/sdk/README.md
+@@ -100,7 +100,7 @@ runWorker(plugin, import.meta.url);
+ | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
+ | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
+ 
+-**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
++**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `artifacts`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+ 
+ **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
+ 
+@@ -310,6 +310,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
+ | Scope | Capability |
+ |-------|------------|
+ | **Company** | `companies.read` |
++| **Artifact catalog** | `artifacts.read` |
+ | | `projects.read` |
+ | | `project.workspaces.read` |
+ | | `issues.read` |
+@@ -1305,3 +1306,23 @@ An `appShellOverlay` slot uses `ui.action.register` and the standard
+ `PluginWidgetProps` context. It survives navigation and unmounts on account or
+ company changes, sign-out and onboarding. Plugins own panel accessibility and
+ request cleanup. See [the distribution and lifecycle contract](../../../doc/plugins/DISTRIBUTION-PLUGINS.md).
++
++
++## Company artifact catalog
++
++Declare `artifacts.read` to read the same company-scoped catalog used by the native Artifacts page:
++
++```ts
++const page = await ctx.artifacts.list({
++  companyId,
++  kind: "image",
++  projectId,
++  q: "launch",
++  limit: 100,
++  cursor: previousPage?.nextCursor ?? undefined,
++});
++```
++
++`PluginArtifactsListInput` accepts `kind`, `projectId`, `q`, `groupBy` (`none`, `task`, `parent_task`), `groupIssueId`, `limit` (1–100), and the opaque `cursor`. The response is `CompanyArtifactsResponse`: `artifacts`, `nextCursor`, and optional `groups`/`selectedGroup` for grouped queries. Call it from a company-scoped UI, API, tool, or event invocation; a missing, expired, or different host-authorized company scope is denied before querying. The worker and host both enforce `artifacts.read`.
++
++Native per-user `starred` filtering is excluded. Store plugin folders, tags, favorites, and saved views in plugin-owned company metadata. The host delegates to the canonical artifact service, preserving document/attachment/work-product classification, deduplication, hidden-task exclusion, filter validation, and cursor pagination. No artifact source is copied or mutated. Unit fixtures may be seeded with `harness.seed({ artifacts: [{ companyId, ...artifact }] })`.
+diff --git a/packages/plugins/sdk/src/host-client-factory.ts b/packages/plugins/sdk/src/host-client-factory.ts
+index f0c4db2de..10161458c 100644
+--- a/packages/plugins/sdk/src/host-client-factory.ts
++++ b/packages/plugins/sdk/src/host-client-factory.ts
+@@ -196,6 +196,11 @@ export interface HostServices {
+     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
+   };
+ 
++  /** Provides the canonical `artifacts.list` catalog. */
++  artifacts: {
++    list(params: WorkerToHostMethods["artifacts.list"][0]): Promise<WorkerToHostMethods["artifacts.list"][1]>;
++  };
++
+   /** Provides `projects.list`, `projects.get`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
+   projects: {
+     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
+@@ -432,6 +437,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
+   "companies.list": "companies.read",
+   "companies.get": "companies.read",
+ 
++  // Artifacts
++  "artifacts.list": "artifacts.read",
++
+   // Projects
+   "projects.list": "projects.read",
+   "projects.get": "projects.read",
+@@ -819,6 +827,10 @@ export function createHostClientHandlers(
+     }),
+ 
+     // Projects
++    "artifacts.list": gated("artifacts.list", async (params) => {
++      return services.artifacts.list(params);
++    }),
++
+     "projects.list": gated("projects.list", async (params) => {
+       return services.projects.list(params);
+     }),
+diff --git a/packages/plugins/sdk/src/index.ts b/packages/plugins/sdk/src/index.ts
+index 1cf5adf0d..961965106 100644
+--- a/packages/plugins/sdk/src/index.ts
++++ b/packages/plugins/sdk/src/index.ts
+@@ -246,6 +246,8 @@ export type {
+   PluginActivityLogEntry,
+   PluginStateClient,
+   PluginEntitiesClient,
++  PluginArtifactsClient,
++  PluginArtifactsListInput,
+   PluginProjectsClient,
+   PluginExecutionWorkspacesClient,
+   PluginSkillsClient,
+@@ -313,6 +315,12 @@ export type {
+   PluginWorkspace,
+   PluginExecutionWorkspaceMetadata,
+   Company,
++  CompanyArtifact,
++  CompanyArtifactGroup,
++  CompanyArtifactGroupBy,
++  CompanyArtifactMediaKind,
++  CompanyArtifactsQuery,
++  CompanyArtifactsResponse,
+   Project,
+   Issue,
+   IssueComment,
+diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
+index a599a8fc7..ac8db0fb8 100644
+--- a/packages/plugins/sdk/src/protocol.ts
++++ b/packages/plugins/sdk/src/protocol.ts
+@@ -22,6 +22,7 @@ import type {
+   PluginLauncherRenderEnvironment,
+   PluginStateScopeKind,
+   Company,
++  CompanyArtifactsResponse,
+   Project,
+   Issue,
+   IssueComment,
+@@ -53,6 +54,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+ 
+ import type {
+   PluginEvent,
++  PluginArtifactsListInput,
+   PluginIssueCheckoutOwnership,
+   PluginIssueOrchestrationSummary,
+   PluginIssueRelationSummary,
+@@ -1732,6 +1734,9 @@ export interface WorkerToHostMethods {
+     result: Company | null,
+   ];
+ 
++  // Canonical company artifacts (read)
++  "artifacts.list": [params: PluginArtifactsListInput, result: CompanyArtifactsResponse];
++
+   // Projects (read)
+   "projects.list": [
+     params: { companyId: string; limit?: number; offset?: number },
+diff --git a/packages/plugins/sdk/src/testing.ts b/packages/plugins/sdk/src/testing.ts
+index 799ec106c..96b670dad 100644
+--- a/packages/plugins/sdk/src/testing.ts
++++ b/packages/plugins/sdk/src/testing.ts
+@@ -1,5 +1,5 @@
+ import { randomUUID } from "node:crypto";
+-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
++import { companyArtifactsQuerySchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
+ import type {
+   PaperclipPluginManifestV1,
+   PluginCapability,
+@@ -10,6 +10,8 @@ import type {
+   PluginManagedSkillResolution,
+   CompanySkill,
+   Company,
++  CompanyArtifact,
++  CompanyArtifactGroup,
+   Project,
+   Routine,
+   RoutineRun,
+@@ -109,6 +111,8 @@ export interface TestHarness {
+   /** Seed host entities for `ctx.companies/projects/issues/agents/goals/access/authorization` reads. */
+   seed(input: {
+     companies?: Company[];
++    /** Canonical flattened artifact fixtures, scoped explicitly to their company. */
++    artifacts?: Array<CompanyArtifact & { companyId: string }>;
+     projects?: Project[];
+     issues?: Issue[];
+     issueComments?: IssueComment[];
+@@ -492,6 +496,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
+   const entities = new Map<string, PluginEntityRecord>();
+   const entityExternalIndex = new Map<string, string>();
+   const companies = new Map<string, Company>();
++  const artifacts = new Map<string, CompanyArtifact & { companyId: string }>();
+   const projects = new Map<string, Project>();
+   const routines = new Map<string, Routine>();
+   const routineRuns = new Map<string, RoutineRun>();
+@@ -988,6 +993,86 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
+         return out;
+       },
+     },
++    artifacts: {
++      async list(input) {
++        requireCapability(manifest, capabilitySet, "artifacts.read");
++        const companyId = requireCompanyId(input?.companyId);
++        const query = companyArtifactsQuerySchema.parse({ ...input, starred: false });
++        let cursor: { id: string; updatedAt: string } | null = null;
++        if (query.cursor) {
++          try {
++            const decoded = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8"));
++            if (typeof decoded.id !== "string" || typeof decoded.updatedAt !== "string"
++              || Number.isNaN(Date.parse(decoded.updatedAt))) throw new Error("Invalid cursor");
++            cursor = decoded;
++          } catch {
++            throw new Error("Invalid artifacts cursor");
++          }
++        }
++        const compareRows = (a: { id: string; updatedAt: string }, b: { id: string; updatedAt: string }) =>
++          Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
++        const sorted = [...artifacts.values()]
++          .filter((row) => row.companyId === companyId)
++          .filter((row) => query.kind === "all" || row.mediaKind === query.kind)
++          .filter((row) => !query.projectId || row.project?.id === query.projectId)
++          .filter((row) => !query.q || `${row.title} ${row.previewText ?? ""} ${row.issue.title} ${row.issue.identifier}`
++            .toLowerCase().includes(query.q.toLowerCase()))
++          .map(({ companyId: _companyId, ...row }) => row)
++          .sort(compareRows);
++        const page = <T extends { id: string; updatedAt: string }>(rows: T[]) => {
++          const remaining = rows.filter((row) => !cursor || Date.parse(row.updatedAt) < Date.parse(cursor.updatedAt)
++            || (Date.parse(row.updatedAt) === Date.parse(cursor.updatedAt) && row.id < cursor.id));
++          const items = remaining.slice(0, query.limit);
++          const last = items[items.length - 1];
++          const nextCursor = remaining.length > query.limit && last
++            ? Buffer.from(JSON.stringify({ id: last.id, updatedAt: last.updatedAt }), "utf8").toString("base64url")
++            : null;
++          return { items, nextCursor };
++        };
++        if (query.groupBy === "none") {
++          const result = page(sorted);
++          return { artifacts: result.items, nextCursor: result.nextCursor };
++        }
++        const groupBy = query.groupBy;
++        const groupIdFor = (row: CompanyArtifact) => {
++          let issueId = row.issue.id;
++          if (groupBy === "parent_task") {
++            const seen = new Set<string>();
++            while (!seen.has(issueId)) {
++              seen.add(issueId);
++              const parentId = issues.get(issueId)?.parentId;
++              if (!parentId || !isInCompany(issues.get(parentId), companyId)) break;
++              issueId = parentId;
++            }
++          }
++          return issueId;
++        };
++        const groups = new Map<string, CompanyArtifactGroup>();
++        for (const row of sorted) {
++          const issueId = groupIdFor(row);
++          const issue = issues.get(issueId);
++          let group = groups.get(issueId);
++          if (!group) {
++            const summary = isInCompany(issue, companyId)
++              ? { id: issue.id, identifier: issue.identifier ?? issue.id, title: issue.title } : row.issue;
++            group = { id: `${groupBy}:${issueId}`, groupBy, issue: summary, title: summary.title,
++              count: 0, mediaKinds: [], previewArtifacts: [], updatedAt: row.updatedAt,
++              href: `/${encodeURIComponent(companies.get(companyId)?.issuePrefix ?? companyId)}/artifacts?groupBy=${groupBy}&groupIssueId=${issueId}` };
++            groups.set(issueId, group);
++          }
++          group.count += 1;
++          if (!group.mediaKinds.includes(row.mediaKind)) group.mediaKinds.push(row.mediaKind);
++          if (group.previewArtifacts.length < 3) group.previewArtifacts.push(row);
++        }
++        if (query.groupIssueId) {
++          const selectedGroup = groups.get(query.groupIssueId) ?? null;
++          const result = page(sorted.filter((row) => groupIdFor(row) === query.groupIssueId));
++          return { artifacts: result.items, selectedGroup, nextCursor: result.nextCursor };
++        }
++        const result = page([...groups.values()].sort(compareRows));
++        return { artifacts: [], groups: result.items, nextCursor: result.nextCursor };
++      },
++    },
+     projects: {
+       async list(input) {
+         requireCapability(manifest, capabilitySet, "projects.read");
+@@ -2534,6 +2619,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
+     ctx,
+     seed(input) {
+       for (const row of input.companies ?? []) companies.set(row.id, row);
++      for (const row of input.artifacts ?? []) artifacts.set(`${row.companyId}:${row.id}`, row);
+       for (const row of input.projects ?? []) projects.set(row.id, row);
+       for (const row of input.issues ?? []) {
+         issues.set(row.id, row);
+diff --git a/packages/plugins/sdk/src/types.ts b/packages/plugins/sdk/src/types.ts
+index 56a561a29..c5d38b62d 100644
+--- a/packages/plugins/sdk/src/types.ts
++++ b/packages/plugins/sdk/src/types.ts
+@@ -16,6 +16,12 @@ import type {
+   PluginToolDeclaration,
+   PluginLauncherDeclaration,
+   Company,
++  CompanyArtifact,
++  CompanyArtifactGroup,
++  CompanyArtifactGroupBy,
++  CompanyArtifactMediaKind,
++  CompanyArtifactsQuery,
++  CompanyArtifactsResponse,
+   Project,
+   Issue,
+   IssueComment,
+@@ -125,6 +131,12 @@ export type {
+   PluginEventType,
+   PluginBridgeErrorCode,
+   Company,
++  CompanyArtifact,
++  CompanyArtifactGroup,
++  CompanyArtifactGroupBy,
++  CompanyArtifactMediaKind,
++  CompanyArtifactsQuery,
++  CompanyArtifactsResponse,
+   Project,
+   Issue,
+   IssueComment,
+@@ -830,6 +842,19 @@ export interface PluginEntitiesClient {
+   list(query: PluginEntityQuery): Promise<PluginEntityRecord[]>;
+ }
+ 
++/** Query the canonical company artifact catalog. Native per-user stars are excluded. */
++export type PluginArtifactsListInput = { companyId: string } & Partial<Omit<CompanyArtifactsQuery, "starred">>;
++
++/**
++ * `ctx.artifacts` — read agent-produced documents, attachments, and work products.
++ * Requires `artifacts.read`; the host invocation must authorize `companyId`.
++ * Uses the same filters, grouping, and opaque cursors as the native Artifacts page.
++ * Plugin favorites belong in plugin-owned metadata rather than native user stars.
++ */
++export interface PluginArtifactsClient {
++  list(input: PluginArtifactsListInput): Promise<CompanyArtifactsResponse>;
++}
++
+ /**
+  * `ctx.projects` — read project and workspace metadata.
+  *
+@@ -2159,6 +2184,9 @@ export interface PluginContext {
+   /** Create and query plugin-owned entity records. */
+   entities: PluginEntitiesClient;
+ 
++  /** Read the company artifact catalog. Requires `artifacts.read`. */
++  artifacts: PluginArtifactsClient;
++
+   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
+   projects: PluginProjectsClient;
+ 
+diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
+index 5e56ef200..c81f10551 100644
+--- a/packages/plugins/sdk/src/worker-rpc-host.ts
++++ b/packages/plugins/sdk/src/worker-rpc-host.ts
+@@ -48,6 +48,7 @@ import type {
+   SuggestTasksInteraction,
+ } from "@paperclipai/shared";
+ 
++import { CapabilityDeniedError } from "./host-client-factory.js";
+ import type { PaperclipPlugin } from "./define-plugin.js";
+ import type {
+   PluginApiRequestInput,
+@@ -695,6 +696,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+         },
+       },
+ 
++      artifacts: {
++        async list(input) {
++          if (!manifest?.capabilities.includes("artifacts.read")) {
++            throw new CapabilityDeniedError(manifest?.id ?? "unknown", "artifacts.list", "artifacts.read");
++          }
++          return callHost("artifacts.list", {
++            companyId: input.companyId,
++            kind: input.kind,
++            projectId: input.projectId,
++            q: input.q,
++            groupBy: input.groupBy,
++            groupIssueId: input.groupIssueId,
++            limit: input.limit,
++            cursor: input.cursor,
++          });
++        },
++      },
++
+       projects: {
+         async list(input) {
+           return callHost("projects.list", {
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 33d1e61e8..cd5a03a03 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1322,6 +1322,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+ export const PLUGIN_CAPABILITIES = [
+   // Data Read
+   "companies.read",
++  "artifacts.read",
+   "projects.read",
+   "project.workspaces.read",
+   "execution.workspaces.read",
+diff --git a/server/src/services/plugin-capability-validator.ts b/server/src/services/plugin-capability-validator.ts
+index eb0b83d3f..4436cbc80 100644
+--- a/server/src/services/plugin-capability-validator.ts
++++ b/server/src/services/plugin-capability-validator.ts
+@@ -45,6 +45,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
+   // Data read operations
+   "companies.list": ["companies.read"],
+   "companies.get": ["companies.read"],
++  "artifacts.list": ["artifacts.read"],
+   "projects.list": ["projects.read"],
+   "projects.get": ["projects.read"],
+   "projects.managed.get": ["projects.managed"],
+diff --git a/server/src/services/plugin-host-services.ts b/server/src/services/plugin-host-services.ts
+index 185524fc9..a9962eeda 100644
+--- a/server/src/services/plugin-host-services.ts
++++ b/server/src/services/plugin-host-services.ts
+@@ -30,6 +30,7 @@ import type {
+ import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+ import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+ import { companyService } from "./companies.js";
++import { companyArtifactsService } from "./company-artifacts.js";
+ import { agentService } from "./agents.js";
+ import { projectService } from "./projects.js";
+ import { executionWorkspaceService } from "./execution-workspaces.js";
+@@ -1714,6 +1715,24 @@ export function buildHostServices(
+       },
+     },
+ 
++    artifacts: {
++      async list(params) {
++        const companyId = ensureCompanyId(params.companyId);
++        await ensurePluginAvailableForCompany(companyId);
++        // Only forward the catalog's public read filters. In particular, native
++        // starred filtering needs an authenticated user and is not a plugin API.
++        return companyArtifactsService(db, getStorageService()).list(companyId, {
++          kind: params.kind,
++          projectId: params.projectId,
++          q: params.q,
++          groupBy: params.groupBy,
++          groupIssueId: params.groupIssueId,
++          limit: params.limit,
++          cursor: params.cursor,
++        });
++      },
++    },
++
+     projects: {
+       async list(params) {
+         const companyId = ensureCompanyId(params.companyId);
+diff --git a/packages/plugins/sdk/tests/artifacts.test.ts b/packages/plugins/sdk/tests/artifacts.test.ts
+new file mode 100644
+index 000000000..0d3bf2854
+--- /dev/null
++++ b/packages/plugins/sdk/tests/artifacts.test.ts
+@@ -0,0 +1,207 @@
++import { createInterface } from "node:readline";
++import { PassThrough } from "node:stream";
++import { describe, expect, it, vi } from "vitest";
++import type { CompanyArtifact, PaperclipPluginManifestV1 } from "@paperclipai/shared";
++import { definePlugin } from "../src/define-plugin.js";
++import {
++  CapabilityDeniedError,
++  createHostClientHandlers,
++  InvocationScopeDeniedError,
++  type HostServices,
++} from "../src/host-client-factory.js";
++import {
++  createRequest, createSuccessResponse, isJsonRpcRequest, isJsonRpcResponse,
++  parseMessage, serializeMessage, type JsonRpcRequest, type JsonRpcResponse,
++} from "../src/protocol.js";
++import { createTestHarness } from "../src/testing.js";
++import { startWorkerRpcHost } from "../src/worker-rpc-host.js";
++
++const companyId = "11111111-1111-4111-8111-111111111111";
++const otherCompanyId = "22222222-2222-4222-8222-222222222222";
++const projectId = "33333333-3333-4333-8333-333333333333";
++const issueId = "44444444-4444-4444-8444-444444444444";
++function manifest(read = true): PaperclipPluginManifestV1 {
++  return { id: "example.artifact-test", apiVersion: 1, version: "1.0.0", displayName: "Artifact Test",
++    description: "Artifact API tests", author: "Example", categories: ["ui"],
++    capabilities: read ? ["artifacts.read"] : [], entrypoints: { worker: "dist/worker.js" } };
++}
++function fixture(id: string, overrides: Partial<CompanyArtifact> = {}): CompanyArtifact {
++  return { id, source: "attachment", mediaKind: "image", title: "Launch board", previewText: null,
++    contentType: "image/png", contentPath: `/api/attachments/${id}/content`, openPath: null, downloadPath: null,
++    issue: { id: issueId, identifier: "ACME-1", title: "Launch" }, project: { id: projectId, name: "Example Project" },
++    createdByAgent: null, updatedAt: "2026-10-07T00:00:00.000Z", href: "/ACME/issues/ACME-1", ...overrides };
++}
++
++describe("artifact SDK host capability and invocation boundary", () => {
++  it("requires artifacts.read before touching the host service", async () => {
++    const list = vi.fn();
++    const handlers = createHostClientHandlers({ pluginId: manifest().id, capabilities: [],
++      services: { artifacts: { list } } as unknown as HostServices });
++    await expect(handlers["artifacts.list"]({ companyId }, { invocationScope: { companyId } }))
++      .rejects.toBeInstanceOf(CapabilityDeniedError);
++    expect(list).not.toHaveBeenCalled();
++  });
++
++  it("rejects absent, different, and expired company invocation scopes", async () => {
++    const list = vi.fn();
++    const handlers = createHostClientHandlers({ pluginId: manifest().id, capabilities: ["artifacts.read"],
++      services: { artifacts: { list } } as unknown as HostServices });
++    for (const context of [undefined, { invocationScope: { companyId: otherCompanyId } },
++      { invalidInvocationScope: true, invocationScope: { companyId } }]) {
++      await expect(handlers["artifacts.list"]({ companyId }, context))
++        .rejects.toBeInstanceOf(InvocationScopeDeniedError);
++    }
++    expect(list).not.toHaveBeenCalled();
++  });
++
++  it("passes the canonical filters and opaque cursor only in the authorized company", async () => {
++    const response = { artifacts: [fixture("attachment:one")], nextCursor: "opaque" };
++    const list = vi.fn(async () => response);
++    const handlers = createHostClientHandlers({ pluginId: manifest().id, capabilities: ["artifacts.read"],
++      services: { artifacts: { list } } as unknown as HostServices });
++    const input = { companyId, projectId, kind: "image" as const, q: "Launch", groupBy: "task" as const,
++      groupIssueId: issueId, limit: 25, cursor: "previous-opaque" };
++    await expect(handlers["artifacts.list"](input, { invocationScope: { companyId } })).resolves.toBe(response);
++    expect(list).toHaveBeenCalledWith(input);
++  });
++});
++
++describe("artifact SDK test harness", () => {
++  it("enforces capability and required company id", async () => {
++    const denied = createTestHarness({ manifest: manifest(false) });
++    await expect(denied.ctx.artifacts.list({ companyId })).rejects.toThrow("artifacts.read");
++    const allowed = createTestHarness({ manifest: manifest() });
++    await expect(allowed.ctx.artifacts.list({ companyId: "" })).rejects.toThrow("companyId is required");
++  });
++
++  it("isolates companies and combines kind, project and search filters with pagination", async () => {
++    const harness = createTestHarness({ manifest: manifest() });
++    harness.seed({ artifacts: [
++      { companyId, ...fixture("attachment:c") }, { companyId, ...fixture("attachment:b") },
++      { companyId, ...fixture("attachment:a", { mediaKind: "video" }) },
++      { companyId, ...fixture("attachment:other-project", { project: null }) },
++      { companyId: otherCompanyId, ...fixture("attachment:secret") },
++    ] });
++    const input = { companyId, kind: "image" as const, projectId, q: "launch", limit: 1 };
++    const first = await harness.ctx.artifacts.list(input);
++    expect(first.artifacts.map((row) => row.id)).toEqual(["attachment:c"]);
++    expect(first.nextCursor).toBeTruthy();
++    expect(first.artifacts[0]).not.toHaveProperty("companyId");
++    const second = await harness.ctx.artifacts.list({ ...input, cursor: first.nextCursor! });
++    expect(second.artifacts.map((row) => row.id)).toEqual(["attachment:b"]);
++    expect(second.nextCursor).toBeNull();
++    expect((await harness.ctx.artifacts.list({ companyId: otherCompanyId })).artifacts.map((row) => row.id))
++      .toEqual(["attachment:secret"]);
++    await expect(harness.ctx.artifacts.list({ companyId, cursor: "malformed" }))
++      .rejects.toThrow("Invalid artifacts cursor");
++    await expect(harness.ctx.artifacts.list({ companyId, limit: 101 })).rejects.toThrow();
++  });
++
++  it("returns task groups and a company-scoped selected group", async () => {
++    const harness = createTestHarness({ manifest: manifest() });
++    harness.seed({ artifacts: [{ companyId, ...fixture("attachment:one") }] });
++    const grouped = await harness.ctx.artifacts.list({ companyId, groupBy: "task" });
++    expect(grouped.artifacts).toEqual([]);
++    expect(grouped.groups).toMatchObject([{ id: `task:${issueId}`, count: 1 }]);
++    const selected = await harness.ctx.artifacts.list({ companyId, groupBy: "task", groupIssueId: issueId });
++    expect(selected.artifacts).toHaveLength(1);
++    const foreign = await harness.ctx.artifacts.list({ companyId: otherCompanyId, groupBy: "task", groupIssueId: issueId });
++    expect(foreign).toMatchObject({ artifacts: [], selectedGroup: null });
++  });
++
++  it.each(["none", "task"] as const)("paginates tied artifact timestamps in descending code-unit ID order (%s)", async (groupBy) => {
++    const harness = createTestHarness({ manifest: manifest() });
++    const ids = ["attachment:A", "attachment:-", "attachment:z", "attachment:a", "attachment:_", "attachment:Z"];
++    harness.seed({ artifacts: ids.map((id) => ({ companyId, ...fixture(id) })) });
++    const input = { companyId, groupBy, limit: 2, ...(groupBy === "task" ? { groupIssueId: issueId } : {}) };
++    const collected: string[] = [];
++    let cursor: string | null = null;
++    for (let page = 0; page < ids.length; page += 1) {
++      const result = await harness.ctx.artifacts.list({ ...input, ...(cursor ? { cursor } : {}) });
++      collected.push(...result.artifacts.map((row) => row.id));
++      cursor = result.nextCursor;
++      if (!cursor) break;
++    }
++    expect(collected).toEqual(["attachment:z", "attachment:a", "attachment:_", "attachment:Z", "attachment:A", "attachment:-"]);
++    expect(new Set(collected).size).toBe(ids.length);
++    expect(cursor).toBeNull();
++  });
++
++  it.each(["task", "parent_task"] as const)("paginates tied group timestamps in descending code-unit ID order (%s)", async (groupBy) => {
++    const harness = createTestHarness({ manifest: manifest() });
++    const issueIds = [
++      "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAB",
++      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
++      "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBC",
++      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
++    ];
++    harness.seed({ artifacts: issueIds.map((id, index) => ({ companyId, ...fixture(`attachment:${index}`, {
++      issue: { id, identifier: `ACME-${index + 1}`, title: `Task ${index + 1}` },
++    }) })) });
++    const collected: string[] = [];
++    let cursor: string | null = null;
++    for (let page = 0; page < issueIds.length; page += 1) {
++      const result = await harness.ctx.artifacts.list({ companyId, groupBy, limit: 1, ...(cursor ? { cursor } : {}) });
++      collected.push(...(result.groups ?? []).map((row) => row.id));
++      cursor = result.nextCursor;
++      if (!cursor) break;
++    }
++    expect(collected).toEqual([issueIds[1], issueIds[3], issueIds[2], issueIds[0]].map((id) => `${groupBy}:${id}`));
++    expect(new Set(collected).size).toBe(issueIds.length);
++    expect(cursor).toBeNull();
++  });
++});
++
++async function workerRoundTrip(read: boolean) {
++  const input = new PassThrough();
++  const output = new PassThrough();
++  const reader = createInterface({ input: output });
++  const requests: JsonRpcRequest[] = [];
++  const pending = new Map<string, (message: JsonRpcResponse) => void>();
++  const worker = startWorkerRpcHost({ stdin: input, stdout: output, plugin: definePlugin({
++    async setup(ctx) {
++      ctx.data.register("list", async (params) => ctx.artifacts.list({ companyId: String(params.companyId), kind: "image", limit: 2 }));
++    },
++  }) });
++  let nextId = 1;
++  const call = (method: string, params: unknown, scope = false) => {
++    const id = `host-${nextId++}`;
++    const result = new Promise<JsonRpcResponse>((resolve) => pending.set(id, resolve));
++    input.write(serializeMessage({ ...createRequest(method, params, id),
++      ...(scope ? { paperclipInvocation: { id: "invocation-one", scope: { companyId } } } : {}) }));
++    return result;
++  };
++  reader.on("line", (line) => {
++    const message = parseMessage(line);
++    if (isJsonRpcResponse(message)) {
++      pending.get(String(message.id))?.(message);
++      pending.delete(String(message.id));
++    } else if (isJsonRpcRequest(message)) {
++      requests.push(message);
++      input.write(serializeMessage(createSuccessResponse(message.id, { artifacts: [fixture("attachment:one")], nextCursor: null })));
++    }
++  });
++  try {
++    await call("initialize", { manifest: manifest(read), config: {}, databaseNamespace: null });
++    const response = await call("getData", { key: "list", companyId, params: { companyId } }, true);
++    return { response, requests };
++  } finally {
++    worker.stop(); reader.close(); input.destroy(); output.destroy();
++  }
++}
++
++describe("artifact worker client", () => {
++  it("rejects capability denial locally without issuing RPC", async () => {
++    const { response, requests } = await workerRoundTrip(false);
++    expect(response).toMatchObject({ error: { message: expect.stringContaining("artifacts.read") } });
++    expect(requests.filter((request) => request.method === "artifacts.list")).toEqual([]);
++  });
++
++  it("sends typed catalog options and preserves the host invocation id", async () => {
++    const { response, requests } = await workerRoundTrip(true);
++    expect(response).toMatchObject({ result: { artifacts: [{ id: "attachment:one" }], nextCursor: null } });
++    expect(requests.find((request) => request.method === "artifacts.list")).toMatchObject({
++      params: { companyId, kind: "image", limit: 2 }, paperclipInvocationId: "invocation-one",
++    });
++  });
++});
+diff --git a/server/src/__tests__/plugin-artifacts-host-services.test.ts b/server/src/__tests__/plugin-artifacts-host-services.test.ts
+new file mode 100644
+index 000000000..32190e256
+--- /dev/null
++++ b/server/src/__tests__/plugin-artifacts-host-services.test.ts
+@@ -0,0 +1,156 @@
++import { randomUUID } from "node:crypto";
++import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
++import {
++  agents, companies, createDb, documents, issueDocuments, issues, projects,
++} from "@paperclipai/db";
++import * as catalog from "../services/company-artifacts.js";
++import { buildHostServices } from "../services/plugin-host-services.js";
++import { pluginCapabilityValidator } from "../services/plugin-capability-validator.js";
++import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
++
++function eventBus() {
++  return { forPlugin: () => ({ emit: vi.fn(), subscribe: vi.fn(), clear: vi.fn() }) } as any;
++}
++function services(db: ReturnType<typeof createDb>) {
++  return buildHostServices(db, "test-plugin-record", "example.artifact-library", eventBus());
++}
++
++describe("plugin artifact host service canonical delegation", () => {
++  afterEach(() => vi.restoreAllMocks());
++
++  it("recognizes artifacts.list in the server capability validator and denies an ungranted plugin", () => {
++    const validator = pluginCapabilityValidator();
++    const manifest = { id: "example.artifact-test", capabilities: [] } as any;
++    expect(validator.checkOperation(manifest, "artifacts.list")).toMatchObject({ allowed: false, missing: ["artifacts.read"] });
++    expect(validator.checkOperation({ ...manifest, capabilities: ["artifacts.read"] }, "artifacts.list"))
++      .toMatchObject({ allowed: true, missing: [] });
++  });
++
++  it("forwards company filters to the native catalog and drops untrusted native starred filtering", async () => {
++    const response = { artifacts: [], nextCursor: "next-opaque" };
++    const list = vi.fn(async (_companyId: string, _query: unknown) => response);
++    const factory = vi.spyOn(catalog, "companyArtifactsService").mockReturnValue({ list });
++    const host = services({} as ReturnType<typeof createDb>);
++    const companyId = randomUUID();
++    const input = { companyId, kind: "image" as const, projectId: randomUUID(), q: "launch",
++      groupBy: "task" as const, groupIssueId: randomUUID(), limit: 12, cursor: "previous-opaque" };
++    try {
++      await expect(host.artifacts.list({ ...input, starred: true } as typeof input)).resolves.toBe(response);
++      expect(factory).toHaveBeenCalledOnce();
++      const { companyId: _companyId, ...filters } = input;
++      expect(list).toHaveBeenCalledWith(companyId, filters);
++      expect(list.mock.calls[0]?.[1]).not.toHaveProperty("starred");
++    } finally {
++      host.dispose();
++    }
++  });
++
++  it("refuses missing company ids before constructing a catalog service", async () => {
++    const factory = vi.spyOn(catalog, "companyArtifactsService");
++    const host = services({} as ReturnType<typeof createDb>);
++    try {
++      await expect(host.artifacts.list({ companyId: "" })).rejects.toThrow("companyId is required");
++      expect(factory).not.toHaveBeenCalled();
++    } finally {
++      host.dispose();
++    }
++  });
++});
++
++const postgresSupport = await getEmbeddedPostgresTestSupport();
++const describePostgres = postgresSupport.supported ? describe : describe.skip;
++if (!postgresSupport.supported) console.warn(`Skipping plugin artifact PostgreSQL integration: ${postgresSupport.reason}`);
++
++describePostgres("plugin artifact host service company isolation and canonical pagination", () => {
++  let db!: ReturnType<typeof createDb>;
++  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
++  let host!: ReturnType<typeof services>;
++  const companyId = randomUUID();
++  const otherCompanyId = randomUUID();
++  const projectId = randomUUID();
++  const otherProjectId = randomUUID();
++  const rootId = randomUUID();
++  const firstId = randomUUID();
++  const secondId = randomUUID();
++  const otherId = randomUUID();
++  const hiddenId = randomUUID();
++  const agentId = randomUUID();
++  const otherAgentId = randomUUID();
++
++  beforeAll(async () => {
++    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-artifacts-");
++    db = createDb(tempDb.connectionString);
++    host = services(db);
++    await db.insert(companies).values([
++      { id: companyId, name: "Example", issuePrefix: "JOU" },
++      { id: otherCompanyId, name: "Other", issuePrefix: "OTH" },
++    ]);
++    await db.insert(agents).values([
++      { id: agentId, companyId, name: "Example agent", role: "engineer" },
++      { id: otherAgentId, companyId: otherCompanyId, name: "Other agent", role: "engineer" },
++    ]);
++    await db.insert(projects).values([
++      { id: projectId, companyId, name: "Example Project" },
++      { id: otherProjectId, companyId: otherCompanyId, name: "Other project" },
++    ]);
++    await db.insert(issues).values([
++      { id: rootId, companyId, projectId, title: "Launch parent", identifier: "ACME-1", status: "done" },
++      { id: otherId, companyId: otherCompanyId, projectId: otherProjectId, title: "Secret output", identifier: "OTH-1", status: "done" },
++    ]);
++    await db.insert(issues).values([
++      { id: firstId, companyId, projectId, parentId: rootId, title: "Launch A", identifier: "ACME-2", status: "done" },
++      { id: secondId, companyId, projectId, parentId: rootId, title: "Launch B", identifier: "ACME-3", status: "done" },
++      { id: hiddenId, companyId, projectId, title: "Hidden", identifier: "ACME-4", status: "done", hiddenAt: new Date() },
++    ]);
++    for (const [index, issueId] of [firstId, secondId, otherId, hiddenId].entries()) {
++      const docId = randomUUID();
++      const foreign = issueId === otherId;
++      const ownerCompany = foreign ? otherCompanyId : companyId;
++      await db.insert(documents).values({ id: docId, companyId: ownerCompany,
++        title: foreign ? "Secret document" : `Launch document ${index}`, latestBody: "Reusable launch reference",
++        createdByAgentId: foreign ? otherAgentId : agentId,
++        updatedAt: new Date(`2026-10-0${index + 1}T00:00:00.000Z`) });
++      await db.insert(issueDocuments).values({ companyId: ownerCompany, issueId, documentId: docId, key: "report" });
++    }
++  }, 30_000);
++
++  afterAll(async () => {
++    host?.dispose();
++    await tempDb?.cleanup();
++  });
++
++  it("matches the native service and excludes other companies and hidden tasks", async () => {
++    const actual = await host.artifacts.list({ companyId });
++    expect(actual).toEqual(await catalog.companyArtifactsService(db).list(companyId));
++    expect(actual.artifacts).toHaveLength(2);
++    expect(actual.artifacts.every((row) => row.issue.id === firstId || row.issue.id === secondId)).toBe(true);
++    const other = await host.artifacts.list({ companyId: otherCompanyId });
++    expect(other.artifacts).toHaveLength(1);
++    expect(other.artifacts[0]?.title).toBe("Secret document");
++  });
++
++  it("combines kind/project/search and paginates without duplicates", async () => {
++    const filters = { companyId, kind: "document" as const, projectId, q: "Launch", limit: 1 };
++    const first = await host.artifacts.list(filters);
++    expect(first.artifacts).toHaveLength(1);
++    expect(first.nextCursor).toBeTruthy();
++    const second = await host.artifacts.list({ ...filters, cursor: first.nextCursor! });
++    expect(second.artifacts).toHaveLength(1);
++    expect(second.artifacts[0]?.id).not.toBe(first.artifacts[0]?.id);
++    expect(second.nextCursor).toBeNull();
++    expect((await host.artifacts.list({ companyId, projectId: otherProjectId })).artifacts).toEqual([]);
++    expect((await host.artifacts.list({ companyId, kind: "image" })).artifacts).toEqual([]);
++  });
++
++  it("keeps grouped subscopes inside the company and validates limits/cursors", async () => {
++    const grouped = await host.artifacts.list({ companyId, groupBy: "parent_task" });
++    expect(grouped.groups).toMatchObject([{ id: `parent_task:${rootId}`, count: 2 }]);
++    const selected = await host.artifacts.list({ companyId, groupBy: "parent_task", groupIssueId: rootId });
++    expect(selected.artifacts).toHaveLength(2);
++    const foreign = await host.artifacts.list({ companyId, groupBy: "task", groupIssueId: otherId });
++    expect(foreign).toMatchObject({ artifacts: [], selectedGroup: null });
++    await expect(host.artifacts.list({ companyId, limit: 101 })).rejects.toThrow();
++    await expect(host.artifacts.list({ companyId, cursor: "malformed" })).rejects.toThrow("Invalid artifacts cursor");
++    await expect(host.artifacts.list({ companyId: randomUUID() })).rejects.toThrow("Company not found");
++  });
++});

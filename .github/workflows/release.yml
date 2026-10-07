@@ -1,0 +1,35 @@
+name: Package plugin release
+
+on:
+  push:
+    tags:
+      - "plugins-v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - run: pnpm bootstrap:host
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm run package
+      - uses: ./.github/actions/secret-scan
+      - name: Create GitHub release with installable plugin archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" .package-output/*.tgz
+          .package-output/SHA256SUMS --verify-tag
+          --title "$GITHUB_REF_NAME"
+          --notes "Installable Paperclip plugin archives. Verify package integrity with SHA256SUMS."

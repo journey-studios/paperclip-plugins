@@ -1,0 +1,4 @@
+packages:
+  - "plugins/*"
+  - ".paperclip/packages/plugins/sdk"
+  - ".paperclip/packages/shared"

@@ -1,0 +1,105 @@
+const manifest = {
+  id: "journey-studios.founder-comms-router",
+  apiVersion: 1,
+  version: "0.1.1",
+  displayName: "Founder Comms Router",
+  description: "Routes high-signal Paperclip events to a configured liaison and batches meaningful updates into scheduled digests.",
+  author: "Journey Studios",
+  categories: ["automation"],
+  capabilities: [
+    "events.subscribe",
+    "plugin.state.read",
+    "plugin.state.write",
+    "jobs.schedule",
+    "issues.read",
+    "issue.comments.read",
+    "issue.comments.create",
+    "issues.wakeup",
+    "approvals.read",
+    "agents.read",
+    "companies.read",
+    "projects.read",
+    "access.members.read",
+  ],
+  entrypoints: {
+    worker: "./dist/worker.js",
+  },
+  instanceConfigSchema: {
+    type: "object",
+    required: ["liaisonAgentId", "founderUserId"],
+    properties: {
+      liaisonAgentId: {
+        type: "string",
+        minLength: 1,
+        title: "Liaison agent ID",
+        description: "Company-specific Paperclip agent that receives founder communication events.",
+      },
+      founderUserId: {
+        type: "string",
+        minLength: 1,
+        title: "Founder user ID",
+        description: "Company-specific Paperclip user ID used to identify founder-owned conversations and work.",
+      },
+      conversationIssueId: {
+        type: "string",
+        minLength: 1,
+        title: "Conversation issue ID",
+        description: "Optional explicit target. The issue must belong to this company and match the liaison, founder, channel, and project filters.",
+      },
+      chatChannels: {
+        type: "array",
+        title: "Chat channels",
+        description: "Allowed chat channel names in issue origin IDs. Defaults to Telegram for compatibility.",
+        items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]*$" },
+        default: ["telegram"],
+      },
+      projectId: {
+        type: "string",
+        minLength: 1,
+        title: "Project filter",
+        description: "Optional company project ID required on the target conversation.",
+      },
+      immediateEnabled: {
+        type: "boolean",
+        title: "Immediate alerts",
+        default: true,
+      },
+      digestEnabled: {
+        type: "boolean",
+        title: "Scheduled digests",
+        default: true,
+      },
+      digestTimezone: {
+        type: "string",
+        title: "Digest timezone",
+        description: "IANA timezone for interpreting digest schedule times.",
+        default: "UTC",
+      },
+      digestTimes: {
+        type: "array",
+        title: "Digest times",
+        description: "Local 24-hour times checked each minute, such as 09:00 and 17:00.",
+        items: { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+        default: ["09:00", "17:00"],
+      },
+      digestWeekdays: {
+        type: "array",
+        title: "Digest weekdays",
+        description: "ISO weekdays: Monday is 1 and Sunday is 7.",
+        items: { type: "integer", minimum: 1, maximum: 7 },
+        default: [1, 2, 3, 4, 5],
+      },
+    },
+    additionalProperties: false,
+  },
+  jobs: [
+    {
+      jobKey: "founder-digest",
+      displayName: "Founder digest scheduler",
+      description: "Checks company-configured local digest slots each minute and sends only when queued updates exist.",
+      schedule: "* * * * *",
+    },
+  ],
+};
+
+export default manifest;

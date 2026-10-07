@@ -1,0 +1,13 @@
+name: Secret scan
+description: Verify the pinned Gitleaks binary, then scan public history, source, and packed plugins
+runs:
+  using: composite
+  steps:
+    - name: Install checksum-pinned Gitleaks
+      shell: bash
+      run: |
+        scripts/install-gitleaks.sh "$RUNNER_TEMP/gitleaks"
+        echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+    - name: Check scanner behavior and scan repository artifacts
+      shell: bash
+      run: scripts/secret-scan.sh

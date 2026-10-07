@@ -1,0 +1,29 @@
+{
+  "name": "@journey-studios/founder-comms-router",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "license": "MIT",
+  "description": "Routes high-signal Paperclip events to a configured liaison and batches updates into scheduled digests.",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node --test",
+    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/manifest.js"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "esbuild": "^0.28.2"
+  }
+}
