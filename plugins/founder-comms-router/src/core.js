@@ -3,6 +3,10 @@ const MAX_PROCESSED = 500;
 const MAX_QUEUE = 100;
 const MAX_PENDING_RUNS = 200;
 const MAX_PUBLISHED = 500;
+const MAX_PUBLICATION_ATTEMPTS = 5;
+
+class PermanentPublicationError extends Error {}
+
 let knownCompaniesTail = Promise.resolve();
 
 function asObject(value) {
@@ -218,6 +222,7 @@ async function publishForRun(ctx, companyId, config, runId) {
   const queue = await ctx.state.get(key);
   const pending = (Array.isArray(queue) ? queue : []).find((entry) => stringValue(asObject(entry).runId) === runId);
   if (!pending) return { status: "not_pending" };
+  if (pending.terminal === true) return { status: "requires_review" };
   if (pending.ready !== true) return { status: "run_not_completed" };
   const issueId = stringValue(asObject(pending).issueId);
   if (!issueId) return { status: "invalid_pending" };
@@ -241,14 +246,34 @@ async function publishForRun(ctx, companyId, config, runId) {
   const prior = await ctx.state.get(publishedKey);
   const ids = Array.isArray(prior) ? prior.filter((value) => typeof value === "string") : [];
   if (!ids.includes(comment.id)) {
-    // Native chat publications have a unique idempotency key per comment and endpoint.
-    // Retry after a crash is safe even if the provider already accepted the message.
-    const result = await ctx.chat.publishComment(comment.id, companyId);
-    if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
-      throw new Error(`Chat publication was not accepted: ${result?.state ?? "unknown"}`);
+    // The native explicit publication key is stable for this comment and endpoint.
+    // Replaying after a crash must always use the same comment ID.
+    try {
+      const result = await ctx.chat.publishComment(comment.id, companyId);
+      if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
+        throw new PermanentPublicationError(`Chat publication rejected: ${result?.state ?? "unknown"}`);
+      }
+      ids.push(comment.id);
+      await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
+    } catch (error) {
+      const fresh = await ctx.state.get(key);
+      const runs = Array.isArray(fresh) ? fresh : [];
+      const attempted = runs.map((entry) => {
+        if (asObject(entry).runId !== runId) return entry;
+        const priorAttempts = asObject(entry).attempts;
+        const attempts = (Number.isSafeInteger(priorAttempts) && priorAttempts >= 0 ? priorAttempts : 0) + 1;
+        const permanent = error instanceof PermanentPublicationError;
+        return {
+          ...entry,
+          attempts,
+          lastFailure: permanent ? "provider_rejected" : "publication_attempt_failed",
+          lastAttemptAt: new Date().toISOString(),
+          terminal: permanent || attempts >= MAX_PUBLICATION_ATTEMPTS,
+        };
+      });
+      await ctx.state.set(key, attempted);
+      throw error;
     }
-    ids.push(comment.id);
-    await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
   }
   await ctx.state.set(key, (Array.isArray(queue) ? queue : []).filter((entry) =>
     stringValue(asObject(entry).runId) !== runId));
@@ -260,7 +285,17 @@ async function reconcilePendingPublications(ctx, companyId, config) {
   const queue = await ctx.state.get(companyScope(companyId, "pending-publication-runs"));
   for (const pending of Array.isArray(queue) ? queue : []) {
     const runId = stringValue(asObject(pending).runId);
-    if (runId) await publishForRun(ctx, companyId, config, runId);
+    if (!runId) continue;
+    try {
+      await publishForRun(ctx, companyId, config, runId);
+    } catch (error) {
+      // One poisoned publication must not starve later ready runs.
+      ctx.logger.error("Founder publication reconciliation failed", {
+        companyId,
+        runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

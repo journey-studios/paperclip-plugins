@@ -18,6 +18,7 @@ function fixture(publisher = async () => ({ state: "published" })) {
   const comments = [];
   const wakes = [];
   const published = [];
+  const errors = [];
   const state = new Map();
   const ctx = {
     config: { get: async () => ({ founderUserId: "founder", liaisonAgentId: "liaison", publicationEnabled: true }) },
@@ -45,9 +46,9 @@ function fixture(publisher = async () => ({ state: "published" })) {
       published.push({ commentId, scopedCompany });
       return publisher(commentId, scopedCompany);
     } },
-    logger: { error() {} },
+    logger: { error: (message, details) => errors.push({ message, details }) },
   };
-  return { ctx, issue, comments, wakes, published, companyId };
+  return { ctx, issue, comments, wakes, published, errors, companyId };
 }
 async function startAlert(f) {
   await processEvent(f.ctx, {
@@ -124,4 +125,68 @@ test("direct Telegram commands enforce host-proven user identity and company", a
     { provider: "telegram", command: "agents", assigneeAgentId: "liaison" },
     { companyId: "other-company", actor: { type: "user", companyId: f.companyId, userId: "founder" } }
   )).handled, false);
+});
+
+const pendingKey = (companyId) => ({ scopeKind: "company", scopeId: companyId, stateKey: "pending-publication-runs" });
+
+test("one failed publication cannot block later pending runs", async () => {
+  const f = fixture(async (commentId) => {
+    if (commentId === "comment-broken") throw new Error("provider unavailable");
+    return { state: "published" };
+  });
+  await startAlert(f);
+  await processEvent(f.ctx, {
+    companyId: f.companyId, eventId: "created-again",
+    eventType: "approval.created", entityId: "approval",
+  });
+  finalComment(f, { id: "comment-broken", runId: "run-1" });
+  finalComment(f, { id: "comment-healthy", runId: "run-2" });
+
+  const key = pendingKey(f.companyId);
+  const queue = await f.ctx.state.get(key);
+  await f.ctx.state.set(key, queue.map((entry) => ({ ...entry, ready: true })));
+  await reconcilePendingPublications(f.ctx, f.companyId, await companyConfig(f.ctx, f.companyId));
+
+  assert.deepEqual(f.published.map((entry) => entry.commentId), ["comment-broken", "comment-healthy"]);
+  assert.equal(f.errors.length, 1);
+  assert.equal(f.errors[0].details.runId, "run-1");
+  const remaining = await f.ctx.state.get(key);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].runId, "run-1");
+  assert.equal(remaining[0].attempts, 1);
+  assert.equal(remaining[0].terminal, false);
+  assert.equal(remaining[0].lastFailure, "publication_attempt_failed");
+});
+
+test("permanently rejected publications are retained for review but never retried automatically", async () => {
+  const f = fixture(async () => ({ state: "failed" }));
+  await startAlert(f);
+  finalComment(f);
+  await assert.rejects(finish(f), /Chat publication rejected: failed/);
+  const pending = (await f.ctx.state.get(pendingKey(f.companyId)))[0];
+  assert.equal(pending.attempts, 1);
+  assert.equal(pending.terminal, true);
+  assert.equal(pending.lastFailure, "provider_rejected");
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await reconcilePendingPublications(f.ctx, f.companyId, await companyConfig(f.ctx, f.companyId));
+  }
+  assert.equal(f.published.length, 1);
+});
+
+test("transient publication errors have a bounded retry budget persisted in plugin state", async () => {
+  const f = fixture(async () => { throw new Error("transient transport error"); });
+  await startAlert(f);
+  finalComment(f);
+  await assert.rejects(finish(f), /transient transport error/);
+  for (let attempt = 0; attempt < 7; attempt++) {
+    await reconcilePendingPublications(f.ctx, f.companyId, await companyConfig(f.ctx, f.companyId));
+  }
+  const pending = (await f.ctx.state.get(pendingKey(f.companyId)))[0];
+  assert.equal(pending.attempts, 5);
+  assert.equal(pending.terminal, true);
+  assert.equal(pending.lastFailure, "publication_attempt_failed");
+  assert.equal(f.published.length, 5);
+  assert.equal(f.errors.filter((entry) => entry.message === "Founder publication reconciliation failed").length, 4);
+  assert.equal(f.errors.filter((entry) => entry.message === "Founder comms event failed").length, 1);
 });

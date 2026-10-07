@@ -53,7 +53,12 @@ const plugin = definePlugin({
       });
     });
     ctx.jobs.register("founder-digest", (job) => runDigestJob(ctx, job, serializeCompany));
-    await reconcileKnownPublications(ctx, serializeCompany);
+    // Recovery uses the same per-company lock as live events, but must not
+    // delay worker setup or block Telegram commands on provider publication.
+    void reconcileKnownPublications(ctx, serializeCompany).catch((error) =>
+      ctx.logger.error("Founder publication startup reconciliation failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }));
   },
 
   async onValidateConfig(config) {
