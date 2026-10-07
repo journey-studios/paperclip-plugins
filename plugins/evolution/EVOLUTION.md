@@ -1,4 +1,4 @@
-# Evolution — Change Intelligence
+# Org Tracker — Change Intelligence
 
 Journey Studios plugin that connects operational changes to later evidence.
 

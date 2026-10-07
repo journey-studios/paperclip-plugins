@@ -6,7 +6,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: "0.1.0",
-  displayName: "Evolution",
+  displayName: "Org Tracker",
   description: "Track operational changes, diffs, evidence, runs, metrics, and conclusions across Paperclip agents and skills.",
   author: "Journey Studios",
   categories: ["automation", "ui"],
@@ -44,14 +44,14 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "sidebar",
         id: "evolution-sidebar-link",
-        displayName: "Evolution",
+        displayName: "Org Tracker",
         exportName: "EvolutionSidebarLink",
         order: 56
       },
       {
         type: "page",
         id: "evolution-page",
-        displayName: "Evolution",
+        displayName: "Org Tracker",
         exportName: "EvolutionPage",
         routePath: "evolution"
       }

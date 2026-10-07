@@ -832,7 +832,7 @@ export function EvolutionPage({ context }: PluginPageProps) {
   const [newTitle, setNewTitle] = useState("");
   const [newHypothesis, setNewHypothesis] = useState("");
 
-  if (!companyId) return <main style={{ ...shell, ...muted }}>Select an organization to view Evolution.</main>;
+  if (!companyId) return <main style={{ ...shell, ...muted }}>Select an organization to view Org Tracker.</main>;
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -857,7 +857,7 @@ export function EvolutionPage({ context }: PluginPageProps) {
     <main style={shell}>
       <header style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 23 }}>Evolution</h1>
+          <h1 style={{ margin: 0, fontSize: 23 }}>Org Tracker</h1>
           <p style={{ ...muted, margin: "5px 0 0", fontSize: 12 }}>
             Change → runs → evidence → evaluation → conclusion.
           </p>
@@ -868,7 +868,7 @@ export function EvolutionPage({ context }: PluginPageProps) {
             style={button}
             disabled={Boolean(busy)}
             onClick={() => {
-              const raw = window.prompt("How many days should Evolution backfill?", "7");
+              const raw = window.prompt("How many days should Org Tracker backfill?", "7");
               if (!raw) return;
               const days = Number(raw);
               void run("backfill", () => backfill({ companyId, days: Number.isFinite(days) ? days : 7 }));
@@ -926,10 +926,10 @@ export function EvolutionPage({ context }: PluginPageProps) {
       {error ? <div style={{ ...panel, color: "var(--destructive)", padding: 10, fontSize: 12, marginBottom: 12 }}>{error}</div> : null}
 
       {overview.loading ? (
-        <div style={{ ...panel, ...muted, padding: 28, textAlign: "center" }}>Loading Evolution…</div>
+        <div style={{ ...panel, ...muted, padding: 28, textAlign: "center" }}>Loading Org Tracker…</div>
       ) : overview.error ? (
         <div style={{ ...panel, color: "var(--destructive)", padding: 16 }}>
-          Could not load Evolution: {overview.error.message}
+          Could not load Org Tracker: {overview.error.message}
         </div>
       ) : overview.data ? (
         <>

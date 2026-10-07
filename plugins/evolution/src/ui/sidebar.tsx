@@ -9,7 +9,7 @@ export function EvolutionSidebarLink(_props: PluginSidebarProps) {
         <circle cx="6" cy="6" r="3" /><path d="M6 9v12M18 15V3M6 15h6a6 6 0 0 0 6-6" />
         <circle cx="18" cy="18" r="3" />
       </svg>
-      <span>Evolution</span>
+      <span>Org Tracker</span>
     </a>
   );
 }
