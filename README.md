@@ -21,3 +21,9 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 
 - [`@journey-studios/paperclip-artifact-library`](plugins/artifact-library/README.md): company-scoped organization for the existing Paperclip artifact catalog.
 - [`@journey-studios/founder-comms-router`](plugins/founder-comms-router/README.md): founder communications routing.
+- [`@journey-studios/agent-observatory`](plugins/agent-observatory/README.md): read-only agent health, failures, costs, anomaly evidence and safe run summaries.
+- [`@journey-studios/paperclip-evolution`](plugins/evolution/README.md): Change Intelligence for agent/skill diffs, Audit provenance, evidence, metrics, and conclusions.
+
+## Administrative MCP tools
+
+The optional [plugin MCP bridge](services/plugin-mcp-bridge/README.md) adds five Observatory tools to the official Paperclip MCP server through a separate stdio process. It calls company-scoped plugin APIs, preserves the official server's tools and protocol, and requires no change to Paperclip Core or its Tool Gateway. The plugin worker receives no board API key. The bridge and plugin can be disabled independently.

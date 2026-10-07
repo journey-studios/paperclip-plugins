@@ -1,0 +1,22 @@
+[
+  {
+    "Description": "Identified a Private Key, which may compromise cryptographic security and sensitive data encryption.",
+    "StartLine": 35,
+    "EndLine": 65,
+    "StartColumn": 24,
+    "EndColumn": 63,
+    "Match": "REDACTED",
+    "Secret": "REDACTED",
+    "File": "tests/snapshot-safety.test.mjs",
+    "SymlinkFile": "",
+    "Commit": "ad739a1828da9dba4e91b1e5ed01cc11845add83",
+    "Entropy": 5.242637,
+    "Author": "wallynm",
+    "Email": "357695+wallynm@users.noreply.github.com",
+    "Date": "2026-10-07T19:55:51Z",
+    "Message": "fix(evolution): Preserve scoped history and atomic change operations\n\nKeep each activity traceable without inventing historical content. Enforce company-scoped references and host actor attribution, qualify plugin tables, and make merges and conclusions retry-safe. Bound and redact snapshots, exclude unfinished runs, and preserve unknown cost telemetry.",
+    "Tags": [],
+    "RuleID": "private-key",
+    "Fingerprint": "ad739a1828da9dba4e91b1e5ed01cc11845add83:tests/snapshot-safety.test.mjs:private-key:35"
+  }
+]
