@@ -107,18 +107,19 @@ index 1cf5adf0d..961965106 100644
    Issue,
    IssueComment,
 diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
-index a599a8fc7..ac8db0fb8 100644
+index a599a8fc7..4d1fb78c2 100644
 --- a/packages/plugins/sdk/src/protocol.ts
 +++ b/packages/plugins/sdk/src/protocol.ts
-@@ -22,6 +22,7 @@ import type {
+@@ -22,6 +22,8 @@ import type {
    PluginLauncherRenderEnvironment,
    PluginStateScopeKind,
    Company,
 +  CompanyArtifactsResponse,
++  CompanyArtifactsQuery,
    Project,
    Issue,
    IssueComment,
-@@ -53,6 +54,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+@@ -53,6 +55,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
  
  import type {
    PluginEvent,
@@ -126,12 +127,15 @@ index a599a8fc7..ac8db0fb8 100644
    PluginIssueCheckoutOwnership,
    PluginIssueOrchestrationSummary,
    PluginIssueRelationSummary,
-@@ -1732,6 +1734,9 @@ export interface WorkerToHostMethods {
+@@ -1732,6 +1735,12 @@ export interface WorkerToHostMethods {
      result: Company | null,
    ];
  
 +  // Canonical company artifacts (read)
-+  "artifacts.list": [params: PluginArtifactsListInput, result: CompanyArtifactsResponse];
++  "artifacts.list": [
++    params: PluginArtifactsListInput & { query?: Partial<Omit<CompanyArtifactsQuery, "starred">> },
++    result: CompanyArtifactsResponse,
++  ];
 +
    // Projects (read)
    "projects.list": [
@@ -329,7 +333,7 @@ index 56a561a29..c5d38b62d 100644
    projects: PluginProjectsClient;
  
 diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
-index 5e56ef200..c81f10551 100644
+index 5e56ef200..44afce397 100644
 --- a/packages/plugins/sdk/src/worker-rpc-host.ts
 +++ b/packages/plugins/sdk/src/worker-rpc-host.ts
 @@ -48,6 +48,7 @@ import type {
@@ -340,7 +344,7 @@ index 5e56ef200..c81f10551 100644
  import type { PaperclipPlugin } from "./define-plugin.js";
  import type {
    PluginApiRequestInput,
-@@ -695,6 +696,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+@@ -695,6 +696,28 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
          },
        },
  
@@ -349,8 +353,7 @@ index 5e56ef200..c81f10551 100644
 +          if (!manifest?.capabilities.includes("artifacts.read")) {
 +            throw new CapabilityDeniedError(manifest?.id ?? "unknown", "artifacts.list", "artifacts.read");
 +          }
-+          return callHost("artifacts.list", {
-+            companyId: input.companyId,
++          const query = {
 +            kind: input.kind,
 +            projectId: input.projectId,
 +            q: input.q,
@@ -358,6 +361,11 @@ index 5e56ef200..c81f10551 100644
 +            groupIssueId: input.groupIssueId,
 +            limit: input.limit,
 +            cursor: input.cursor,
++          };
++          return callHost("artifacts.list", {
++            companyId: input.companyId,
++            ...query,
++            query,
 +          });
 +        },
 +      },
@@ -365,77 +373,17 @@ index 5e56ef200..c81f10551 100644
        projects: {
          async list(input) {
            return callHost("projects.list", {
-diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
-index 33d1e61e8..cd5a03a03 100644
---- a/packages/shared/src/constants.ts
-+++ b/packages/shared/src/constants.ts
-@@ -1322,6 +1322,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
- export const PLUGIN_CAPABILITIES = [
-   // Data Read
-   "companies.read",
-+  "artifacts.read",
-   "projects.read",
-   "project.workspaces.read",
-   "execution.workspaces.read",
-diff --git a/server/src/services/plugin-capability-validator.ts b/server/src/services/plugin-capability-validator.ts
-index eb0b83d3f..4436cbc80 100644
---- a/server/src/services/plugin-capability-validator.ts
-+++ b/server/src/services/plugin-capability-validator.ts
-@@ -45,6 +45,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
-   // Data read operations
-   "companies.list": ["companies.read"],
-   "companies.get": ["companies.read"],
-+  "artifacts.list": ["artifacts.read"],
-   "projects.list": ["projects.read"],
-   "projects.get": ["projects.read"],
-   "projects.managed.get": ["projects.managed"],
-diff --git a/server/src/services/plugin-host-services.ts b/server/src/services/plugin-host-services.ts
-index 185524fc9..a9962eeda 100644
---- a/server/src/services/plugin-host-services.ts
-+++ b/server/src/services/plugin-host-services.ts
-@@ -30,6 +30,7 @@ import type {
- import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
- import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
- import { companyService } from "./companies.js";
-+import { companyArtifactsService } from "./company-artifacts.js";
- import { agentService } from "./agents.js";
- import { projectService } from "./projects.js";
- import { executionWorkspaceService } from "./execution-workspaces.js";
-@@ -1714,6 +1715,24 @@ export function buildHostServices(
-       },
-     },
- 
-+    artifacts: {
-+      async list(params) {
-+        const companyId = ensureCompanyId(params.companyId);
-+        await ensurePluginAvailableForCompany(companyId);
-+        // Only forward the catalog's public read filters. In particular, native
-+        // starred filtering needs an authenticated user and is not a plugin API.
-+        return companyArtifactsService(db, getStorageService()).list(companyId, {
-+          kind: params.kind,
-+          projectId: params.projectId,
-+          q: params.q,
-+          groupBy: params.groupBy,
-+          groupIssueId: params.groupIssueId,
-+          limit: params.limit,
-+          cursor: params.cursor,
-+        });
-+      },
-+    },
-+
-     projects: {
-       async list(params) {
-         const companyId = ensureCompanyId(params.companyId);
 diff --git a/packages/plugins/sdk/tests/artifacts.test.ts b/packages/plugins/sdk/tests/artifacts.test.ts
 new file mode 100644
-index 000000000..0d3bf2854
+index 000000000..c19bf275e
 --- /dev/null
 +++ b/packages/plugins/sdk/tests/artifacts.test.ts
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,235 @@
 +import { createInterface } from "node:readline";
 +import { PassThrough } from "node:stream";
 +import { describe, expect, it, vi } from "vitest";
 +import type { CompanyArtifact, PaperclipPluginManifestV1 } from "@paperclipai/shared";
++import type { PluginArtifactsListInput } from "../src/types.js";
 +import { definePlugin } from "../src/define-plugin.js";
 +import {
 +  CapabilityDeniedError,
@@ -586,15 +534,31 @@ index 000000000..0d3bf2854
 +  });
 +});
 +
-+async function workerRoundTrip(read: boolean) {
++const workerQuery = {
++  kind: "image" as const,
++  projectId,
++  q: "sample",
++  groupBy: "task" as const,
++  groupIssueId: issueId,
++  limit: 2,
++  cursor: "opaque-cursor",
++};
++
++async function workerRoundTrip(read: boolean, hostContract: "flat" | "nested" = "flat") {
 +  const input = new PassThrough();
 +  const output = new PassThrough();
 +  const reader = createInterface({ input: output });
 +  const requests: JsonRpcRequest[] = [];
++  const resolvedArtifactQueries: Array<{ companyId: string; query: Record<string, unknown> }> = [];
 +  const pending = new Map<string, (message: JsonRpcResponse) => void>();
 +  const worker = startWorkerRpcHost({ stdin: input, stdout: output, plugin: definePlugin({
 +    async setup(ctx) {
-+      ctx.data.register("list", async (params) => ctx.artifacts.list({ companyId: String(params.companyId), kind: "image", limit: 2 }));
++      ctx.data.register("list", async (params) => ctx.artifacts.list({
++        companyId: String(params.companyId),
++        ...workerQuery,
++        starred: true,
++        query: { companyId: otherCompanyId, q: "untrusted" },
++      } as PluginArtifactsListInput));
 +    },
 +  }) });
 +  let nextId = 1;
@@ -612,13 +576,21 @@ index 000000000..0d3bf2854
 +      pending.delete(String(message.id));
 +    } else if (isJsonRpcRequest(message)) {
 +      requests.push(message);
++      if (message.method === "artifacts.list") {
++        const params = message.params as Record<string, unknown>;
++        const { companyId: requestedCompanyId, query: nestedQuery, ...flatQuery } = params;
++        resolvedArtifactQueries.push({
++          companyId: String(requestedCompanyId),
++          query: (hostContract === "nested" ? nestedQuery : flatQuery) as Record<string, unknown>,
++        });
++      }
 +      input.write(serializeMessage(createSuccessResponse(message.id, { artifacts: [fixture("attachment:one")], nextCursor: null })));
 +    }
 +  });
 +  try {
 +    await call("initialize", { manifest: manifest(read), config: {}, databaseNamespace: null });
 +    const response = await call("getData", { key: "list", companyId, params: { companyId } }, true);
-+    return { response, requests };
++    return { response, requests, resolvedArtifactQueries };
 +  } finally {
 +    worker.stop(); reader.close(); input.destroy(); output.destroy();
 +  }
@@ -631,17 +603,32 @@ index 000000000..0d3bf2854
 +    expect(requests.filter((request) => request.method === "artifacts.list")).toEqual([]);
 +  });
 +
-+  it("sends typed catalog options and preserves the host invocation id", async () => {
-+    const { response, requests } = await workerRoundTrip(true);
++  it.each(["flat", "nested"] as const)("preserves typed catalog filters for the %s host RPC envelope", async (hostContract) => {
++    const { response, requests, resolvedArtifactQueries } = await workerRoundTrip(true, hostContract);
 +    expect(response).toMatchObject({ result: { artifacts: [{ id: "attachment:one" }], nextCursor: null } });
-+    expect(requests.find((request) => request.method === "artifacts.list")).toMatchObject({
-+      params: { companyId, kind: "image", limit: 2 }, paperclipInvocationId: "invocation-one",
-+    });
++    const request = requests.find((candidate) => candidate.method === "artifacts.list");
++    expect(request).toMatchObject({ paperclipInvocationId: "invocation-one" });
++    expect(request?.params).toEqual({ companyId, ...workerQuery, query: workerQuery });
++    expect(request?.params).not.toHaveProperty("starred");
++    expect((request?.params as Record<string, unknown>).query).not.toHaveProperty("companyId");
++    expect(resolvedArtifactQueries).toEqual([{ companyId, query: workerQuery }]);
 +  });
 +});
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 33d1e61e8..cd5a03a03 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1322,6 +1322,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+ export const PLUGIN_CAPABILITIES = [
+   // Data Read
+   "companies.read",
++  "artifacts.read",
+   "projects.read",
+   "project.workspaces.read",
+   "execution.workspaces.read",
 diff --git a/server/src/__tests__/plugin-artifacts-host-services.test.ts b/server/src/__tests__/plugin-artifacts-host-services.test.ts
 new file mode 100644
-index 000000000..32190e256
+index 000000000..00c4cb1bf
 --- /dev/null
 +++ b/server/src/__tests__/plugin-artifacts-host-services.test.ts
 @@ -0,0 +1,156 @@
@@ -801,3 +788,52 @@ index 000000000..32190e256
 +    await expect(host.artifacts.list({ companyId: randomUUID() })).rejects.toThrow("Company not found");
 +  });
 +});
+diff --git a/server/src/services/plugin-capability-validator.ts b/server/src/services/plugin-capability-validator.ts
+index eb0b83d3f..4436cbc80 100644
+--- a/server/src/services/plugin-capability-validator.ts
++++ b/server/src/services/plugin-capability-validator.ts
+@@ -45,6 +45,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
+   // Data read operations
+   "companies.list": ["companies.read"],
+   "companies.get": ["companies.read"],
++  "artifacts.list": ["artifacts.read"],
+   "projects.list": ["projects.read"],
+   "projects.get": ["projects.read"],
+   "projects.managed.get": ["projects.managed"],
+diff --git a/server/src/services/plugin-host-services.ts b/server/src/services/plugin-host-services.ts
+index 185524fc9..a9962eeda 100644
+--- a/server/src/services/plugin-host-services.ts
++++ b/server/src/services/plugin-host-services.ts
+@@ -30,6 +30,7 @@ import type {
+ import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+ import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+ import { companyService } from "./companies.js";
++import { companyArtifactsService } from "./company-artifacts.js";
+ import { agentService } from "./agents.js";
+ import { projectService } from "./projects.js";
+ import { executionWorkspaceService } from "./execution-workspaces.js";
+@@ -1714,6 +1715,24 @@ export function buildHostServices(
+       },
+     },
+ 
++    artifacts: {
++      async list(params) {
++        const companyId = ensureCompanyId(params.companyId);
++        await ensurePluginAvailableForCompany(companyId);
++        // Only forward the catalog's public read filters. In particular, native
++        // starred filtering needs an authenticated user and is not a plugin API.
++        return companyArtifactsService(db, getStorageService()).list(companyId, {
++          kind: params.kind,
++          projectId: params.projectId,
++          q: params.q,
++          groupBy: params.groupBy,
++          groupIssueId: params.groupIssueId,
++          limit: params.limit,
++          cursor: params.cursor,
++        });
++      },
++    },
++
+     projects: {
+       async list(params) {
+         const companyId = ensureCompanyId(params.companyId);

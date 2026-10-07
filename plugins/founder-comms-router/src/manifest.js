@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.1.2",
   displayName: "Founder Comms Router",
   description: "Routes high-signal Paperclip events to a configured liaison and batches meaningful updates into scheduled digests.",
   author: "Journey Studios",

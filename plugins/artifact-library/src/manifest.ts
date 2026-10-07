@@ -6,7 +6,7 @@ export const DATABASE_NAMESPACE = "plugin_artifact_library_ca55530627";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.1.2",
   displayName: "Artifact Library",
   description:
     "Organize company artifacts with folders, tags, favorites and saved views.",
