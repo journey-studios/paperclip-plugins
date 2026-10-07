@@ -506,12 +506,13 @@ index 000000000..21d4d23b8
 +}
 diff --git a/ui/src/plugins/SidebarSlot.test.tsx b/ui/src/plugins/SidebarSlot.test.tsx
 new file mode 100644
-index 000000000..fab5c00b4
+index 000000000..41a094906
 --- /dev/null
 +++ b/ui/src/plugins/SidebarSlot.test.tsx
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,30 @@
 +// @vitest-environment jsdom
-+import React, { act } from "react";
++import React from "react";
++import { act } from "react-dom/test-utils";
 +import { createRoot } from "react-dom/client";
 +import { MemoryRouter } from "react-router-dom";
 +import { describe, expect, it } from "vitest";
