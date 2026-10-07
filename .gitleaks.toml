@@ -5,9 +5,14 @@ useDefault = true
 
 [allowlist]
 description = "Exact synthetic credentials used only to exercise Evolution redaction tests"
-# Match only these known fixture literals, even in historical diffs. Do not exempt their paths.
-regexTarget = "line"
+# Match the extracted secret only. A real credential elsewhere on the same line
+# must remain visible to the scanner.
+regexTarget = "secret"
+# Hex-escape delimiter characters so these exact patterns do not resemble PEM
+# fixtures to Gitleaks when it scans this configuration file.
+# Gitleaks 8.18.4's private-key capture ends with four hyphens on the END marker.
 regexes = [
-  '''"AKIAABCDEFGHIJKLMNOP"''',
-  '''const privateKey = "-----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----";''',
+  '''^AKIAABCDEFGHIJKLMNOP$''',
+  '''^\x2d{5}BEGIN PRIVATE KEY\x2d{5}\nprivate-material\n\x2d{5}END PRIVATE KEY\x2d{4}$''',
+  '''^\x2d{5}BEGIN PRIVATE KEY\x2d{5}\x5c\x6eprivate-material\x5c\x6e\x2d{5}END PRIVATE KEY\x2d{4}$''',
 ]
