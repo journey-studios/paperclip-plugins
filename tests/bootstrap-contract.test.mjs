@@ -40,12 +40,37 @@ test("validates the Evolution compatibility patch contract", () => {
   const valid = [
     '"agent_config_revisions"',
     '"company_skill_versions"',
+    '"company_skills"',
     '"activity_log"',
+    '"activity.logged"',
+    "activityAction",
     '"journeystudios.evolution"',
     '"evolution"',
   ].join("\n");
   assert.doesNotThrow(() => assertEvolutionCompatibilityPatch(valid));
   assert.throws(() => assertEvolutionCompatibilityPatch('"activity_log" only'), /Evolution compatibility/);
+});
+
+test("rejects Evolution patches that omit a required read table or Audit forwarding field", () => {
+  const valid = [
+    '"agent_config_revisions"',
+    '"company_skill_versions"',
+    '"company_skills"',
+    '"activity_log"',
+    '"activity.logged"',
+    "activityAction",
+    '"journeystudios.evolution"',
+    '"evolution"',
+  ].join("\n");
+
+  for (const omitted of ['"company_skills"', '"activity.logged"', "activityAction"]) {
+    const incomplete = valid.split("\n").filter((token) => token !== omitted).join("\n");
+    assert.throws(
+      () => assertEvolutionCompatibilityPatch(incomplete),
+      /Evolution compatibility/,
+      `Missing ${omitted} must fail even when every other contract token is present`,
+    );
+  }
 });
 
 test("rejects a workspace alias that points away from the requested host checkout", () => {

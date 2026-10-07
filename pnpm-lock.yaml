@@ -77,6 +77,15 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  plugins/agent-observatory:
+    devDependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../.paperclip/packages/plugins/sdk
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+
   plugins/artifact-library:
     devDependencies:
       '@electric-sql/pglite':
@@ -151,6 +160,8 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+
+  services/plugin-mcp-bridge: {}
 
 packages:
 
