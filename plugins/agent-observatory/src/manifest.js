@@ -7,10 +7,19 @@ const apiRoute = (routeKey, path) => ({
   companyResolution: { from: "query", key: "companyId" },
 });
 
+const mcpApiRoute = (method) => ({
+  routeKey: "mcp",
+  method,
+  path: "/mcp",
+  auth: "board",
+  capability: "api.routes.register",
+  companyResolution: { from: "query", key: "companyId" },
+});
+
 const manifest = {
   id: "journey-studios.agent-observatory",
   apiVersion: 1,
-  version: "0.1.3",
+  version: "0.1.4",
   displayName: "Agent Observatory",
   description: "Read-only observability for agent runs, costs, failures, and suspected anomalies.",
   author: "Journey Studios",
@@ -30,6 +39,8 @@ const manifest = {
     coreReadTables: ["agents", "heartbeat_runs", "cost_events", "companies"],
   },
   apiRoutes: [
+    mcpApiRoute("POST"),
+    mcpApiRoute("GET"),
     apiRoute("overview", "/overview"),
     apiRoute("agents", "/agents"),
     apiRoute("agent", "/agent"),
