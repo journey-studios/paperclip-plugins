@@ -32,7 +32,7 @@ const plugin = definePlugin({
     }, async (input, runCtx) => {
       try {
         const data = await getHotspots(ctx, runCtx.companyId, parseLimit(params(input).limit));
-        return { content: data.directories.length ? data.directories.map((dir) => dir.label + ": " + dir.bytes + " bytes").join("; ") + ". Nested paths overlap." : "No current measured storage directories (" + data.status + ").", data };
+        return { content: data.directories.length ? "Snapshot " + data.status + " (collected " + data.generatedAt + "): " + data.directories.map((dir) => dir.label + ": " + dir.bytes + " bytes").join("; ") + ". Nested paths overlap." : "No current measured storage directories (" + data.status + ").", data };
       } catch { return unavailable(); }
     });
   },
