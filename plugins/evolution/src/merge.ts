@@ -4,7 +4,7 @@ const INCOMPLETE = "Merge incomplete; retry after concurrent capture settles.";
 
 /**
  * The plugin database SDK has no transaction API. Transfers are resumable, and
- * the composite NO ACTION foreign keys in migration 002 are the final barrier
+ * the composite NO ACTION foreign keys in migration 003 are the final barrier
  * against losing a capture that commits after the guarded DELETE's snapshot.
  */
 export async function mergeChangeSets(

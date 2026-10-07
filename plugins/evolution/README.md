@@ -24,6 +24,6 @@ It also forwards skill mutation audit actions as the existing activity.logged pl
 
 ## Merge recovery
 
-Merges preserve their selected destination and can be retried there after concurrent captures finish. Migration `002_safe_merge.sql` prevents parent deletion from cascading into captured changes and keeps old capture contexts pointing at the destination, including after later merges. The SDK provides individual database statements, so a failed merge may already have transferred some rows; retry completes the remaining transfers.
+Merges preserve their selected destination and can be retried there after concurrent captures finish. Migration `003_safe_merge.sql` prevents parent deletion from cascading into captured changes and keeps old capture contexts pointing at the destination, including after later merges. The SDK provides individual database statements, so a failed merge may already have transferred some rows; retry completes the remaining transfers.
 
 The test suite covers redaction, company ownership, missing metrics and merge recovery. CI also runs the migrations and concurrent-capture regressions against a dedicated PostgreSQL 16 service.

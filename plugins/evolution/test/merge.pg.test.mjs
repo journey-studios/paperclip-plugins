@@ -54,11 +54,11 @@ test("PostgreSQL merge preserves concurrent captures and enforces company scope"
   try {
     await admin.unsafe(`CREATE SCHEMA "${namespace}"`);
     await admin.unsafe(`CREATE TABLE ${table("companies")} (id uuid PRIMARY KEY)`);
-    for (const file of ["001_evolution.sql", "002_safe_merge.sql"]) {
+    for (const file of ["001_evolution.sql", "002_evolution_integrity.sql", "003_safe_merge.sql"]) {
       const migration = (await readFile(new URL("../migrations/" + file, import.meta.url), "utf8"))
         .replaceAll("plugin_evolution_4399b11512", namespace)
         .replaceAll("public.companies", `"${namespace}"."companies"`);
-      for (const statement of migration.split(";").map((part) => part.trim()).filter(Boolean)) {
+      for (const statement of migration.replace(/^\s*--.*$/gm, "").split(";").map((part) => part.trim()).filter(Boolean)) {
         await admin.unsafe(statement);
       }
     }
@@ -285,13 +285,21 @@ test("PostgreSQL merge preserves concurrent captures and enforces company scope"
         [otherCompany, source],
       ), (error) => error.code === "23503");
       const foreignKeys = await admin.unsafe(
-        "SELECT c.conname, c.confdeltype, pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=$1 AND c.conname LIKE 'evolution_%_company_set_fkey'",
+        "SELECT c.conname, c.confdeltype, child.relname AS child_table, pg_get_constraintdef(c.oid) AS definition " +
+          "FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace " +
+          "JOIN pg_class child ON child.oid=c.conrelid JOIN pg_class parent ON parent.oid=c.confrelid " +
+          "WHERE n.nspname=$1 AND c.contype='f' AND parent.relname='change_sets' " +
+          "AND child.relname IN ('change_sets','change_items','change_evidence','change_links','change_metrics','change_conclusions','change_context_aliases')",
         [namespace],
       );
-      assert.equal(foreignKeys.length, 6);
+      assert.equal(foreignKeys.length, 7, "installed 001/002 CASCADE constraints must be replaced, not left alongside the guards");
       for (const key of foreignKeys) {
         assert.equal(key.confdeltype, "a");
-        assert.match(key.definition, /FOREIGN KEY \(company_id, change_set_id\)/);
+        if (key.child_table === "change_sets") {
+          assert.match(key.definition, /FOREIGN KEY \(company_id, merge_target_id\)/);
+        } else {
+          assert.match(key.definition, /FOREIGN KEY \(company_id, change_set_id\)/);
+        }
       }
       assert.equal((await admin.unsafe(`SELECT id FROM ${table("change_items")} WHERE company_id=$1`, [company])).length, 0);
     });

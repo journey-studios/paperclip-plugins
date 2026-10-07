@@ -6,12 +6,14 @@ tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
 git rev-parse --verify HEAD >/dev/null
+config_file="$(git rev-parse --show-toplevel)/.gitleaks.toml"
 
 canary_report="$tmp_dir/canary.json"
 printf -v canary '%s%s%s%s' 'ghp_' 'abcdefghijkl' 'mnopqrstuvwx' 'yz0123456789'
 canary_status=0
 printf 'github_token=%s\n' "$canary" \
   | "$gitleaks_bin" detect --pipe --redact --no-banner \
+      --config "$config_file" \
       --report-format json --report-path "$canary_report" \
   || canary_status=$?
 unset canary
@@ -28,12 +30,13 @@ jq --exit-status 'type == "array" and length > 0 and any(.[]; .RuleID == "github
 history_report="$tmp_dir/history.json"
 git log -p -U0 --full-history --all --no-ext-diff --no-textconv \
   | "$gitleaks_bin" detect --pipe --redact --no-banner \
+      --config "$config_file" \
       --report-format json --report-path "$history_report"
 
 source_dir="$tmp_dir/source"
 mkdir -p "$source_dir"
 git archive HEAD | tar -x -C "$source_dir"
-"$gitleaks_bin" detect --no-git --source "$source_dir" --redact --no-banner \
+"$gitleaks_bin" detect --no-git --source "$source_dir" --config "$config_file" --redact --no-banner \
   --report-format json --report-path "$tmp_dir/source.json"
 
 shopt -s nullglob
@@ -49,7 +52,7 @@ for archive in "${archives[@]}"; do
   extracted="$tmp_dir/package-$archive_index"
   mkdir -p "$extracted"
   tar -xzf "$archive" --directory "$extracted"
-  "$gitleaks_bin" detect --no-git --source "$extracted" --redact --no-banner \
+  "$gitleaks_bin" detect --no-git --source "$extracted" --config "$config_file" --redact --no-banner \
     --report-format json --report-path "$tmp_dir/package-$archive_index.json"
 done
 
