@@ -59,6 +59,19 @@ function authorizedCompanyId(params: Record<string, unknown>, context: PluginPer
   return companyId;
 }
 
+function selectedChangeItemIds(params: Record<string, unknown>): string[] {
+  const value = params.changeItemIds;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 200) {
+    throw new Error("changeItemIds must contain between 1 and 200 UUIDs");
+  }
+  const ids = value.map((id) => typeof id === "string" ? id.trim().toLowerCase() : "");
+  if (ids.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) {
+    throw new Error("changeItemIds must contain valid UUIDs");
+  }
+  if (new Set(ids).size !== ids.length) throw new Error("changeItemIds must not contain duplicates");
+  return ids.sort();
+}
+
 function qualifyEvolutionTables(statement: string, namespace: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(namespace)) throw new Error("Invalid Evolution database namespace");
   const tables = EVOLUTION_TABLES.join("|");
@@ -1300,6 +1313,14 @@ async function conclusionIdempotencyKey(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function assertCompanyRun(ctx: PluginContext, companyId: string, runId: string) {
+  const rows = await ctx.db.query<{ id: string }>(
+    'SELECT id FROM public.heartbeat_runs WHERE company_id = $1 AND id::text = $2 LIMIT 1',
+    [companyId, runId],
+  );
+  if (!rows[0]) throw new Error("Run not found in authorized company");
+}
+
 function registerActions(ctx: PluginContext) {
   ctx.actions.register("create-change-set", async (params, actionContext) => {
     const companyId = authorizedCompanyId(params, actionContext);
@@ -1365,6 +1386,10 @@ function registerActions(ctx: PluginContext) {
     const changeSetId = requiredString(params, "changeSetId");
     await assertChangeSet(ctx, companyId, changeSetId);
     const evidenceType = requiredString(params, "evidenceType");
+    const referenceId = evidenceType === "run"
+      ? requiredString(params, "referenceId")
+      : stringParam(params, "referenceId") ?? null;
+    if (evidenceType === "run") await assertCompanyRun(ctx, companyId, referenceId!);
     const verdict = stringParam(params, "verdict") ?? "neutral";
     if (!EVIDENCE_VERDICTS.has(verdict)) throw new Error("Invalid evidence verdict");
     const id = globalThis.crypto.randomUUID();
@@ -1376,7 +1401,7 @@ function registerActions(ctx: PluginContext) {
         companyId,
         changeSetId,
         evidenceType,
-        stringParam(params, "referenceId") ?? null,
+        referenceId,
         stringParam(params, "label") ?? null,
         verdict,
         stringParam(params, "notes") ?? null,
@@ -1384,6 +1409,7 @@ function registerActions(ctx: PluginContext) {
         stringParam(params, "observedAt") ?? null,
       ],
     );
+    if (evidenceType === "run") await attachRunContext(ctx, companyId, changeSetId, referenceId);
     return { ok: true, id };
   });
 
@@ -1393,6 +1419,7 @@ function registerActions(ctx: PluginContext) {
     await assertChangeSet(ctx, companyId, changeSetId);
     const linkType = requiredString(params, "linkType");
     const referenceId = requiredString(params, "referenceId");
+    if (linkType === "run") await assertCompanyRun(ctx, companyId, referenceId);
     await ctx.db.execute(
       'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING',
       [
@@ -1405,6 +1432,7 @@ function registerActions(ctx: PluginContext) {
         JSON.stringify(asRecord(params.metadata)),
       ],
     );
+    if (linkType === "run") await attachRunContext(ctx, companyId, changeSetId, referenceId);
     return { ok: true };
   });
 
@@ -1449,6 +1477,60 @@ function registerActions(ctx: PluginContext) {
     return { ok: true, id: rows[0].id };
   });
 
+  ctx.actions.register("move-selected-change-items", async (params, actionContext) => {
+    const companyId = authorizedCompanyId(params, actionContext);
+    const sourceChangeSetId = requiredString(params, "sourceChangeSetId");
+    const targetChangeSetId = requiredString(params, "targetChangeSetId");
+    const changeItemIds = selectedChangeItemIds(params);
+    if (sourceChangeSetId === targetChangeSetId) throw new Error("Source and target Change Sets must differ");
+
+    // Lock both parents in UUID order to serialize overlapping moves without deadlocks.
+    // The CTE validates that every selected item is still at the source or was already
+    // moved to this target by a previous attempt before changing any row.
+    await ctx.db.execute(
+      'WITH locked_sets AS MATERIALIZED (' +
+        'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3) ORDER BY id FOR UPDATE' +
+      '), valid AS MATERIALIZED (' +
+        'SELECT count(*) = 2 AND (' +
+          'SELECT count(*) = cardinality($4::uuid[]) FROM change_items ' +
+          'WHERE company_id = $1 AND id = ANY($4::uuid[]) AND change_set_id IN ($2, $3)' +
+        ') AS can_move FROM locked_sets' +
+      '), moved AS (' +
+        'UPDATE change_items SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
+        'AND id = ANY($4::uuid[]) AND (SELECT can_move FROM valid) RETURNING id' +
+      '), linked AS (' +
+        'INSERT INTO change_links (id, company_id, change_set_id, link_type, reference_id, label, metadata) ' +
+        'SELECT gen_random_uuid(), $1, $3, \'change_set\', $2::text, \'Selected changes from source Change Set\', ' +
+          'jsonb_build_object(\'movedItemIds\', to_jsonb($4::uuid[])) FROM valid WHERE can_move ' +
+        'ON CONFLICT (company_id, change_set_id, link_type, reference_id) DO UPDATE SET ' +
+          'metadata = jsonb_set(COALESCE(change_links.metadata, \'{}\'::jsonb) || excluded.metadata, \'{movedItemIds}\', (' +
+            'SELECT jsonb_agg(to_jsonb(item_id) ORDER BY item_id) FROM (' +
+              'SELECT jsonb_array_elements_text(COALESCE(change_links.metadata->\'movedItemIds\', \'[]\'::jsonb)) AS item_id ' +
+              'UNION SELECT unnest($4::uuid[])::text AS item_id' +
+            ') AS merged' +
+          '), true) RETURNING id' +
+      ') SELECT (SELECT count(*) FROM moved) AS moved_count, (SELECT count(*) FROM linked) AS link_count',
+      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIds],
+    );
+
+    const outcome = await ctx.db.query<{ parentCount: number; targetCount: number; linkCount: number }>(
+      'SELECT (SELECT count(*)::int FROM change_sets WHERE company_id = $1 AND id IN ($2, $3)) AS "parentCount", ' +
+        '(SELECT count(*)::int FROM change_items WHERE company_id = $1 AND id = ANY($4::uuid[]) AND change_set_id = $3) AS "targetCount", ' +
+        '(SELECT count(*)::int FROM change_links WHERE company_id = $1 AND change_set_id = $3 AND link_type = \'change_set\' AND reference_id = $2::text) AS "linkCount"',
+      [companyId, sourceChangeSetId, targetChangeSetId, changeItemIds],
+    );
+    if (outcome[0]?.parentCount !== 2) throw new Error("Source or target Change Set not found");
+    if (outcome[0]?.targetCount !== changeItemIds.length || outcome[0]?.linkCount !== 1) {
+      throw new Error("Every selected change item must belong to the source or target Change Set");
+    }
+
+    // If a metric query fails after the atomic move, the same action can be retried:
+    // its items already at target are accepted and both sets are recomputed again.
+    await recomputeMetrics(ctx, companyId, sourceChangeSetId);
+    await recomputeMetrics(ctx, companyId, targetChangeSetId);
+    return { ok: true, selectedCount: changeItemIds.length, sourceChangeSetId, targetChangeSetId };
+  });
+
   ctx.actions.register("merge-change-set", async (params, actionContext) => {
     const companyId = authorizedCompanyId(params, actionContext);
     const sourceChangeSetId = requiredString(params, "sourceChangeSetId");
@@ -1464,7 +1546,7 @@ function registerActions(ctx: PluginContext) {
 
     await ctx.db.execute(
       'WITH locked_sets AS MATERIALIZED (' +
-        'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3) FOR UPDATE' +
+        'SELECT id FROM change_sets WHERE company_id = $1 AND id IN ($2, $3) ORDER BY id FOR UPDATE' +
       '), prior_merge AS MATERIALIZED (' +
         'SELECT target_change_set_id FROM merge_operations WHERE company_id = $1 AND source_change_set_id = $2' +
       '), valid AS MATERIALIZED (' +

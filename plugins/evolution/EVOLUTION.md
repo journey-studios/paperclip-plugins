@@ -51,7 +51,9 @@ The host's current `agent_config_revisions` stores configuration JSON, not instr
 
 Automatic Change Sets are grouped by originating run when possible, otherwise by actor and a bounded time window.
 
-Use Merge into… to consolidate automatic sets into a conceptual change such as Research system improvements — October 2026.
+Actor/time groups are a convenience and can contain unrelated agents, skills, or changes. Select only the relevant timeline items and move them into a conceptual Change Set when curating a mixed group. The source Change Set remains, its other items and evidence/conclusions stay in place, and the target records a provenance link to the source with the moved item IDs. Metrics are recomputed for both sets.
+
+Use Merge into… only when the whole source set belongs in the target. Whole-set merge moves all change items, evidence, conclusions, and links, removes the source set, and recomputes target metrics.
 
 ## Evidence and causality
 
@@ -78,7 +80,7 @@ The MVP computes seven-day before/after windows for affected agents:
 
 Run metrics count eligible runs; cost and token metrics count cost events. The UI shows both sample counts beside each comparison. Zero or small samples cannot support a reliable improvement claim, and these aggregate windows may include unrelated changes or workload differences. Report the observed values and their limits, then use comparable attached evidence and a controlled evaluation before claiming the change caused an outcome.
 
-Runs can be explicitly attached as positive, neutral or negative evidence.
+Runs can be explicitly attached as positive, neutral or negative evidence. Run links and run evidence are checked within the current company; Evolution also resolves and links the run's canonical Issue, Project, and Goal where available. These associations improve traceability, but do not establish that a change caused an improvement.
 
 ## Deployment
 

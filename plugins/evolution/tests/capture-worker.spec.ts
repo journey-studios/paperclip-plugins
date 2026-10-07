@@ -135,6 +135,75 @@ describe("Evolution capture and metrics", () => {
     expect(after).toBe(before);
   });
 
+  it("validates run evidence and links in-company and attaches canonical run context", async () => {
+    const set = await fixture.action<{ id: string }>("create-change-set", { title: "Research run" });
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const issueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const projectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const goalId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await fixture.db.query("INSERT INTO public.goals (id, company_id, title) VALUES ($1, $2, 'Research goal')", [goalId, COMPANY]);
+    await fixture.db.query("INSERT INTO public.projects (id, company_id, name, goal_id) VALUES ($1, $2, 'Research project', $3)", [projectId, COMPANY, goalId]);
+    await fixture.db.query(
+      "INSERT INTO public.issues (id, company_id, identifier, title, project_id, goal_id) VALUES ($1, $2, 'JOU-49', 'Evidence research', $3, $4)",
+      [issueId, COMPANY, projectId, goalId],
+    );
+    await fixture.db.query(
+      "INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, native_issue_id, context_snapshot) VALUES ($1, $2, $3, 'succeeded', now(), $4, '{}'::jsonb)",
+      [runId, COMPANY, AGENT, issueId],
+    );
+
+    await fixture.action("add-link", { changeSetId: set.id, linkType: "run", referenceId: runId, label: "Reviewed run" });
+    await fixture.action("add-evidence", { changeSetId: set.id, evidenceType: "run", referenceId: runId, label: "Run evidence" });
+
+    const links = (await fixture.db.query<{ link_type: string; reference_id: string; label: string | null }>(
+      `SELECT link_type, reference_id, label FROM ${"plugin_evolution_4399b11512"}.change_links WHERE change_set_id = $1 ORDER BY link_type`,
+      [set.id],
+    )).rows;
+    expect(links).toEqual([
+      { link_type: "goal", reference_id: goalId, label: "Research goal" },
+      { link_type: "issue", reference_id: issueId, label: "JOU-49 · Evidence research" },
+      { link_type: "project", reference_id: projectId, label: "Research project" },
+      { link_type: "run", reference_id: runId, label: "Reviewed run" },
+    ]);
+    expect((await fixture.db.query<{ reference_id: string }>(
+      `SELECT reference_id FROM ${"plugin_evolution_4399b11512"}.change_evidence WHERE change_set_id = $1`,
+      [set.id],
+    )).rows).toEqual([{ reference_id: runId }]);
+
+    await fixture.db.query(
+      "INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', $1, $2, 'succeeded', now())",
+      ["22222222-2222-4222-8222-222222222222", AGENT],
+    );
+    await expect(fixture.action("add-link", {
+      changeSetId: set.id,
+      linkType: "run",
+      referenceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    })).rejects.toThrow("Run not found in authorized company");
+    await expect(fixture.action("add-evidence", {
+      changeSetId: set.id,
+      evidenceType: "run",
+      referenceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    })).rejects.toThrow("Run not found in authorized company");
+    await expect(fixture.action("add-evidence", {
+      changeSetId: set.id,
+      evidenceType: "run",
+      referenceId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    })).rejects.toThrow("Run not found in authorized company");
+    await expect(fixture.action("add-link", {
+      changeSetId: set.id,
+      linkType: "run",
+      referenceId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    })).rejects.toThrow("Run not found in authorized company");
+    expect((await fixture.db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM ${"plugin_evolution_4399b11512"}.change_links WHERE change_set_id = $1`,
+      [set.id],
+    )).rows[0]!.count).toBe(4);
+    expect((await fixture.db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM ${"plugin_evolution_4399b11512"}.change_evidence WHERE change_set_id = $1`,
+      [set.id],
+    )).rows[0]!.count).toBe(1);
+  });
+
   it("excludes unfinished runs from success rate and leaves duration based on finished runs", async () => {
     await fixture.db.query(
       "INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at) VALUES " +

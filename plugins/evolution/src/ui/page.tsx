@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   useHostLocation,
   useHostNavigation,
@@ -325,9 +325,13 @@ function DetailView({
   const addConclusion = usePluginAction("add-conclusion");
   const recompute = usePluginAction("recompute-metrics");
   const mergeChangeSet = usePluginAction("merge-change-set");
+  const moveSelectedItems = usePluginAction("move-selected-change-items");
   const nav = useHostNavigation();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [moveTargetId, setMoveTargetId] = useState("");
+  const [showMoveForm, setShowMoveForm] = useState(false);
 
   async function act(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -349,6 +353,37 @@ function DetailView({
   }
 
   const set = data.changeSet;
+
+  async function moveItems(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const targetChangeSetId = moveTargetId.trim();
+    if (!targetChangeSetId || targetChangeSetId === set.id || selectedItemIds.length === 0) return;
+    setBusy("move");
+    setError("");
+    try {
+      await moveSelectedItems({
+        companyId,
+        sourceChangeSetId: set.id,
+        targetChangeSetId,
+        changeItemIds: selectedItemIds,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy("");
+      return;
+    }
+    setSelectedItemIds([]);
+    setShowMoveForm(false);
+    setMoveTargetId("");
+    try {
+      await refresh();
+    } catch (err) {
+      setError(`Items moved successfully, but the view could not refresh: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      nav.navigate("/evolution?change=" + encodeURIComponent(targetChangeSetId));
+      setBusy("");
+    }
+  }
 
   return (
     <section style={{ display: "grid", gap: 12 }}>
@@ -549,41 +584,86 @@ function DetailView({
       </div>
 
       <div style={{ ...panel, padding: 14 }}>
-        <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Changes</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 14 }}>Changes</h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {selectedItemIds.length ? <span style={{ ...muted, fontSize: 11 }}>{selectedItemIds.length} selected</span> : null}
+            <button
+              type="button"
+              style={button}
+              disabled={Boolean(busy) || selectedItemIds.length === 0}
+              onClick={() => { setShowMoveForm(true); setError(""); }}
+            >
+              Move selected items…
+            </button>
+          </div>
+        </div>
+        {showMoveForm ? (
+          <form onSubmit={(event) => void moveItems(event)} style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <label htmlFor="evolution-move-target" style={{ ...muted, fontSize: 11 }}>Target Change Set ID</label>
+            <input
+              id="evolution-move-target"
+              aria-label="Target Change Set ID"
+              value={moveTargetId}
+              onChange={(event) => setMoveTargetId(event.currentTarget.value)}
+              style={{ ...input, minWidth: 220, flex: 1 }}
+              required
+            />
+            <button type="submit" style={primaryButton} disabled={Boolean(busy) || !moveTargetId.trim() || moveTargetId.trim() === set.id}>
+              {busy === "move" ? "Moving…" : `Move ${selectedItemIds.length} selected`}
+            </button>
+            <button type="button" style={button} disabled={Boolean(busy)} onClick={() => { setShowMoveForm(false); setMoveTargetId(""); }}>
+              Cancel
+            </button>
+          </form>
+        ) : null}
         {data.items.length === 0 ? (
           <div style={{ ...muted, fontSize: 12 }}>No captured changes.</div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             {data.items.map((item) => (
-              <details key={item.id} style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-                <summary style={{ cursor: "pointer", fontSize: 12 }}>
-                  <strong>{item.entityName || item.entityId}</strong>
-                  <span style={{ ...muted }}> · {statusLabel(item.entityType)} · {statusLabel(item.changeKind)} · {fmtDate(item.occurredAt)}</span>
-                </summary>
-                <div style={{ ...muted, fontSize: 11, marginTop: 7 }}>
-                  Changed: {Array.isArray(item.changedKeys) && item.changedKeys.length ? item.changedKeys.join(", ") : "snapshot"}
-                  {item.sourceActivityId ? <> · Audit {item.sourceActivityId}</> : null}
-                </div>
-                {[snapshotLimitation(item.beforeSnapshot), snapshotLimitation(item.afterSnapshot)].filter((note, index, all): note is string => Boolean(note) && all.indexOf(note) === index).map((note) => (
-                  <div key={note} role="note" style={{ color: "var(--muted-foreground)", fontSize: 11, marginTop: 6 }}>
-                    {note}
+              <div key={item.id} style={{ display: "flex", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                <input
+                  type="checkbox"
+                  aria-label={`Select change ${item.entityName || item.entityId}`}
+                  checked={selectedItemIds.includes(item.id)}
+                  disabled={Boolean(busy)}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    setSelectedItemIds((prior) => checked ? [...prior, item.id] : prior.filter((id) => id !== item.id));
+                  }}
+                  style={{ marginTop: 2 }}
+                />
+                <details style={{ flex: 1, minWidth: 0 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 12 }}>
+                    <strong>{item.entityName || item.entityId}</strong>
+                    <span style={{ ...muted }}> · {statusLabel(item.entityType)} · {statusLabel(item.changeKind)} · {fmtDate(item.occurredAt)}</span>
+                  </summary>
+                  <div style={{ ...muted, fontSize: 11, marginTop: 7 }}>
+                    Changed: {Array.isArray(item.changedKeys) && item.changedKeys.length ? item.changedKeys.join(", ") : "snapshot"}
+                    {item.sourceActivityId ? <> · Audit {item.sourceActivityId}</> : null}
                   </div>
-                ))}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 8 }}>
-                  <div>
-                    <div style={{ ...muted, fontSize: 10, marginBottom: 4 }}>Before</div>
-                    <pre style={{ ...panel, margin: 0, padding: 9, overflow: "auto", maxHeight: 320, fontSize: 10, whiteSpace: "pre-wrap" }}>
-                      {json(item.beforeSnapshot)}
-                    </pre>
+                  {[snapshotLimitation(item.beforeSnapshot), snapshotLimitation(item.afterSnapshot)].filter((note, index, all): note is string => Boolean(note) && all.indexOf(note) === index).map((note) => (
+                    <div key={note} role="note" style={{ color: "var(--muted-foreground)", fontSize: 11, marginTop: 6 }}>
+                      {note}
+                    </div>
+                  ))}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 8 }}>
+                    <div>
+                      <div style={{ ...muted, fontSize: 10, marginBottom: 4 }}>Before</div>
+                      <pre style={{ ...panel, margin: 0, padding: 9, overflow: "auto", maxHeight: 320, fontSize: 10, whiteSpace: "pre-wrap" }}>
+                        {json(item.beforeSnapshot)}
+                      </pre>
+                    </div>
+                    <div>
+                      <div style={{ ...muted, fontSize: 10, marginBottom: 4 }}>After</div>
+                      <pre style={{ ...panel, margin: 0, padding: 9, overflow: "auto", maxHeight: 320, fontSize: 10, whiteSpace: "pre-wrap" }}>
+                        {json(item.afterSnapshot)}
+                      </pre>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ ...muted, fontSize: 10, marginBottom: 4 }}>After</div>
-                    <pre style={{ ...panel, margin: 0, padding: 9, overflow: "auto", maxHeight: 320, fontSize: 10, whiteSpace: "pre-wrap" }}>
-                      {json(item.afterSnapshot)}
-                    </pre>
-                  </div>
-                </div>
-              </details>
+                </details>
+              </div>
             ))}
           </div>
         )}
@@ -706,6 +786,7 @@ function SelectedChangeDetail({
 
   return (
     <DetailView
+      key={changeSetId}
       companyId={companyId}
       data={detail.data}
       refresh={async () => {
@@ -728,6 +809,9 @@ export function EvolutionPage({ context }: PluginPageProps) {
   const backfill = usePluginAction("backfill-recent");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newHypothesis, setNewHypothesis] = useState("");
 
   if (!companyId) return <main style={{ ...shell, ...muted }}>Select an organization to view Evolution.</main>;
 
@@ -736,7 +820,11 @@ export function EvolutionPage({ context }: PluginPageProps) {
     setError("");
     try {
       const result = await fn();
-      await Promise.resolve(overview.refresh());
+      try {
+        await Promise.resolve(overview.refresh());
+      } catch (err) {
+        setError(`${label === "create" ? "Created" : "Completed"} successfully, but the overview could not refresh: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -769,30 +857,52 @@ export function EvolutionPage({ context }: PluginPageProps) {
           >
             Backfill recent
           </button>
-          <button
-            type="button"
-            style={primaryButton}
-            disabled={Boolean(busy)}
-            onClick={() => {
-              const title = window.prompt("Change Set title")?.trim();
-              if (!title) return;
-              const hypothesis = window.prompt("What improvement do you expect?")?.trim() ?? "";
-              void run("create", () => create({
-                companyId,
-                title,
-                ...(hypothesis ? { hypothesis } : {}),
-                status: "draft",
-                causalityLevel: "observed",
-              })).then((result) => {
-                const id = result && typeof result === "object" && "id" in result ? String((result as { id: unknown }).id) : "";
-                if (id) nav.navigate("/evolution?change=" + encodeURIComponent(id));
-              });
-            }}
-          >
+          <button type="button" style={primaryButton} disabled={Boolean(busy)} onClick={() => { setShowCreateForm(true); setError(""); }}>
             New Change Set
           </button>
         </div>
       </header>
+
+      {showCreateForm ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const title = newTitle.trim();
+            if (!title) return;
+            void run("create", () => create({
+              companyId,
+              title,
+              ...(newHypothesis.trim() ? { hypothesis: newHypothesis.trim() } : {}),
+              status: "draft",
+              causalityLevel: "observed",
+            })).then((result) => {
+              const id = result && typeof result === "object" && "id" in result ? String((result as { id: unknown }).id) : "";
+              if (id) {
+                setShowCreateForm(false);
+                setNewTitle("");
+                setNewHypothesis("");
+                nav.navigate("/evolution?change=" + encodeURIComponent(id));
+              }
+            });
+          }}
+          style={{ ...panel, padding: 14, marginBottom: 12, display: "grid", gridTemplateColumns: "minmax(180px, 1fr) minmax(220px, 2fr) auto auto", gap: 8, alignItems: "end" }}
+        >
+          <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--muted-foreground)" }}>
+            Title
+            <input autoFocus aria-label="Change Set title" required value={newTitle} onChange={(event) => setNewTitle(event.currentTarget.value)} style={input} />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--muted-foreground)" }}>
+            Expected improvement (hypothesis)
+            <input aria-label="Expected improvement hypothesis" value={newHypothesis} onChange={(event) => setNewHypothesis(event.currentTarget.value)} style={input} />
+          </label>
+          <button type="submit" style={primaryButton} disabled={Boolean(busy) || !newTitle.trim()}>
+            {busy === "create" ? "Creating…" : "Create"}
+          </button>
+          <button type="button" style={button} disabled={Boolean(busy)} onClick={() => { setShowCreateForm(false); setNewTitle(""); setNewHypothesis(""); }}>
+            Cancel
+          </button>
+        </form>
+      ) : null}
 
       {error ? <div style={{ ...panel, color: "var(--destructive)", padding: 10, fontSize: 12, marginBottom: 12 }}>{error}</div> : null}
 

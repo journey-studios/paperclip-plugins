@@ -83,7 +83,7 @@ describe("Evolution data integrity and actions", () => {
       `INSERT INTO ${NS}.change_items (id, company_id, change_set_id, entity_type, entity_id, change_kind, source_type, source_ref) VALUES (gen_random_uuid(), $1, $2, 'agent', $3, 'updated', 'test', 'item-1')`,
       [COMPANY, source.id, AGENT],
     );
-    await fixture.action("add-evidence", { changeSetId: source.id, evidenceType: "run", referenceId: "run-1" });
+    await fixture.action("add-evidence", { changeSetId: source.id, evidenceType: "observation", referenceId: "run-1" });
     await fixture.action("add-link", { changeSetId: source.id, linkType: "issue", referenceId: "ISSUE-1" });
     await fixture.action("add-conclusion", { changeSetId: source.id, outcome: "inconclusive", summary: "Observed" });
     await fixture.db.query(`INSERT INTO ${NS}.change_metrics (id, company_id, change_set_id, metric_key) VALUES (gen_random_uuid(), $1, $2, 'cost')`, [COMPANY, source.id]);
@@ -102,6 +102,81 @@ describe("Evolution data integrity and actions", () => {
     expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, target.id])).rows[0]!.count).toBe(1);
     expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_conclusions WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, target.id])).rows[0]!.count).toBe(1);
     expect((await fixture.db.query(`SELECT target_change_set_id FROM ${NS}.merge_operations WHERE company_id = $1 AND source_change_set_id = $2`, [COMPANY, source.id])).rows[0]!.target_change_set_id).toBe(target.id);
+  });
+
+  it("moves only selected items, preserves source evidence, and retries after metric interruption", async () => {
+    const source = await createSet("Research source");
+    const target = await createSet("Relevant changes");
+    const selectedAgentItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const secondSelectedAgentItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+    const retainedIssueItem = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_items (id, company_id, change_set_id, entity_type, entity_id, change_kind, source_type, source_ref) VALUES ` +
+        `($1, $2, $3, 'agent', $4, 'updated', 'test', 'selected-agent'), ` +
+        `($5, $2, $3, 'agent', $4, 'updated', 'test', 'second-selected-agent'), ` +
+        `($6, $2, $3, 'issue', 'ISSUE-7', 'updated', 'test', 'retained-issue')`,
+      [selectedAgentItem, COMPANY, source.id, AGENT, secondSelectedAgentItem, retainedIssueItem],
+    );
+    await fixture.action("add-evidence", { changeSetId: source.id, evidenceType: "observation", referenceId: "source-note" });
+    await fixture.action("add-conclusion", { changeSetId: source.id, outcome: "inconclusive", summary: "Source context" });
+
+    await fixture.db.exec(
+      `CREATE FUNCTION public.fail_selected_move_metric_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ` +
+        `IF NEW.change_set_id = '${source.id}'::uuid THEN RAISE EXCEPTION 'injected metric interruption'; END IF; RETURN NEW; END $$; ` +
+        `CREATE TRIGGER fail_selected_move_metric_update BEFORE INSERT OR UPDATE ON ${NS}.change_metrics ` +
+        `FOR EACH ROW EXECUTE FUNCTION public.fail_selected_move_metric_update();`,
+    );
+    const request = { sourceChangeSetId: source.id, targetChangeSetId: target.id, changeItemIds: [selectedAgentItem] };
+    await expect(fixture.action("move-selected-change-items", request)).rejects.toThrow("injected metric interruption");
+    expect((await fixture.db.query(`SELECT id FROM ${NS}.change_sets WHERE company_id = $1 AND id IN ($2, $3)`, [COMPANY, source.id, target.id])).rows).toHaveLength(2);
+    expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [selectedAgentItem])).rows[0]!.change_set_id).toBe(target.id);
+    expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [secondSelectedAgentItem])).rows[0]!.change_set_id).toBe(source.id);
+    expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_evidence WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, source.id])).rows[0]!.count).toBe(1);
+    expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_conclusions WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, source.id])).rows[0]!.count).toBe(1);
+    expect((await fixture.db.query(`SELECT metadata->'movedItemIds' AS ids FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2 AND link_type = 'change_set' AND reference_id = $3`, [COMPANY, target.id, source.id])).rows).toHaveLength(1);
+
+    await fixture.db.exec(`DROP TRIGGER fail_selected_move_metric_update ON ${NS}.change_metrics; DROP FUNCTION public.fail_selected_move_metric_update();`);
+    await expect(fixture.action("move-selected-change-items", request)).resolves.toMatchObject({ ok: true, selectedCount: 1 });
+    await expect(fixture.action("move-selected-change-items", {
+      ...request, changeItemIds: [secondSelectedAgentItem],
+    })).resolves.toMatchObject({ ok: true, selectedCount: 1 });
+    const provenance = await fixture.db.query<{ ids: string[] }>(
+      `SELECT metadata->'movedItemIds' AS ids FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2 AND link_type = 'change_set' AND reference_id = $3`,
+      [COMPANY, target.id, source.id],
+    );
+    expect(provenance.rows).toHaveLength(1);
+    expect(provenance.rows[0]!.ids).toEqual([selectedAgentItem, secondSelectedAgentItem]);
+    expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [retainedIssueItem])).rows[0]!.change_set_id).toBe(source.id);
+    expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_metrics WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, target.id])).rows[0]!.count).toBeGreaterThan(0);
+  });
+
+  it("rejects selected items outside the source/target company scope without partial moves", async () => {
+    const source = await createSet("Own source");
+    const target = await createSet("Own target");
+    const otherActor: PluginPerformActionContext = {
+      actor: { type: "user", userId: "other-user", agentId: null, runId: null, companyId: OTHER_COMPANY },
+      companyId: OTHER_COMPANY,
+    };
+    const other = await createSet("Other company", OTHER_COMPANY, otherActor);
+    const ownItem = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    const foreignItem = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2";
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_items (id, company_id, change_set_id, entity_type, entity_id, change_kind, source_type, source_ref) VALUES ` +
+        `($1, $2, $3, 'issue', 'ISSUE-OWN', 'updated', 'test', 'own-item'), ` +
+        `($4, $5, $6, 'issue', 'ISSUE-OTHER', 'updated', 'test', 'foreign-item')`,
+      [ownItem, COMPANY, source.id, foreignItem, OTHER_COMPANY, other.id],
+    );
+    await expect(fixture.action("move-selected-change-items", {
+      sourceChangeSetId: source.id, targetChangeSetId: target.id, changeItemIds: [ownItem, foreignItem],
+    })).rejects.toThrow("Every selected change item must belong to the source or target Change Set");
+    expect((await fixture.db.query(`SELECT change_set_id FROM ${NS}.change_items WHERE id = $1`, [ownItem])).rows[0]!.change_set_id).toBe(source.id);
+    expect((await fixture.db.query(`SELECT count(*)::int AS count FROM ${NS}.change_links WHERE company_id = $1 AND change_set_id = $2`, [COMPANY, target.id])).rows[0]!.count).toBe(0);
+    await expect(fixture.action("move-selected-change-items", {
+      sourceChangeSetId: source.id, targetChangeSetId: target.id, changeItemIds: ["not-a-uuid"],
+    })).rejects.toThrow("changeItemIds must contain valid UUIDs");
+    await expect(fixture.action("move-selected-change-items", {
+      sourceChangeSetId: source.id, targetChangeSetId: target.id, changeItemIds: Array.from({ length: 201 }, () => ownItem),
+    })).rejects.toThrow("between 1 and 200 UUIDs");
   });
 
   it("qualifies every Evolution table against its namespace and preserves core schema names", async () => {

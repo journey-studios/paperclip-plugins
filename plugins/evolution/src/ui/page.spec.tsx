@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   overviewRefresh: vi.fn(),
   detailRefresh: vi.fn(),
   actions: {} as Record<string, ReturnType<typeof vi.fn>>,
+  detailData: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@paperclipai/plugin-sdk/ui", () => ({
@@ -24,7 +25,7 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => ({
       };
     }
     return {
-      data: {
+      data: mocks.detailData ?? {
         changeSet: {
           id: "source",
           title: "Source set",
@@ -37,7 +38,28 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => ({
           metricCount: 0,
           createdAt: "2026-10-01T00:00:00.000Z",
         },
-        items: [],
+        items: [
+          {
+            id: "item-agent",
+            entityType: "agent",
+            entityId: "agent-1",
+            entityName: "Reviewer",
+            changeKind: "agent.updated",
+            changedKeys: ["model"],
+            sourceType: "agent_config_revision",
+            occurredAt: "2026-10-01T00:30:00.000Z",
+          },
+          {
+            id: "item-skill",
+            entityType: "skill",
+            entityId: "skill-1",
+            entityName: "Research",
+            changeKind: "company.skill_version_created",
+            changedKeys: ["files"],
+            sourceType: "company_skill_version",
+            occurredAt: "2026-10-01T00:45:00.000Z",
+          },
+        ],
         evidence: [],
         metrics: [],
         conclusions: [],
@@ -78,13 +100,22 @@ function clickButton(container: HTMLElement, label: string) {
   button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 beforeEach(() => {
   mocks.navigate.mockReset();
   mocks.overviewRefresh.mockReset().mockResolvedValue(undefined);
   mocks.detailRefresh.mockReset().mockResolvedValue(undefined);
+  mocks.detailData = null;
   mocks.actions = {
     "merge-change-set": vi.fn(async () => ({})),
+    "move-selected-change-items": vi.fn(async () => ({ ok: true, movedCount: 1, alreadyTargetCount: 0 })),
     "add-evidence": vi.fn(async () => ({})),
+    "create-change-set": vi.fn(async () => ({ id: "created-set" })),
   };
   vi.spyOn(window, "prompt").mockReturnValue("target-set");
 });
@@ -135,5 +166,98 @@ describe("Evolution detail actions", () => {
 
     await act(async () => clickButton(container, "Attach"));
     expect(mocks.actions["add-evidence"]).not.toHaveBeenCalled();
+  });
+
+  it("routes only selected timeline item IDs to the move action and opens the target after refresh", async () => {
+    const container = await renderPage();
+
+    await act(async () => {
+      container.querySelector<HTMLInputElement>('input[aria-label="Select change Reviewer"]')?.click();
+    });
+    await act(async () => {
+      clickButton(container, "Move selected items");
+    });
+    expect(container.textContent).toContain("1 selected");
+
+    await act(async () => {
+      const target = container.querySelector<HTMLInputElement>('input[aria-label="Target Change Set ID"]');
+      if (!target) throw new Error("Target Change Set ID input not found");
+      setInputValue(target, "target-set");
+      const form = target.closest("form");
+      if (!form) throw new Error("Move form not found");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.actions["move-selected-change-items"]).toHaveBeenCalledWith({
+      companyId: "company-1",
+      sourceChangeSetId: "source",
+      targetChangeSetId: "target-set",
+      changeItemIds: ["item-agent"],
+    });
+    expect(mocks.detailRefresh).toHaveBeenCalledOnce();
+    expect(mocks.overviewRefresh).toHaveBeenCalledOnce();
+    expect(mocks.navigate).toHaveBeenCalledWith("/evolution?change=target-set");
+  });
+
+  it("cancels selected-item move without mutating", async () => {
+    const container = await renderPage();
+    await act(async () => {
+      container.querySelector<HTMLInputElement>('input[aria-label="Select change Reviewer"]')?.click();
+    });
+    await act(async () => {
+      clickButton(container, "Move selected items");
+    });
+    await act(async () => {
+      clickButton(container, "Cancel");
+    });
+
+    expect(mocks.actions["move-selected-change-items"]).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("1 selected");
+  });
+
+  it("clears the selection and navigates when a moved source view cannot refresh", async () => {
+    mocks.detailRefresh.mockRejectedValue(new Error("source Change Set no longer exists"));
+    const container = await renderPage();
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Select change Reviewer"]')?.click());
+    await act(async () => clickButton(container, "Move selected items"));
+    await act(async () => {
+      const target = container.querySelector<HTMLInputElement>('input[aria-label="Target Change Set ID"]');
+      if (!target) throw new Error("Target Change Set ID input not found");
+      setInputValue(target, "target-set");
+      const form = target.closest("form");
+      if (!form) throw new Error("Move form not found");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.navigate).toHaveBeenCalledWith("/evolution?change=target-set");
+    expect(container.textContent).not.toContain("1 selected");
+    expect(container.textContent).toContain("Items moved successfully, but the view could not refresh");
+  });
+
+  it("creates a Change Set from the inline form and navigates to it", async () => {
+    const container = await renderPage();
+    await act(async () => clickButton(container, "New Change Set"));
+    await act(async () => {
+      const title = container.querySelector<HTMLInputElement>('input[aria-label="Change Set title"]');
+      if (!title) throw new Error("Change Set title input not found");
+      setInputValue(title, "Improve research quality");
+      const hypothesis = container.querySelector<HTMLInputElement>('input[aria-label="Expected improvement hypothesis"]');
+      if (!hypothesis) throw new Error("Hypothesis input not found");
+      setInputValue(hypothesis, "More relevant evidence per run");
+      const form = title.closest("form");
+      if (!form) throw new Error("Create form not found");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mocks.actions["create-change-set"]).toHaveBeenCalledWith({
+      companyId: "company-1",
+      title: "Improve research quality",
+      hypothesis: "More relevant evidence per run",
+      status: "draft",
+      causalityLevel: "observed",
+    });
+    expect(mocks.navigate).toHaveBeenCalledWith("/evolution?change=created-set");
   });
 });
