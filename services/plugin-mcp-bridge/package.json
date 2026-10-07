@@ -1,0 +1,11 @@
+{
+  "name": "@journey-studios/plugin-mcp-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node src/bridge.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
