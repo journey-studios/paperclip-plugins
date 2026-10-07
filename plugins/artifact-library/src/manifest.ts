@@ -6,13 +6,14 @@ export const DATABASE_NAMESPACE = "plugin_artifact_library_ca55530627";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.2",
+  version: "0.1.3",
   displayName: "Artifact Library",
   description:
     "Organize company artifacts with folders, tags, favorites and saved views.",
   author: "Journey Studios",
   categories: ["ui"],
   capabilities: [
+    "api.routes.register",
     "artifacts.read",
     "companies.read",
     "projects.read",
@@ -30,6 +31,16 @@ const manifest: PaperclipPluginManifestV1 = {
     migrationsDir: "migrations",
     coreReadTables: ["companies"],
   },
+  apiRoutes: [
+    ...(["POST", "GET"] as const).map((method) => ({
+      routeKey: "mcp",
+      method,
+      path: "/mcp",
+      auth: "board" as const,
+      capability: "api.routes.register" as const,
+      companyResolution: { from: "query" as const, key: "companyId" },
+    })),
+  ],
   ui: {
     slots: [
       {
