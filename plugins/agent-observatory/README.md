@@ -2,6 +2,8 @@
 
 Agent Observatory is a read-only Paperclip plugin that summarizes heartbeat runs and reported cost events, highlights heuristic signals, and exposes a safe run trace. The UI is registered at `/observatory`; its scoped API lives under `/api/plugins/:pluginId/api/`.
 
+The agent table is horizontally scrollable in narrow layouts and its scroll region accepts keyboard focus. Long agent IDs remain available as hover titles instead of stretching table columns.
+
 The plugin registers company-scoped GET routes for `overview`, `agents`, `agent`, `failures`, `anomalies`, `trace`, and `tools`, plus the read-only agent tools `observatory_overview` and `observatory_trace`. API routes use board authorization. Native agent tools use the current run's company scope.
 
 Every core-table query binds the authorized company ID and uses the `public` schema. Queries select only status, lifecycle timestamps, safe error codes, identifiers, and reported costs. The plugin never returns run context snapshots, result payloads, adapter configuration, raw error text, stdout, or stderr.

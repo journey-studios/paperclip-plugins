@@ -10,7 +10,7 @@ const apiRoute = (routeKey, path) => ({
 const manifest = {
   id: "journey-studios.agent-observatory",
   apiVersion: 1,
-  version: "0.1.2",
+  version: "0.1.3",
   displayName: "Agent Observatory",
   description: "Read-only observability for agent runs, costs, failures, and suspected anomalies.",
   author: "Journey Studios",
