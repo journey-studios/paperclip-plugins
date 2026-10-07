@@ -1,13 +1,13 @@
 {
   "name": "@journey-studios/founder-comms-router",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "engines": {
     "node": ">=24.11.0"
   },
   "license": "MIT",
-  "description": "Routes high-signal Paperclip events to a configured liaison and batches updates into scheduled digests.",
+  "description": "Founder Gateway: deterministic chat commands and scoped event-driven Telegram publication.",
   "files": [
     "dist",
     "README.md",
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test",
-    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/manifest.js"
+    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/manifest.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

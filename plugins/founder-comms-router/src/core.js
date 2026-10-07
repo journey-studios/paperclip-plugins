@@ -1,6 +1,8 @@
 const EVENT_PREFIX = "[FOUNDER_COMMS_EVENT]";
 const MAX_PROCESSED = 500;
 const MAX_QUEUE = 100;
+const MAX_PENDING_RUNS = 200;
+const MAX_PUBLISHED = 500;
 let knownCompaniesTail = Promise.resolve();
 
 function asObject(value) {
@@ -30,6 +32,8 @@ async function companyConfig(ctx, companyId) {
     founderUserId: stringValue(raw.founderUserId),
     immediateEnabled: raw.immediateEnabled !== false,
     digestEnabled: raw.digestEnabled !== false,
+    publicationEnabled: raw.publicationEnabled === true,
+    commandsEnabled: raw.commandsEnabled !== false,
     conversationIssueId: stringValue(raw.conversationIssueId),
     chatChannels: channels,
     projectId: stringValue(raw.projectId),
@@ -44,7 +48,7 @@ function validateConfig(value) {
   const errors = [];
   const knownKeys = new Set([
     "liaisonAgentId", "founderUserId", "conversationIssueId", "chatChannels", "projectId",
-    "immediateEnabled", "digestEnabled", "digestTimezone", "digestTimes", "digestWeekdays",
+    "immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays",
   ]);
   for (const key of Object.keys(config)) {
     if (!knownKeys.has(key)) errors.push(`Unknown setting: ${key}`);
@@ -55,7 +59,7 @@ function validateConfig(value) {
   for (const key of ["conversationIssueId", "projectId"]) {
     if (config[key] !== undefined && !stringValue(config[key])) errors.push(`${key} must be a non-empty string`);
   }
-  for (const key of ["immediateEnabled", "digestEnabled"]) {
+  for (const key of ["immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled"]) {
     if (config[key] !== undefined && typeof config[key] !== "boolean") errors.push(`${key} must be a boolean`);
   }
   if (config.chatChannels !== undefined) {
@@ -199,6 +203,99 @@ async function queueItem(ctx, companyId, queueKey, item) {
   await ctx.state.set(key, queue.slice(-MAX_QUEUE));
 }
 
+async function rememberPublicationRun(ctx, companyId, issueId, wake, sourceId) {
+  if (!wake?.queued || !stringValue(wake.runId)) return;
+  const key = companyScope(companyId, "pending-publication-runs");
+  const prior = await ctx.state.get(key);
+  const queue = Array.isArray(prior) ? prior.filter((item) => asObject(item).runId !== wake.runId) : [];
+  queue.push({ runId: wake.runId, issueId, sourceId, requestedAt: new Date().toISOString(), ready: false });
+  await ctx.state.set(key, queue.slice(-MAX_PENDING_RUNS));
+}
+
+async function publishForRun(ctx, companyId, config, runId) {
+  if (!config.publicationEnabled) return { status: "disabled" };
+  const key = companyScope(companyId, "pending-publication-runs");
+  const queue = await ctx.state.get(key);
+  const pending = (Array.isArray(queue) ? queue : []).find((entry) => stringValue(asObject(entry).runId) === runId);
+  if (!pending) return { status: "not_pending" };
+  if (pending.ready !== true) return { status: "run_not_completed" };
+  const issueId = stringValue(asObject(pending).issueId);
+  if (!issueId) return { status: "invalid_pending" };
+  const issue = await ctx.issues.get(issueId, companyId);
+  if (!isFounderChatIssue(issue, config, companyId)) return { status: "conversation_unavailable" };
+  const comments = await ctx.issues.listComments(issueId, companyId);
+  const eligible = comments.filter((comment) =>
+    comment.issueId === issueId &&
+    comment.companyId === companyId &&
+    comment.createdByRunId === runId &&
+    comment.authorType === "agent" &&
+    comment.authorAgentId === config.liaisonAgentId &&
+    !comment.deletedAt &&
+    stringValue(comment.body) &&
+    !comment.body.startsWith(EVENT_PREFIX),
+  );
+  eligible.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const comment = eligible[0];
+  if (!comment) return { status: "comment_not_found" };
+  const publishedKey = companyScope(companyId, "published-comment-ids");
+  const prior = await ctx.state.get(publishedKey);
+  const ids = Array.isArray(prior) ? prior.filter((value) => typeof value === "string") : [];
+  if (!ids.includes(comment.id)) {
+    // Native chat publications have a unique idempotency key per comment and endpoint.
+    // Retry after a crash is safe even if the provider already accepted the message.
+    const result = await ctx.chat.publishComment(comment.id, companyId);
+    if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
+      throw new Error(`Chat publication was not accepted: ${result?.state ?? "unknown"}`);
+    }
+    ids.push(comment.id);
+    await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
+  }
+  await ctx.state.set(key, (Array.isArray(queue) ? queue : []).filter((entry) =>
+    stringValue(asObject(entry).runId) !== runId));
+  return { status: "accepted", commentId: comment.id };
+}
+
+async function reconcilePendingPublications(ctx, companyId, config) {
+  if (!config.publicationEnabled) return;
+  const queue = await ctx.state.get(companyScope(companyId, "pending-publication-runs"));
+  for (const pending of Array.isArray(queue) ? queue : []) {
+    const runId = stringValue(asObject(pending).runId);
+    if (runId) await publishForRun(ctx, companyId, config, runId);
+  }
+}
+
+async function reconcileKnownPublications(ctx, serialize = async (_companyId, fn) => fn()) {
+  const known = await ctx.state.get({ scopeKind: "instance", stateKey: "known-companies" });
+  for (const companyId of Array.isArray(known) ? known : []) {
+    if (!stringValue(companyId)) continue;
+    await serialize(companyId, async () => {
+      try {
+        await reconcilePendingPublications(ctx, companyId, await companyConfig(ctx, companyId));
+      } catch (error) {
+        ctx.logger.error("Founder publication startup reconciliation failed", {
+          companyId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+}
+
+async function handleAgentRunFinished(ctx, event, config) {
+  const payload = asObject(event.payload);
+  const runId = stringValue(payload.runId) ?? stringValue(event.entityId);
+  if (!runId || payload.agentId !== config.liaisonAgentId || !config.publicationEnabled) return;
+  if (event.eventType === "agent.run.finished" && payload.status === "succeeded") {
+    const key = companyScope(event.companyId, "pending-publication-runs");
+    const stored = await ctx.state.get(key);
+    const runs = Array.isArray(stored) ? stored : [];
+    if (!runs.some((item) => asObject(item).runId === runId)) return;
+    await ctx.state.set(key, runs.map((item) =>
+      asObject(item).runId === runId ? { ...item, ready: true } : item));
+    await publishForRun(ctx, event.companyId, config, runId);
+  }
+}
+
 async function publishToConversation(ctx, companyId, config, item) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) {
@@ -218,11 +315,12 @@ async function publishToConversation(ctx, companyId, config, item) {
   ].join("\n");
 
   await ctx.issues.createComment(conversation.id, body, companyId);
-  await ctx.issues.requestWakeup(conversation.id, companyId, {
+  const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_event",
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${item.id}`,
   });
+  if (config.publicationEnabled) await rememberPublicationRun(ctx, companyId, conversation.id, wake, item.id);
   return { delivered: true, issueId: conversation.id };
 }
 
@@ -245,11 +343,12 @@ async function flushPendingImmediate(ctx, companyId, config) {
     [EVENT_PREFIX, "priority=P1", "event=pending.flush", "", "Pending founder attention:", ...lines, "", "Validate each original Paperclip object before acting."].join("\n"),
     companyId,
   );
-  await ctx.issues.requestWakeup(conversation.id, companyId, {
+  const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_pending_flush",
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${id}`,
   });
+  if (config.publicationEnabled) await rememberPublicationRun(ctx, companyId, conversation.id, wake, id);
   await ctx.state.set(key, queue.slice(20));
 }
 
@@ -408,6 +507,8 @@ async function processEvent(ctx, event) {
     else if (event.eventType === "approval.created") await handleApproval(ctx, event, config);
     else if (event.eventType === "approval.decided") await handleApprovalDecided(ctx, event);
     else if (event.eventType === "budget.incident.opened") await handleBudgetIncident(ctx, event, config);
+    else if (event.eventType === "agent.run.finished" || event.eventType === "agent.run.failed")
+      await handleAgentRunFinished(ctx, event, config);
     await markProcessed(ctx, event.companyId, event.eventId);
   } catch (error) {
     ctx.logger.error("Founder comms event failed", {
@@ -446,11 +547,12 @@ async function flushDigest(ctx, companyId, scheduledSlot = null) {
     [EVENT_PREFIX, "priority=P2", "event=founder.digest", "", "Founder digest input:", ...lines, "", "Summarize and deduplicate. This input is system-originated, not founder-authored. Do not invent actions where none are required."].join("\n"),
     companyId,
   );
-  await ctx.issues.requestWakeup(conversation.id, companyId, {
+  const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_digest",
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-digest:${digestId}`,
   });
+  if (config.publicationEnabled) await rememberPublicationRun(ctx, companyId, conversation.id, wake, digestId);
   await ctx.state.set(key, queue.slice(batch.length));
   if (scheduledSlot) await ctx.state.set(companyScope(companyId, "last-digest-slot"), scheduledSlot);
 }
@@ -509,6 +611,9 @@ export {
   getLocalSlot,
   isFounderChatIssue,
   processEvent,
+  publishForRun,
+  reconcileKnownPublications,
+  reconcilePendingPublications,
   runDigestJob,
   validateConfig,
 };
