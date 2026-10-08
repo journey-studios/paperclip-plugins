@@ -97,7 +97,7 @@ const mcpHandler = createPluginMcpEndpoint({
 
 const plugin = definePlugin({
   async onApiRequest(input) {
-    if (input.routeKey !== "mcp") return { status: 404, body: { error: "Unknown Artifact Library API route" } };
+    if (input.routeKey !== "mcp" && input.routeKey !== "mcp-get") return { status: 404, body: { error: "Unknown Artifact Library API route" } };
     return mcpHandler(input);
   },
   async setup(ctx) {

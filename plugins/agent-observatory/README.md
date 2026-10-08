@@ -25,3 +25,12 @@ From the plugins monorepo, run `pnpm --filter @journey-studios/agent-observatory
 This package has its own worker, API routes, UI bundle, and lifecycle. It makes no Paperclip core patch and declares no core write capability. Paperclip plugins are trusted extensions: the worker is not a hostile-code sandbox and UI runs in the host origin. The administrative MCP wrapper is a separate process with fixed company scope; it does not grant board access to agent tools.
 
 The installed SDK binds arrays as SQL tuples. Cost lookups therefore use scalar UUID placeholders and skip empty ID lists; do not pass a JavaScript array to `ANY($n::uuid[])` through `ctx.db.query`.
+
+
+## Monthly cost report (reported ledger values only)
+
+The Observatory owns `getMonthlyCosts()` and reuses it for plugin-contributed Telegram `custos [AAAA-MM]`, native agent tool `observatory_monthly_costs`, MCP tool `paperclipMonthlyCosts`, and a board-authenticated scoped API route `/monthly-costs`.
+
+The report shows month-to-date (São Paulo timezone) **USD amounts recorded in Paperclip**, first aggregated by execution provider/API (Gemini/Google, DeepSeek, Cursor, etc.), independent of any shared biller and then by agent reporting group. Unpriced usage is shown separately and is **not** silently counted as free. Provider quotas, wallet balances, subscription invoices and missing events are outside this ledger.
+
+**Telegram ingress is pending:** provider registration/dispatch is implemented but the existing native Telegram parser does not yet forward arbitrary slash commands. See [Telegram Command API v1](../../docs/telegram-command-api-v1.md). No Paperclip core changes are part of this feature.

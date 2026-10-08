@@ -40,6 +40,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm run package
+      - name: Build native S3 bridge image
+        run: docker build -f services/s3-storage-bridge/Dockerfile -t paperclip-s3-storage-bridge:ci .
       - uses: ./.github/actions/secret-scan
 
   storage-collector-node22:

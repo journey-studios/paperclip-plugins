@@ -1,4 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { contributeTelegramCommands } from "../../../shared/telegram-command-api.js";
+import { formatMonthlyCosts, getMonthlyCosts, renderTelegramMonthlyCosts } from "./monthly-costs.js";
 import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   getAgent,
@@ -16,8 +18,18 @@ let workerContext;
 
 const mcpHandler = createPluginMcpEndpoint({
   name: "journey-studios.agent-observatory",
-  version: "0.1.4",
+  version: "0.1.5",
   tools: [
+    {
+      name: "paperclipMonthlyCosts",
+      title: "Monthly Agent Costs",
+      description: "Read monthly cost totals, breakdown by Gemini/DeepSeek/other APIs and organizational teams; unpriced usage is explicit.",
+      readOnly: true,
+      inputSchema: { type: "object", properties: {
+        period: { type: "string", pattern: "^[12][0-9]{3}-(0[1-9]|1[0-2])$" },
+      }, additionalProperties: false },
+      execute: (args, { companyId }) => getMonthlyCosts(workerContext, companyId, args.period),
+    },
     {
       name: "paperclipAgentHealthOverview",
       title: "Agent Health Overview",
@@ -95,7 +107,7 @@ const plugin = definePlugin({
   async onApiRequest(input) {
     try {
       const companyId = input.companyId;
-      if (input.routeKey === "mcp") return mcpHandler(input);
+      if (input.routeKey === "mcp" || input.routeKey === "mcp-get") return mcpHandler(input);
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
       switch (input.routeKey) {
         case "overview":
@@ -112,6 +124,8 @@ const plugin = definePlugin({
           return { body: await getTrace(workerContext, companyId, input.query.runId, normalizeWindowHours(input.query.windowHours)) };
         case "tools":
           return { body: { companyId, tools: toolCatalog } };
+        case "monthly-costs":
+          return { body: await getMonthlyCosts(workerContext, companyId, input.query.period) };
         default:
           return { status: 404, body: { error: "Unknown Agent Observatory route" } };
       }
@@ -126,6 +140,14 @@ const plugin = definePlugin({
 
   async setup(ctx) {
     workerContext = ctx;
+    contributeTelegramCommands(ctx, {
+      pluginId: "journey-studios.agent-observatory",
+      commands: [{
+        name: "custos", description: "Custos mensais por API e por equipe",
+        usage: "/custos [AAAA-MM]", readOnly: true, audience: "founder",
+      }],
+      execute: async ({ companyId, args }) => renderTelegramMonthlyCosts(ctx, companyId, args),
+    });
     ctx.data.register("overview", (params) => {
       const options = objectParams(params);
       return readForUi(ctx, "overview", () => getOverview(ctx, options.companyId, normalizeWindowHours(options.windowHours)));
@@ -157,6 +179,23 @@ const plugin = definePlugin({
       }
     });
 
+    ctx.tools.register("observatory_monthly_costs", {
+      displayName: "Monthly Agent Costs",
+      description: "Read reported spend by API and organization group, including unpriced cost coverage.",
+      parametersSchema: {
+        type: "object",
+        properties: { period: { type: "string", pattern: "^[12][0-9]{3}-(0[1-9]|1[0-2])$" } },
+        additionalProperties: false,
+      },
+    }, async (params, runCtx) => {
+      try {
+        const data = await getMonthlyCosts(ctx, runCtx.companyId, objectParams(params).period);
+        return { content: formatMonthlyCosts(data), data };
+      } catch {
+        return { error: "Monthly Observatory costs are unavailable" };
+      }
+    });
+
     ctx.tools.register("observatory_trace", {
       displayName: "Agent Run Trace",
       description: "Read safe lifecycle timestamps and retry links for a heartbeat run in the current company.",
@@ -185,6 +224,7 @@ const plugin = definePlugin({
 const toolCatalog = [
   { name: "observatory_overview", displayName: "Agent Observatory Overview", readOnly: true },
   { name: "observatory_trace", displayName: "Agent Run Trace", readOnly: true },
+  { name: "observatory_monthly_costs", displayName: "Monthly Agent Costs", readOnly: true },
 ];
 
 function overviewText(data) {
