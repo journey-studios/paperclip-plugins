@@ -1,1 +1,1 @@
-@/tmp/push-gw-one.json
+LOAD_FROM_FILE
