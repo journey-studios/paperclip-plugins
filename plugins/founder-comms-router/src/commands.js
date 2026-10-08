@@ -85,11 +85,17 @@ function displayTasks(issues) {
   return displayList("Tarefas abertas", rows, "Nenhuma tarefa aberta encontrada.");
 }
 
+/**
+ * Normalize Paperclip's monthly spend values to non-negative integer cents.
+ */
 function cents(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : 0;
 }
 
+/**
+ * Render integer cents as a stable pt-BR USD amount for Telegram.
+ */
 function formatUsd(value) {
   return "US$ " + new Intl.NumberFormat("pt-BR", {
     minimumFractionDigits: 2,
@@ -97,10 +103,21 @@ function formatUsd(value) {
   }).format(cents(value) / 100);
 }
 
+/**
+ * Build a human-readable but identity-preserving label for an org group owner.
+ */
 function creditGroupLabel(agent) {
-  return agent?.title ?? agent?.name ?? agent?.id ?? "Grupo sem nome";
+  const title = compact(agent?.title, 90);
+  const identity = compact(agent?.name ?? agent?.id, 70);
+  if (title && identity && title.toLocaleLowerCase("pt-BR") !== identity.toLocaleLowerCase("pt-BR")) {
+    return `${title} · ${identity}`;
+  }
+  return title || identity || "Grupo sem nome";
 }
 
+/**
+ * Aggregate each agent's native monthly spend into the CEO reporting hierarchy.
+ */
 function monthlyCreditGroups(agents) {
   const byId = new Map(agents.filter((agent) => agent?.id).map((agent) => [agent.id, agent]));
   const ceoIds = new Set(agents
@@ -140,17 +157,56 @@ function monthlyCreditGroups(agents) {
     right.cents - left.cents || left.label.localeCompare(right.label, "pt-BR"));
 }
 
+/**
+ * Read every company agent through the native paginated Plugin SDK.
+ * A repeated full page fails closed instead of silently returning a partial total.
+ */
 async function listAllAgents(ctx, companyId) {
   const agents = [];
+  const seenIds = new Set();
   const pageSize = 100;
-  for (let offset = 0; offset < 1000; offset += pageSize) {
+  let offset = 0;
+
+  while (true) {
     const page = await ctx.agents.list({ companyId, limit: pageSize, offset });
-    agents.push(...page);
-    if (page.length < pageSize) break;
+    let added = 0;
+    for (const agent of page) {
+      if (!agent?.id || seenIds.has(agent.id)) continue;
+      seenIds.add(agent.id);
+      agents.push(agent);
+      added++;
+    }
+    if (page.length < pageSize) return agents;
+    if (added === 0) throw new Error("Agent pagination stalled while calculating monthly credits");
+    offset += page.length;
   }
-  return agents;
 }
 
+/**
+ * Append only whole credit-group records while reserving room for the footer.
+ */
+function displayCreditRows(header, rows, footer) {
+  if (rows.length === 0) return `${header}\n_Nenhum custo reportado neste mês._${footer}`;
+
+  let output = header;
+  let included = 0;
+  for (const row of rows) {
+    const next = `${output}\n${row}`;
+    const remaining = rows.length - included - 1;
+    const omitted = remaining > 0 ? `\n_${remaining} grupos omitidos por limite de mensagem._` : "";
+    if (next.length + omitted.length + footer.length > MAX_TEXT) break;
+    output = next;
+    included++;
+  }
+
+  const omitted = rows.length - included;
+  if (omitted > 0) output += `\n_${omitted} grupos omitidos por limite de mensagem._`;
+  return output + footer;
+}
+
+/**
+ * Produce the Founder-facing monthly total and organizational spend breakdown.
+ */
 async function displayCredits(ctx, companyId) {
   const [company, agents] = await Promise.all([
     ctx.companies.get({ companyId }),
@@ -161,27 +217,27 @@ async function displayCredits(ctx, companyId) {
   const companyTotal = company ? cents(company.spentMonthlyCents) : agentTotal;
   const rows = groups
     .filter((group) => group.cents > 0)
-    .map((group) => "• **" + markdownContent(group.label, 120) + "** — " + formatUsd(group.cents));
+    .map((group) => "• **" + markdownContent(group.label, 170) + "** — " + formatUsd(group.cents));
 
   if (companyTotal > agentTotal) {
     rows.push("• **Não atribuído** — " + formatUsd(companyTotal - agentTotal));
   }
 
-  const lines = [
+  const header = [
     "**Créditos do mês**",
     "",
     "**Total reportado:** " + formatUsd(companyTotal),
     "",
     "**Por grupo**",
-    ...(rows.length ? rows : ["_Nenhum custo reportado neste mês._"]),
+  ].join("\n");
+  const footerLines = [
     "",
     "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
   ];
-
   if (agentTotal > companyTotal) {
-    lines.push("_A soma por grupo ainda está convergindo com o total da empresa._");
+    footerLines.push("_A soma por grupo ainda está convergindo com o total da empresa._");
   }
-  return lines.join("\n");
+  return displayCreditRows(header, rows, "\n" + footerLines.join("\n"));
 }
 
 const commands = new Map([
