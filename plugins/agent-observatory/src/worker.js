@@ -95,7 +95,7 @@ const plugin = definePlugin({
   async onApiRequest(input) {
     try {
       const companyId = input.companyId;
-      if (input.routeKey === "mcp") return mcpHandler(input);
+      if (input.routeKey === "mcp" || input.routeKey === "mcp-get") return mcpHandler(input);
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
       switch (input.routeKey) {
         case "overview":
