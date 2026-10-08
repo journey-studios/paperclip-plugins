@@ -84,7 +84,7 @@ before rendering. Long responses only include complete records.
 
 The Gateway accepts authorized read-only commands contributed by other installed plugins through the host-namespaced plugin event bus. Providers are allowlisted per company with `commandProviderIds` (default: `journey-studios.agent-observatory`), declare their names, and answer through correlated, bounded events. Command registration does not grant permission to bypass the linked-Founder check, mutate Paperclip state, or impersonate a different provider.
 
-**Ingress status:** the existing Telegram channel currently recognizes only `/agents`, `/tasks` and `/help`. Renaming the plugin does not change this parser. The internal `telegram-command` plugin action can dispatch `custos`, but sending `/custos` to the current bot **is not yet handled by the native parser**. This PR intentionally does not change the core. Full rollout requires a separately verified plugin-only inbound adapter; see [Telegram Command API v1](../../docs/telegram-command-api-v1.md).
+**Ingress status:** the existing Telegram channel currently recognizes only `/agents`, `/tasks` and `/help`. Renaming the plugin does not change this parser. The internal `telegram-command` plugin action can dispatch `custos`, but sending `/custos` to the current bot **is not yet handled by the native parser**. API v1 owns plugin command handlers, while receiving a native Telegram update requires a host-admitted bridge: the current SDK exposes no safe plugin-side hook for Telegram identity/admission or native replies. See [Telegram Command API v1](../../docs/telegram-command-api-v1.md) for the required host checks. This documentation does not add or activate that bridge.
 
 ## Rename rollout (no Paperclip core changes)
 
