@@ -47,3 +47,12 @@ Paperclip's native `explicit:<commentId>:<endpointId>` key prevents duplicate lo
 ## Development
 
 Run `pnpm --filter @journey-studios/founder-comms-router build`, `test`, or `typecheck` from the repository root. Node.js 24.11 or newer is required.
+
+### Native Telegram formatting
+
+Founder Gateway renders `/agents`, `/tasks` and `/help` as CommonMark with
+bold section headings, structured multiline records and visible status labels.
+Paperclip's existing native chat publisher converts the Markdown to Telegram
+MarkdownV2; there is no direct Telegram API client, added webhook or LLM
+invocation. Names, IDs, titles and unknown status values are Markdown-escaped
+before rendering. Long responses only include complete records.

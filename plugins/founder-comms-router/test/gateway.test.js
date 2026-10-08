@@ -148,12 +148,12 @@ test("formats /tasks as separate Telegram blocks with readable Portuguese states
   assert.deepEqual(result, {
     handled: true,
     text: [
-      "Tarefas abertas",
+      "**Tarefas abertas**",
       "",
-      "JOU-38 · Bloqueada",
+      "**JOU\\-38** · _Bloqueada_",
       "Execution Reliability v1 — serialização, dedup de wakes e retomada segura",
       "",
-      "JOU-53 · Em revisão",
+      "**JOU\\-53** · _Em revisão_",
       "Definir a experiência de primeiro valor para um novo usuário sem campanha",
     ].join("\n"),
   });
@@ -165,11 +165,11 @@ test("formats /agents and /help as multiline Telegram replies", async () => {
     { provider: "telegram", command, assigneeAgentId: "liaison" },
     { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } })).text;
 
-  assert.equal(await invoke("agents"), "Agentes do Paperclip\n\n• Founder Liaison\n  Estado: Ocioso");
+  assert.equal(await invoke("agents"), "**Agentes do Paperclip**\n\n• **Founder Liaison**\n  _Estado:_ Ocioso");
   const help = await invoke("help");
-  assert.match(help, /^Comandos do Founder Gateway\n\n\/agents/);
-  assert.match(help, /\/tasks — Listar tarefas abertas\n\/help — Exibir esta ajuda/);
-  assert.match(help, /\n\nComandos nativos do Paperclip\n\n\/status/);
+  assert.match(help, /^\*\*Comandos do Founder Gateway\*\*\n\n`\/agents`/);
+  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/help` — Exibir esta ajuda/);
+  assert.match(help, /\n\n\*\*Comandos nativos do Paperclip\*\*\n\n`\/status`/);
 });
 
 test("limits Telegram task replies without breaking records or allowing injected line breaks", async () => {
@@ -183,10 +183,57 @@ test("limits Telegram task replies without breaking records or allowing injected
     { provider: "telegram", command: "tasks", assigneeAgentId: "liaison" },
     { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
   assert.ok(text.length <= 3600);
-  assert.equal(text.split(" · Bloqueada\n").length - 1, 10);
-  assert.match(text, /JOU-0 · Bloqueada\nTítulo extenso x+/);
-  assert.doesNotMatch(text, /\nJOU-10 · Bloqueada/);
+  assert.equal(text.split(" · _Bloqueada_\n").length - 1, 10);
+  assert.match(text, /\*\*JOU\\-0\*\* · _Bloqueada_\nTítulo extenso x+/);
+  assert.doesNotMatch(text, /JOU\\-10\*\* · _Bloqueada_/);
   assert.ok(text.endsWith("…"));
+});
+
+
+test("escapes untrusted names, task titles and IDs before native Telegram Markdown parsing", async () => {
+  const f = fixture();
+  f.ctx.agents.list = async () => [{
+    name: "Agent [click](https://host.invalid) *owner*",
+    status: "idle",
+  }];
+  f.ctx.issues.list = async () => [{
+    identifier: "JOU-42",
+    title: "Review [click](https://host.invalid) *owner* and `code`",
+    status: "in_review",
+  }];
+  const invoke = async (command) => (await executeFounderCommand(f.ctx,
+    { provider: "telegram", command, assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } })).text;
+
+  const agents = await invoke("agents");
+  assert.ok(agents.startsWith("**Agentes do Paperclip**"));
+  assert.ok(agents.includes(String.raw`Agent \[click\]\(https:`));
+  assert.ok(agents.includes("\u200b"));
+  assert.equal(agents.includes("[click](https://host.invalid)"), false);
+
+  const tasks = await invoke("tasks");
+  assert.ok(tasks.includes(String.raw`**JOU\-42** · _Em revisão_`));
+  assert.ok(tasks.includes(String.raw`Review \[click\]\(https:`));
+  assert.ok(tasks.includes(String.raw`\*owner\* and \`code\``));
+  assert.ok(tasks.includes("\u200b"));
+  assert.equal(tasks.includes("[click](https://host.invalid)"), false);
+});
+
+test("never slices Markdown in the middle of a task and stays under Telegram's text limit", async () => {
+  const f = fixture();
+  f.ctx.issues.list = async () => Array.from({ length: 16 }, (_, i) => ({
+    identifier: "JOU-" + i,
+    title: "*".repeat(400),
+    status: "blocked",
+  }));
+  const { text } = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "tasks", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+  assert.ok(text.length <= 3600);
+  assert.ok(text.startsWith("**Tarefas abertas**"));
+  assert.match(text, /_Exibindo [1-9] de 10 registros\._$/);
+  assert.ok(!text.endsWith("\\"));
+  assert.equal((text.match(/ · _Bloqueada_/g) ?? []).length, (text.match(/\*\*JOU/g) ?? []).length);
 });
 
 const pendingKey = (companyId) => ({ scopeKind: "company", scopeId: companyId, stateKey: "pending-publication-runs" });

@@ -36,14 +36,41 @@ function statusLabel(value, labels) {
   return labels[key] ?? compact(value ?? "Desconhecido", 35);
 }
 
+/**
+ * Escape user-controlled text before interpolating it into CommonMark.
+ * Paperclip's existing native Telegram publisher converts this Markdown to
+ * Telegram MarkdownV2 and safely escapes punctuation again for that format.
+ */
+function markdownContent(value, max = 90) {
+  // Linkifiers may turn bare URLs into Markdown links even when punctuation
+  // is escaped. Break URL patterns before rendering untrusted task/agent text.
+  const safe = compact(value, max).replace(/\b(?:https?:\/\/|www\.)\S+/gi,
+    (url) => url.replace(/[:.]/g, "$&\u200b"));
+  return safe.replace(/[\\`*_{}\[\]()#+.!>|~-]/g, "\\$&");
+}
+
 function displayList(heading, rows, emptyText) {
-  return heading + "\n\n" + (rows.length ? rows.join("\n\n") : emptyText);
+  const header = `**${heading}**`;
+  if (rows.length === 0) return `${header}\n\n_${emptyText}_`;
+  // Append *whole records* only: slicing a Markdown reply mid-token can make
+  // Telegram reject its format, or produce a partially formatted message.
+  let output = header;
+  let included = 0;
+  for (const row of rows) {
+    if (output.length + row.length + 2 > MAX_TEXT - 58) break;
+    output += `\n\n${row}`;
+    included++;
+  }
+  if (included < rows.length) {
+    output += `\n\n_Exibindo ${included} de ${rows.length} registros._`;
+  }
+  return output;
 }
 
 function displayAgents(agents) {
   const rows = agents.slice(0, DEFAULT_LIMIT).map((agent) =>
-    "• " + compact(agent.name ?? agent.id ?? "Agente sem nome", 120) +
-    "\n  Estado: " + statusLabel(agent.status, AGENT_STATUS_LABELS));
+    "• **" + markdownContent(agent.name ?? agent.id ?? "Agente sem nome", 120) + "**" +
+    "\n  _Estado:_ " + markdownContent(statusLabel(agent.status, AGENT_STATUS_LABELS), 35));
   return displayList("Agentes do Paperclip", rows, "Nenhum agente encontrado.");
 }
 
@@ -52,28 +79,28 @@ function displayTasks(issues) {
     .filter((issue) => !["done", "cancelled"].includes(issue.status))
     .slice(0, DEFAULT_LIMIT)
     .map((issue) =>
-      compact(issue.identifier ?? issue.id ?? "Sem ID", 28) +
-      " · " + statusLabel(issue.status, TASK_STATUS_LABELS) +
-      "\n" + compact(issue.title ?? "Sem título", TITLE_LIMIT));
+      "**" + markdownContent(issue.identifier ?? issue.id ?? "Sem ID", 28) + "**" +
+      " · _" + markdownContent(statusLabel(issue.status, TASK_STATUS_LABELS), 35) + "_" +
+      "\n" + markdownContent(issue.title ?? "Sem título", TITLE_LIMIT));
   return displayList("Tarefas abertas", rows, "Nenhuma tarefa aberta encontrada.");
 }
 
 const commands = new Map([
   ["help", async () => [
-    "Comandos do Founder Gateway",
+    "**Comandos do Founder Gateway**",
     "",
-    "/agents — Listar agentes",
-    "/tasks — Listar tarefas abertas",
-    "/help — Exibir esta ajuda",
+    "`/agents` — Listar agentes",
+    "`/tasks` — Listar tarefas abertas",
+    "`/help` — Exibir esta ajuda",
     "",
-    "Comandos nativos do Paperclip",
+    "**Comandos nativos do Paperclip**",
     "",
-    "/status — Consultar tarefa atual",
-    "/task — Iniciar tarefa com uma solicitação",
-    "/new — Criar uma nova tarefa",
-    "/close — Encerrar a conversa",
+    "`/status` — Consultar tarefa atual",
+    "`/task` — Iniciar tarefa com uma solicitação",
+    "`/new` — Criar uma nova tarefa",
+    "`/close` — Encerrar a conversa",
     "",
-    "Mensagens normais continuam no Founder Liaison.",
+    "_Mensagens normais continuam no Founder Liaison._",
   ].join("\n")],
   ["agents", async (ctx, companyId) => displayAgents(
     await ctx.agents.list({ companyId, limit: 30 }),
