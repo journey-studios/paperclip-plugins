@@ -1,7 +1,7 @@
 import { executeFounderCommand } from "./commands.js";
 import { createTelegramCommandRegistry } from "./command-registry.js";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
+import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownHumanDecisions, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
 
 const companyLocks = new Map();
 
@@ -59,6 +59,10 @@ const plugin = definePlugin({
     // delay worker setup or block Telegram commands on provider publication.
     void reconcileKnownPublications(ctx, serializeCompany).catch((error) =>
       ctx.logger.error("Founder publication startup reconciliation failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    void reconcileKnownHumanDecisions(ctx, serializeCompany).catch((error) =>
+      ctx.logger.error("Founder human decision startup reconciliation failed", {
         error: error instanceof Error ? error.message : String(error),
       }));
   },

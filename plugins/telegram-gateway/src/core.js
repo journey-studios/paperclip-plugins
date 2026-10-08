@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
+import { createHumanDecisionDelivery } from "./human-decision-delivery.js";
+import {
+  assertPublicationAccepted,
+  nextPublicationFailure,
+} from "./publication-policy.js";
 
 const EVENT_PREFIX = "[FOUNDER_COMMS_EVENT]";
 const MAX_PROCESSED = 500;
 const MAX_QUEUE = 100;
 const MAX_PENDING_RUNS = 200;
 const MAX_PUBLISHED = 500;
-const MAX_PUBLICATION_ATTEMPTS = 5;
-
-class PermanentPublicationError extends Error {}
-
 let knownCompaniesTail = Promise.resolve();
 
 function asObject(value) {
@@ -188,6 +189,15 @@ async function resolveConversation(ctx, companyId, config) {
   return conversation;
 }
 
+const {
+  clearApprovalFingerprint,
+  handleApproval,
+  reconcileHumanDecisions,
+  reconcileKnownHumanDecisions,
+  reconcilePendingApprovals,
+  reconcilePendingInteractions,
+} = createHumanDecisionDelivery({ companyConfig, resolveConversation });
+
 async function hasCompanyRoutingMemberships(ctx, companyId, config) {
   const company = await ctx.companies.get(companyId);
   if (!company || company.id !== companyId) return false;
@@ -252,13 +262,9 @@ async function publishForRun(ctx, companyId, config, runId) {
   const prior = await ctx.state.get(publishedKey);
   const ids = Array.isArray(prior) ? prior.filter((value) => typeof value === "string") : [];
   if (!ids.includes(comment.id)) {
-    // The native explicit publication key is stable for this comment and endpoint.
-    // Replaying after a crash must always use the same comment ID.
     try {
       const result = await ctx.chat.publishComment(comment.id, companyId);
-      if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
-        throw new PermanentPublicationError(`Chat publication rejected: ${result?.state ?? "unknown"}`);
-      }
+      assertPublicationAccepted(result);
       ids.push(comment.id);
       await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
     } catch (error) {
@@ -267,15 +273,8 @@ async function publishForRun(ctx, companyId, config, runId) {
       const attempted = runs.map((entry) => {
         if (asObject(entry).runId !== runId) return entry;
         const priorAttempts = asObject(entry).attempts;
-        const attempts = (Number.isSafeInteger(priorAttempts) && priorAttempts >= 0 ? priorAttempts : 0) + 1;
-        const permanent = error instanceof PermanentPublicationError;
-        return {
-          ...entry,
-          attempts,
-          lastFailure: permanent ? "provider_rejected" : "publication_attempt_failed",
-          lastAttemptAt: new Date().toISOString(),
-          terminal: permanent || attempts >= MAX_PUBLICATION_ATTEMPTS,
-        };
+        const attempts = Number.isSafeInteger(priorAttempts) && priorAttempts >= 0 ? priorAttempts : 0;
+        return { ...entry, ...nextPublicationFailure(attempts, error) };
       });
       await ctx.state.set(key, attempted);
       throw error;
@@ -296,7 +295,6 @@ async function reconcilePendingPublications(ctx, companyId, config) {
     try {
       await publishForRun(ctx, companyId, config, runId);
     } catch (error) {
-      // One poisoned publication must not starve later ready runs.
       ctx.logger.error("Founder publication reconciliation failed", {
         companyId,
         runId,
@@ -338,15 +336,6 @@ async function handleAgentRunFinished(ctx, event, config) {
   }
 }
 
-/**
- * Replay-safe company-scoped system comment creation.
- *
- * The delivery marker is persisted immediately after a successful write and
- * before the wakeup. A stable marker in the original comment also repairs the
- * crash window between the issue write and the plugin-state update. The
- * conversation ID is part of the token: a retired conversation never prevents
- * delivery to a newly bound conversation.
- */
 async function ensureSystemInputComment(ctx, companyId, issueId, deliveryId, body) {
   const token = createHash("sha256")
     .update(JSON.stringify([companyId, issueId, deliveryId]))
@@ -367,7 +356,6 @@ async function ensureSystemInputComment(ctx, companyId, issueId, deliveryId, bod
   return record;
 }
 
-/** Remove only delivered items, preserving later additions while awaiting I/O. */
 async function removeDeliveredQueueItems(ctx, companyId, queueKey, batch) {
   const key = companyScope(companyId, queueKey);
   const delivered = new Set(batch.map((raw) => stringValue(asObject(raw).id)));
@@ -376,7 +364,6 @@ async function removeDeliveredQueueItems(ctx, companyId, queueKey, batch) {
     !delivered.has(stringValue(asObject(entry).id))));
 }
 
-/** A batch id must include *only* the items sent in that batch. */
 function batchDeliveryId(kind, items) {
   const digest = createHash("sha256")
     .update(JSON.stringify(items.map((raw) => stringValue(asObject(raw).id))))
@@ -405,7 +392,6 @@ async function publishToConversation(ctx, companyId, config, item) {
   await ensureSystemInputComment(ctx, companyId, conversation.id, `event:${item.id}`, body);
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_event",
-    // Keep the persisted wake source stable through package/UI renames.
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${item.id}`,
   });
@@ -547,21 +533,9 @@ async function handleComment(ctx, event, config) {
   }
 }
 
-async function handleApproval(ctx, event, config) {
-  if (!config.immediateEnabled || !event.entityId) return;
-  const approval = await ctx.approvals.get(event.entityId, event.companyId);
-  if (!approval || approval.companyId !== event.companyId || approval.status !== "pending") return;
-  await publishToConversation(ctx, event.companyId, config, {
-    id: event.eventId,
-    priority: "P1",
-    type: "approval.created",
-    sourceRef: approval.id,
-    message: `A Paperclip approval is pending. Approval ID: ${approval.id}. Type: ${approval.type}. Inspect the original approval, summarize the decision and recommendation for the founder, and preserve the decision on the original approval object.`,
-  });
-}
-
 async function handleApprovalDecided(ctx, event) {
   if (!event.entityId) return;
+  await clearApprovalFingerprint(ctx, event.companyId, event.entityId);
   const key = companyScope(event.companyId, "pending-immediate");
   const prior = await ctx.state.get(key);
   if (!Array.isArray(prior) || prior.length === 0) return;
@@ -671,9 +645,10 @@ async function runDigestJob(ctx, job, serialize = async (_companyId, operation) 
     if (typeof companyId !== "string") continue;
     await serialize(companyId, async () => {
       try {
+        const config = await companyConfig(ctx, companyId);
+        await reconcileHumanDecisions(ctx, companyId, config);
         const queue = await ctx.state.get(companyScope(companyId, "digest-queue"));
         if (!Array.isArray(queue) || queue.length === 0) return;
-        const config = await companyConfig(ctx, companyId);
         if (!config.digestEnabled) return;
         const slot = getLocalSlot(job.scheduledAt, config.digestTimezone);
         if (!slot || !config.digestWeekdays.includes(slot.day) || !config.digestTimes.includes(slot.time)) return;
@@ -696,7 +671,11 @@ export {
   isFounderChatIssue,
   processEvent,
   publishForRun,
+  reconcileHumanDecisions,
+  reconcileKnownHumanDecisions,
   reconcileKnownPublications,
+  reconcilePendingApprovals,
+  reconcilePendingInteractions,
   reconcilePendingPublications,
   runDigestJob,
   validateConfig,

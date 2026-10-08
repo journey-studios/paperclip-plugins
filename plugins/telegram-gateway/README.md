@@ -38,6 +38,12 @@ Paperclip's native `explicit:<commentId>:<endpointId>` key prevents duplicate lo
 4. Enable `publicationEnabled` on the *existing* company configuration only after the candidate and publishing capability are verified.
 5. If a gate fails, leave `publicationEnabled=false`, restore the prior image/tag and service and retain the same bot endpoint, database volume and active webhook.
 
+## Human decision read cards (Fase 1)
+
+Pending approvals (`approvals.read`) and founder-reachable issue-thread interactions (`issue.interactions.read`, discovered via bounded `issues.list` polling) are rendered as sanitized Markdown cards marked `[FOUNDER_HUMAN_DECISION_CARD]`. Delivery is deterministic: the plugin creates a Liaison-attributed comment on the founder chat issue and, only when `publicationEnabled=true`, calls `ctx.chat.publishComment(commentId, companyId)` — **no liaison LLM wake** for these cards. With publication disabled, the card is recorded and deduplicated as a Paperclip comment without calling the publication bridge. Rejected publications stop immediately; transient failures stop after five attempts in company-scoped state and require operator review. Dedup uses plugin state fingerprints plus a `delivery=<hash>` marker in the comment body; native `explicit:<commentId>:<endpointId>` publication keys prevent transport duplicates.
+
+Reconciliation runs at most once every five minutes per company, including after failures, and does no polling when immediate notifications are disabled. Each run requests at most 12 issues for each of `todo`, `in_progress`, `in_review`, and `blocked` (48 issues total), then persists a separate offset for each status. Full pages advance their status offset; a short page resets it to zero. This rotates through larger backlogs over later runs while bounding each run's issue and interaction calls. Standalone `decisions` SDK and board-only `attention` remain uncovered.
+
 ## Behavior
 
 - High priority blocked issues, founder reviews, approvals, explicit `FOUNDER_ATTENTION:` comments, and open budget incidents are routed immediately.

@@ -1,13 +1,15 @@
 import test from "node:test";
 import { executeFounderCommand } from "../src/commands.js";
 import assert from "node:assert/strict";
-import { companyConfig, flushDigest, flushPendingImmediate, getLocalSlot, processEvent, reconcilePendingPublications, runDigestJob, validateConfig } from "../src/core.js";
+import { companyConfig, flushDigest, flushPendingImmediate, getLocalSlot, processEvent, reconcileHumanDecisions, reconcilePendingApprovals, reconcilePendingInteractions, reconcilePendingPublications, runDigestJob, validateConfig } from "../src/core.js";
 
 function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
+  const interactionsByIssue = overrides.interactionsByIssue ?? {};
   const state = new Map();
   const comments = [];
   const wakes = [];
   const publications = [];
+  const errors = [];
   const companyIssueKey = (companyId, issueId) => `${companyId}:${issueId}`;
   const ctx = {
     config: { get: async (companyId) => configs[companyId] },
@@ -25,12 +27,22 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
     },
     issues: {
       get: async (issueId, companyId) => issues[companyIssueKey(companyId, issueId)] ?? null,
-      list: async ({ companyId }) => Object.entries(issues)
-        .filter(([key]) => key.startsWith(`${companyId}:`))
-        .map(([, issue]) => issue),
+      list: async (params) => overrides.listIssues
+        ? overrides.listIssues(params)
+        : Object.entries(issues)
+          .filter(([key, issue]) => key.startsWith(`${params.companyId}:`) && (!params.status || issue.status === params.status))
+          .map(([, issue]) => issue)
+          .slice(params.offset ?? 0, (params.offset ?? 0) + (params.limit ?? Infinity)),
       listComments: async (issueId, companyId) => issues[companyIssueKey(companyId, issueId)]?.comments ?? [],
-      createComment: async (issueId, body, companyId) => {
-        const entry = { id: `created-${comments.length + 1}`, issueId, body, companyId, authorType: "plugin" };
+      createComment: async (issueId, body, companyId, options) => {
+        const entry = {
+          id: `created-${comments.length + 1}`,
+          issueId,
+          body,
+          companyId,
+          authorType: "plugin",
+          authorAgentId: options?.authorAgentId,
+        };
         if (overrides.createComment) await overrides.createComment(entry, comments);
         else comments.push(entry);
         const issue = issues[companyIssueKey(companyId, issueId)];
@@ -43,8 +55,14 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
         wakes.push({ issueId, companyId, options, runId });
         return { queued: true, runId };
       },
+      listInteractions: async (issueId, companyId) => interactionsByIssue[companyIssueKey(companyId, issueId)] ?? [],
     },
-    approvals: { get: async (id, companyId) => approvals[companyIssueKey(companyId, id)] ?? null },
+    approvals: {
+      get: async (id, companyId) => approvals[companyIssueKey(companyId, id)] ?? null,
+      list: async ({ companyId, status }) => Object.entries(approvals)
+        .filter(([key, entry]) => key.startsWith(`${companyId}:`) && (!status || entry.status === status))
+        .map(([, entry]) => entry),
+    },
     companies: {
       get: async (companyId) => overrides.company ? overrides.company(companyId) : (configs[companyId] ? { id: companyId } : null),
     },
@@ -74,8 +92,8 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
           : { state: "published", commentId, companyId };
       },
     },
-    logger: { error() {} },
-    inspect: { state, comments, wakes, publications },
+    logger: { error: (message, details) => errors.push({ message, details }) },
+    inspect: { state, comments, wakes, publications, errors },
   };
   return ctx;
 }
@@ -145,6 +163,7 @@ test("routes immediate events to the configured company conversation and ignores
       founderUserId: "founder-a",
       conversationIssueId: "chat-a",
       chatChannels: ["discord"],
+      publicationEnabled: true,
     },
   }, {
     "companyA:chat-a": chat("chat-a", "source:discord:room-a"),
@@ -162,9 +181,365 @@ test("routes immediate events to the configured company conversation and ignores
   await processEvent(ctx, event);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.comments[0].issueId, "chat-a");
-  assert.equal(ctx.inspect.wakes.length, 1);
-  assert.equal(ctx.inspect.wakes[0].companyId, "companyA");
-  assert.match(ctx.inspect.comments[0].body, /approval\.created/);
+  assert.equal(ctx.inspect.wakes.length, 0);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.equal(ctx.inspect.publications[0].companyId, "companyA");
+  assert.equal(ctx.inspect.comments[0].authorAgentId, "liaison-a");
+  assert.match(ctx.inspect.comments[0].body, /kind=approval/);
+  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+});
+
+test("publication disabled records and deduplicates the Paperclip card without calling the bridge", async () => {
+  const settings = { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" };
+  const ctx = makeContext({
+    companyA: settings,
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" },
+  });
+  const event = { eventId: "disabled-event", eventType: "approval.created", entityId: "approval-a", companyId: "companyA" };
+  await processEvent(ctx, event);
+  await processEvent(ctx, event);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 0);
+  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+  settings.publicationEnabled = true;
+  await reconcilePendingApprovals(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+});
+
+test("reconciles pending approvals and interactions without duplicate cards", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:task-1": {
+      id: "task-1",
+      companyId: "companyA",
+      identifier: "JOU-84",
+      status: "in_review",
+      title: "Sensitive confirmation",
+    },
+  }, {
+    "companyA:approval-a": {
+      id: "approval-a",
+      companyId: "companyA",
+      status: "pending",
+      type: "budget",
+      updatedAt: "2026-10-08T00:00:00.000Z",
+      payload: { summary: "Budget bump" },
+    },
+  }, {
+    interactionsByIssue: {
+      "companyA:task-1": [{
+        id: "interaction-1",
+        kind: "request_confirmation",
+        status: "pending",
+        effectiveResolverPolicy: "human_only",
+        payload: { prompt: "Confirm plan", rejectRequiresReason: true, target: { type: "issue_document" } },
+        updatedAt: "2026-10-08T00:00:00.000Z",
+      }],
+    },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcileHumanDecisions(ctx, "companyA", config);
+  await reconcileHumanDecisions(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 2);
+  assert.equal(ctx.inspect.wakes.length, 0);
+  assert.equal(ctx.inspect.publications.length, 2);
+  assert.match(ctx.inspect.comments[0].body, /approval-a/);
+  assert.match(ctx.inspect.comments[1].body, /interaction-1/);
+  assert.doesNotMatch(ctx.inspect.comments[1].body, /BEGIN PRIVATE/);
+});
+
+test("interaction reconciliation ignores other-company issues", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyB:task-b": {
+      id: "task-b",
+      companyId: "companyB",
+      identifier: "OTHER-1",
+      status: "todo",
+      title: "Foreign",
+    },
+  }, {}, {
+    interactionsByIssue: {
+      "companyB:task-b": [{
+        id: "interaction-b",
+        kind: "request_confirmation",
+        status: "pending",
+        effectiveResolverPolicy: "human_only",
+        payload: { prompt: "Should not appear" },
+      }],
+    },
+  });
+  await reconcilePendingInteractions(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  assert.equal(ctx.inspect.comments.length, 0);
+});
+
+test("completed interaction cleanup tracks its source issue rather than the founder chat issue", async () => {
+  const interaction = {
+    id: "interaction-source-1", kind: "request_confirmation", status: "pending",
+    effectiveResolverPolicy: "human_only", payload: { prompt: "Review source task" },
+  };
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:source-task": { id: "source-task", companyId: "companyA", status: "todo" },
+  }, {}, {
+    interactionsByIssue: { "companyA:source-task": [interaction] },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  const fingerprintsKey = JSON.stringify({ scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-fingerprints" });
+  let fingerprints = ctx.inspect.state.get(fingerprintsKey);
+  assert.equal(fingerprints["interaction:interaction-source-1"].issueId, "source-task");
+  assert.equal(fingerprints["interaction:interaction-source-1"].issueId === "chat-a", false);
+
+  ctx.issues.listInteractions = async () => [];
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  fingerprints = ctx.inspect.state.get(fingerprintsKey);
+  assert.equal("interaction:interaction-source-1" in fingerprints, false);
+});
+
+test("published unchanged interactions skip conversation resolution", async () => {
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true,
+    },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:source-task": { id: "source-task", companyId: "companyA", status: "todo" },
+  }, {}, {
+    interactionsByIssue: {
+      "companyA:source-task": [{
+        id: "interaction-source-1", kind: "request_confirmation", status: "pending",
+        effectiveResolverPolicy: "human_only", payload: { prompt: "Review source task" },
+      }],
+    },
+  });
+  let resolutionChecks = 0;
+  const getCompany = ctx.companies.get;
+  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+});
+
+test("human decision issue polling rotates bounded pages so issues after the first 12 are visited", async () => {
+  const taskIssues = Array.from({ length: 14 }, (_, index) => ({
+    id: `task-${String(index + 1).padStart(2, "0")}`,
+    companyId: "companyA",
+    identifier: `JOU-${index + 1}`,
+    status: "todo",
+    title: `Task ${index + 1}`,
+  }));
+  const interactionCalls = [];
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {}, {
+    listIssues: ({ companyId, status, offset = 0, limit = 100 }) =>
+      companyId === "companyA" ? taskIssues.filter((issue) => issue.status === status).slice(offset, offset + limit) : [],
+    interactionsByIssue: Object.fromEntries(taskIssues.map((issue) => [`companyA:${issue.id}`, [{
+      id: `interaction-${issue.id}`, kind: "request_confirmation", status: "pending",
+      effectiveResolverPolicy: "human_only", payload: { prompt: `Review ${issue.id}` },
+    }]])),
+  });
+  const originalListInteractions = ctx.issues.listInteractions;
+  ctx.issues.listInteractions = async (issueId, companyId) => {
+    interactionCalls.push(issueId);
+    return originalListInteractions(issueId, companyId);
+  };
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(interactionCalls.includes("task-13"), false);
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(interactionCalls.includes("task-13"), true);
+  assert.equal(ctx.inspect.comments.length, 14);
+});
+
+test("human decision polling is throttled per company for five minutes", async () => {
+  let issueListCalls = 0;
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {}, {
+    listIssues: (params) => { issueListCalls++; return params.offset ? [] : []; },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcileHumanDecisions(ctx, "companyA", config, 1_000_000);
+  assert.equal(issueListCalls, 4);
+  await reconcileHumanDecisions(ctx, "companyA", config, 1_299_999);
+  assert.equal(issueListCalls, 4);
+  await reconcileHumanDecisions(ctx, "companyA", config, 1_300_000);
+  assert.equal(issueListCalls, 8);
+});
+
+test("immediate delivery disabled suppresses reconciliation polling", async () => {
+  let approvalsListCalls = 0;
+  let issueListCalls = 0;
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a",
+      founderUserId: "founder-a",
+      conversationIssueId: "chat-a",
+      immediateEnabled: false,
+    },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {}, {
+    listIssues: () => { issueListCalls++; return []; },
+  });
+  const originalApprovalsList = ctx.approvals.list;
+  ctx.approvals.list = async (...args) => { approvalsListCalls++; return originalApprovalsList(...args); };
+  await reconcileHumanDecisions(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  assert.equal(approvalsListCalls, 0);
+  assert.equal(issueListCalls, 0);
+});
+
+test("card publication rejection and transport failures stop at the shared retry limit", async () => {
+  let attempts = 0;
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" },
+  }, { publishComment: async () => { attempts++; throw new Error("transport unavailable"); } });
+  const config = await companyConfig(ctx, "companyA");
+  for (let i = 0; i < 5; i++) {
+    await reconcilePendingApprovals(ctx, "companyA", config);
+  }
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(attempts, 5);
+  const state = ctx.inspect.state;
+  const ledger = state.get(JSON.stringify({ scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-publication:created-1" }));
+  assert.equal(ledger.attempts, 5);
+  assert.equal(ledger.terminal, true);
+});
+
+test("provider rejection is terminal after one company-scoped publication attempt", async () => {
+  let attempts = 0;
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" },
+  }, { publishComment: async () => { attempts++; return { state: "failed" }; } });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(attempts, 1);
+  const ledger = ctx.inspect.state.get(JSON.stringify({
+    scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-publication:created-1",
+  }));
+  assert.equal(ledger.attempts, 1);
+  assert.equal(ledger.terminal, true);
+  assert.equal(ledger.lastFailure, "provider_rejected");
+});
+
+test("published human decision cards skip conversation resolution until their fingerprint changes", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  let resolutionChecks = 0;
+  const getCompany = ctx.companies.get;
+  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  ctx.approvals.list = async () => [{
+    id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+  }];
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 2);
+  assert.equal(ctx.inspect.publications.length, 2);
+});
+
+test("enabling publication later publishes the existing canonical comment", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: false },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 0);
+
+  await reconcilePendingApprovals(ctx, "companyA", { ...config, publicationEnabled: true });
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.equal(ctx.inspect.publications[0].commentId, "created-1");
+});
+
+test("one failed card does not starve later approvals in the same reconciliation", async () => {
+  const delivered = [];
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" },
+    "companyA:approval-b": { id: "approval-b", companyId: "companyA", status: "pending", type: "budget" },
+  }, {
+    publishComment: async (commentId) => {
+      if (commentId === "created-1") throw new Error("sensitive provider text should not be logged");
+      delivered.push(commentId);
+      return { state: "published" };
+    },
+  });
+  await reconcilePendingApprovals(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  assert.deepEqual(delivered, ["created-2"]);
+  assert.equal(ctx.inspect.errors.length, 1);
+  assert.deepEqual(ctx.inspect.errors[0].details, {
+    companyId: "companyA", kind: "approval", entityId: "approval-a", error: "delivery_failed",
+  });
+  assert.doesNotMatch(JSON.stringify(ctx.inspect.errors), /sensitive provider text/);
+});
+
+test("an interaction scan failure skips one issue and continues through the bounded page", async () => {
+  const taskIssues = Array.from({ length: 14 }, (_, index) => ({
+    id: `task-${String(index + 1).padStart(2, "0")}`,
+    companyId: "companyA",
+    identifier: `JOU-${index + 1}`,
+    status: "todo",
+  }));
+  const interactionCalls = [];
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {}, {
+    listIssues: ({ status, offset = 0, limit = 100 }) => taskIssues.filter((issue) => issue.status === status).slice(offset, offset + limit),
+    interactionsByIssue: Object.fromEntries(taskIssues.map((issue) => [`companyA:${issue.id}`, [{
+      id: `interaction-${issue.id}`, kind: "request_confirmation", status: "pending",
+      effectiveResolverPolicy: "human_only", payload: { prompt: `Review ${issue.id}` },
+    }]])),
+  });
+  const originalListInteractions = ctx.issues.listInteractions;
+  ctx.issues.listInteractions = async (issueId, companyId) => {
+    interactionCalls.push(issueId);
+    if (issueId === "task-13") throw new Error("provider details must not escape");
+    return originalListInteractions(issueId, companyId);
+  };
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(interactionCalls.includes("task-13"), true);
+  assert.equal(interactionCalls.includes("task-14"), true);
+  assert.equal(ctx.inspect.comments.some((comment) => comment.body.includes("interaction-task-14")), true);
+  assert.doesNotMatch(JSON.stringify(ctx.inspect.errors), /provider details must not escape/);
 });
 
 test("issue attention alert retries after a transient comment failure", async () => {
@@ -447,30 +822,29 @@ test("marked plugin comments are ignored to prevent event loops", async () => {
   assert.deepEqual(ctx.inspect.wakes, []);
 });
 
-const approvalEvent = { eventId: "retry-event", eventType: "approval.created", entityId: "approval-a", companyId: "companyA" };
-const approvalConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
-const approvalIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
-const approvalRecords = () => ({ "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" } });
+const founderCommsEvent = { eventId: "retry-event", eventType: "budget.incident.opened", entityId: "incident-a", companyId: "companyA" };
+const founderCommsConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
+const founderCommsIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
 
 test("replaying a founder event after wakeup failure keeps one input comment", async () => {
   let attempts = 0;
-  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, founderCommsIssues(), {}, {
     requestWakeup: async () => { if (++attempts === 1) throw new Error("wakeup unavailable"); },
   });
-  await assert.rejects(processEvent(ctx, approvalEvent), /wakeup unavailable/);
+  await assert.rejects(processEvent(ctx, founderCommsEvent), /wakeup unavailable/);
   assert.equal(ctx.inspect.comments.length, 1);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.wakes.length, 1);
   assert.equal(attempts, 2);
   assert.match(ctx.inspect.comments[0].body, /^\[FOUNDER_COMMS_EVENT\]\ndelivery=[0-9a-f]{64}\n/);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
 });
 
 test("replaying a crash between comment creation and marker storage finds the existing comment", async () => {
   let lostOnce = true;
-  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, founderCommsIssues(), {}, {
     stateSet: async (key) => {
       if (lostOnce && key.stateKey.startsWith("comment-created:")) {
         lostOnce = false;
@@ -478,9 +852,9 @@ test("replaying a crash between comment creation and marker storage finds the ex
       }
     },
   });
-  await assert.rejects(processEvent(ctx, approvalEvent), /simulated crash/);
+  await assert.rejects(processEvent(ctx, founderCommsEvent), /simulated crash/);
   assert.equal(ctx.inspect.comments.length, 1);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.wakes.length, 1);
 });
@@ -488,12 +862,12 @@ test("replaying a crash between comment creation and marker storage finds the ex
 test("pending flush retries without a duplicate system comment or losing queued items", async () => {
   const issues = {};
   let failWakeOnce = true;
-  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, issues, {}, {
     requestWakeup: async () => {
       if (failWakeOnce) { failWakeOnce = false; throw new Error("flush wakeup unavailable"); }
     },
   });
-  await processEvent(ctx, approvalEvent); // conversation absent -> pending
+  await processEvent(ctx, founderCommsEvent); // conversation absent -> pending
   assert.equal(ctx.inspect.comments.length, 0);
   issues["companyA:chat-a"] = chat("chat-a", "source:telegram:room-a");
   const config = await companyConfig(ctx, "companyA");
@@ -535,7 +909,7 @@ test("digest retry after wakeup failure reuses a single comment", async () => {
 test("a pending flush preserves items arriving while its wakeup is in flight", async () => {
   let injectOnce = true;
   const issues = { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") };
-  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, issues, {}, {
     requestWakeup: async () => {
       if (!injectOnce) return;
       injectOnce = false;

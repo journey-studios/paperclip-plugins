@@ -34,7 +34,17 @@ function fixture(publisher = async () => ({ state: "published" })) {
       createComment: async () => {},
       requestWakeup: async () => { const runId = `run-${wakes.length + 1}`; wakes.push(runId); return { queued: true, runId }; },
     },
-    approvals: { get: async () => ({ id: "approval", companyId, status: "pending", type: "budget" }) },
+    approvals: {
+      get: async (id) => ({
+        id: id ?? "approval",
+        companyId,
+        status: "pending",
+        type: "budget",
+        updatedAt: `2026-10-08T00:00:00.000Z-${id ?? "approval"}`,
+        payload: { summary: "Budget" },
+      }),
+      list: async () => [],
+    },
     companies: { get: async () => ({ id: companyId }) },
     agents: {
       get: async () => ({ id: "liaison", companyId }),
@@ -52,7 +62,10 @@ function fixture(publisher = async () => ({ state: "published" })) {
 }
 async function startAlert(f) {
   await processEvent(f.ctx, {
-    companyId: f.companyId, eventId: "created", eventType: "approval.created", entityId: "approval",
+    companyId: f.companyId,
+    eventId: "created",
+    eventType: "budget.incident.opened",
+    entityId: "incident-1",
   });
   assert.deepEqual(f.wakes, ["run-1"]);
 }
@@ -354,8 +367,10 @@ test("one failed publication cannot block later pending runs", async () => {
   });
   await startAlert(f);
   await processEvent(f.ctx, {
-    companyId: f.companyId, eventId: "created-again",
-    eventType: "approval.created", entityId: "approval",
+    companyId: f.companyId,
+    eventId: "created-again",
+    eventType: "budget.incident.opened",
+    entityId: "incident-2",
   });
   finalComment(f, { id: "comment-broken", runId: "run-1" });
   finalComment(f, { id: "comment-healthy", runId: "run-2" });
