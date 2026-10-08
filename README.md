@@ -22,6 +22,7 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 - [`@journey-studios/paperclip-artifact-library`](plugins/artifact-library/README.md): company-scoped organization for the existing Paperclip artifact catalog.
 - [`@journey-studios/founder-comms-router`](plugins/founder-comms-router/README.md): founder communications routing.
 - [`@journey-studios/agent-observatory`](plugins/agent-observatory/README.md): read-only agent health, failures, costs, anomaly evidence and safe run summaries.
+- [`@journey-studios/paperclip-s3-storage`](plugins/s3-storage/README.md): company-scoped S3-compatible media uploads and private object access for AWS S3, Cloudflare R2 and Backblaze B2.
 - [`@journey-studios/paperclip-evolution`](plugins/evolution/README.md): Change Intelligence for agent/skill diffs, Audit provenance, evidence, metrics, and conclusions.
 
 ## Administrative MCP tools
