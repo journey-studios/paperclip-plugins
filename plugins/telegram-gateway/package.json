@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/telegram-gateway",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": false,
   "type": "module",
   "engines": {
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "node --test",
+    "test": "pnpm build && node --test",
     "typecheck": "node --check src/human-decisions.js && node --check src/human-decision-delivery.js && node --check src/publication-policy.js && node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/manifest.js"
   },
   "paperclipPlugin": {

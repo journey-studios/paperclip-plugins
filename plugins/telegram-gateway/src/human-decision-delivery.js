@@ -293,6 +293,42 @@ async function clearApprovalFingerprint(ctx, companyId, approvalId) {
   await clearHumanDecisionFingerprint(ctx, companyId, `approval:${approvalId}`);
 }
 
+async function retryTerminalHumanDecisionPublication(ctx, companyId, commentId, config) {
+  if (!config.publicationEnabled) return { retried: false, reason: "publication_disabled" };
+  const safeCompanyId = stringValue(companyId);
+  const safeCommentId = stringValue(commentId);
+  if (!safeCompanyId || !safeCommentId || safeCommentId.length > 128) {
+    return { retried: false, reason: "invalid_request" };
+  }
+
+  const publishedKey = companyScope(safeCompanyId, "published-comment-ids");
+  const published = await ctx.state.get(publishedKey);
+  if (Array.isArray(published) && published.includes(safeCommentId)) {
+    return { retried: false, reason: "already_published" };
+  }
+  const ledgerKey = companyScope(safeCompanyId, `human-decision-publication:${safeCommentId}`);
+  const ledger = asObject(await ctx.state.get(ledgerKey));
+  if (ledger.terminal !== true || ledger.lastFailure !== "publication_attempt_failed") {
+    return { retried: false, reason: "not_retryable" };
+  }
+
+  try {
+    const result = await ctx.chat.publishComment(safeCommentId, safeCompanyId);
+    assertPublicationAccepted(result);
+    const latest = await ctx.state.get(publishedKey);
+    const ids = Array.isArray(latest) ? latest.filter((value) => typeof value === "string") : [];
+    if (!ids.includes(safeCommentId)) ids.push(safeCommentId);
+    await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
+    await ctx.state.delete(ledgerKey);
+    return { retried: true, commentId: safeCommentId, publication: result.state };
+  } catch (error) {
+    const attempts = Number.isSafeInteger(ledger.attempts) && ledger.attempts >= 0 ? ledger.attempts : 0;
+    const failure = { ...nextPublicationFailure(attempts, error), terminal: true };
+    await ctx.state.set(ledgerKey, { ...ledger, ...failure });
+    return { retried: false, commentId: safeCommentId, reason: failure.lastFailure };
+  }
+}
+
 function createHumanDecisionDelivery({ companyConfig, resolveConversation }) {
   return {
     handleApproval: (ctx, event, config) => handleApproval(ctx, event, config, resolveConversation),
@@ -315,4 +351,5 @@ export {
   reconcileKnownHumanDecisions,
   reconcilePendingApprovals,
   reconcilePendingInteractions,
+  retryTerminalHumanDecisionPublication,
 };

@@ -2,6 +2,7 @@ import { executeFounderCommand } from "./commands.js";
 import { createTelegramCommandRegistry } from "./command-registry.js";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownHumanDecisions, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
+import { retryTerminalHumanDecisionPublication } from "./human-decision-delivery.js";
 
 const companyLocks = new Map();
 
@@ -53,6 +54,16 @@ const plugin = definePlugin({
         await reconcilePendingPublications(ctx, companyId, config);
         return { ok: true };
       });
+    });
+    ctx.actions.register("retry-terminal-human-decision-publication", async (params, invocation) => {
+      const companyId = invocation?.companyId;
+      if (!companyId || invocation?.actor?.type !== "user") throw new Error("Authenticated company user required");
+      if (params?.companyId !== undefined && params.companyId !== companyId) throw new Error("Company scope mismatch");
+      const config = await companyConfig(ctx, companyId);
+      if (invocation.actor.userId !== config.founderUserId) throw new Error("Founder access required");
+      return serializeCompany(companyId, () => retryTerminalHumanDecisionPublication(
+        ctx, companyId, params?.commentId, config,
+      ));
     });
     ctx.jobs.register("founder-digest", (job) => runDigestJob(ctx, job, serializeCompany));
     // Recovery uses the same per-company lock as live events, but must not

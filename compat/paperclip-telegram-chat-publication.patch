@@ -1,0 +1,222 @@
+diff --git a/packages/plugins/sdk/src/host-client-factory.ts b/packages/plugins/sdk/src/host-client-factory.ts
+index 10161458c..be19a58e1 100644
+--- a/packages/plugins/sdk/src/host-client-factory.ts
++++ b/packages/plugins/sdk/src/host-client-factory.ts
+@@ -106,6 +106,14 @@ export interface HostServices {
+     ): Promise<Record<string, unknown>>;
+   };
+ 
++  /** Optional native chat publication adapter. The running Paperclip host owns validation and transport. */
++  chat?: {
++    publishComment(
++      params: WorkerToHostMethods["chat.publishComment"][0],
++      context?: WorkerHostCallContext,
++    ): Promise<WorkerToHostMethods["chat.publishComment"][1]>;
++  };
++
+   /** Provides trusted company-scoped local folder helpers. */
+   localFolders: {
+     declarations(params: WorkerToHostMethods["localFolders.declarations"][0]): Promise<WorkerToHostMethods["localFolders.declarations"][1]>;
+@@ -384,6 +392,7 @@ export type HostClientHandlers = {
+ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | null> = {
+   // Config — always allowed
+   "config.get": null,
++  "chat.publishComment": "chat.publications.publish_existing_comment",
+ 
+   // Trusted local folders
+   "localFolders.declarations": null,
+@@ -718,6 +727,13 @@ export function createHostClientHandlers(
+       return services.config.get({ ...params, companyId }, context);
+     }),
+ 
++    "chat.publishComment": gated("chat.publishComment", async (params, context) => {
++      if (!services.chat?.publishComment) {
++        throw new Error("Native chat publication service is unavailable");
++      }
++      return services.chat.publishComment(params, context);
++    }),
++
+     "localFolders.declarations": gated("localFolders.declarations", async (params) => {
+       return services.localFolders.declarations(params);
+     }),
+diff --git a/packages/plugins/sdk/src/index.ts b/packages/plugins/sdk/src/index.ts
+index 961965106..4bd731ace 100644
+--- a/packages/plugins/sdk/src/index.ts
++++ b/packages/plugins/sdk/src/index.ts
+@@ -246,6 +246,7 @@ export type {
+   PluginActivityLogEntry,
+   PluginStateClient,
+   PluginEntitiesClient,
++  PluginChatClient,
+   PluginArtifactsClient,
+   PluginArtifactsListInput,
+   PluginProjectsClient,
+diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
+index 4d1fb78c2..64a6357c3 100644
+--- a/packages/plugins/sdk/src/protocol.ts
++++ b/packages/plugins/sdk/src/protocol.ts
+@@ -24,6 +24,7 @@ import type {
+   Company,
+   CompanyArtifactsResponse,
+   CompanyArtifactsQuery,
++  ChatPublication,
+   Project,
+   Issue,
+   IssueComment,
+@@ -1516,6 +1517,12 @@ export interface WorkerToHostMethods {
+   // Config
+   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
+ 
++  // Native chat publication
++  "chat.publishComment": [
++    params: { commentId: string; companyId: string },
++    result: ChatPublication,
++  ];
++
+   // Trusted local folders
+   "localFolders.declarations": [
+     params: Record<string, never>,
+diff --git a/packages/plugins/sdk/src/testing.ts b/packages/plugins/sdk/src/testing.ts
+index 96b670dad..786831615 100644
+--- a/packages/plugins/sdk/src/testing.ts
++++ b/packages/plugins/sdk/src/testing.ts
+@@ -24,6 +24,7 @@ import type {
+   Agent,
+   Goal,
+   Approval,
++  ChatPublication,
+ } from "@paperclipai/shared";
+ import type {
+   EventFilter,
+@@ -83,6 +84,10 @@ export interface TestHarnessOptions {
+   capabilities?: PluginCapability[];
+   /** Initial config returned by `ctx.config.get(companyId)`. */
+   config?: Record<string, unknown>;
++  /** Explicit fake for native publication tests; no provider call is made by default. */
++  chat?: {
++    publishComment?: (commentId: string, companyId: string) => Promise<ChatPublication> | ChatPublication;
++  };
+ }
+ 
+ export interface TestHarnessLogEntry {
+@@ -2084,6 +2089,30 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
+         },
+       },
+     },
++    chat: {
++      async publishComment(commentId, companyId) {
++        requireCapability(
++          manifest,
++          capabilitySet,
++          "chat.publications.publish_existing_comment",
++        );
++        if (typeof companyId !== "string" || !companyId.trim() || !companies.has(companyId)) {
++          throw new Error("Chat publication requires a seeded company scope");
++        }
++        if (typeof commentId !== "string" || !commentId.trim()) {
++          throw new Error("Chat publication requires an existing comment ID");
++        }
++        if (!options.chat?.publishComment) {
++          throw new Error("Native chat publication fake is not configured; no publication was sent");
++        }
++        const existingComment = [...issueComments.values()].flat().find((comment) => comment.id === commentId);
++        const parentIssue = existingComment ? issues.get(existingComment.issueId) : null;
++        if (!existingComment || existingComment.companyId !== companyId || parentIssue?.companyId !== companyId) {
++          throw new Error("Chat publication comment is outside the seeded company scope");
++        }
++        return options.chat.publishComment(commentId, companyId);
++      },
++    },
+     approvals: {
+       async list(input) {
+         requireCapability(manifest, capabilitySet, "approvals.read");
+diff --git a/packages/plugins/sdk/src/types.ts b/packages/plugins/sdk/src/types.ts
+index c5d38b62d..7fbfab82f 100644
+--- a/packages/plugins/sdk/src/types.ts
++++ b/packages/plugins/sdk/src/types.ts
+@@ -22,6 +22,7 @@ import type {
+   CompanyArtifactMediaKind,
+   CompanyArtifactsQuery,
+   CompanyArtifactsResponse,
++  ChatPublication,
+   Project,
+   Issue,
+   IssueComment,
+@@ -137,6 +138,7 @@ export type {
+   CompanyArtifactMediaKind,
+   CompanyArtifactsQuery,
+   CompanyArtifactsResponse,
++  ChatPublication,
+   Project,
+   Issue,
+   IssueComment,
+@@ -1646,6 +1648,15 @@ export interface PluginIssuesClient {
+   summaries: PluginIssueSummariesClient;
+ }
+ 
++/**
++ * `ctx.chat` — request a native publication for an existing Paperclip comment.
++ * Requires `chat.publications.publish_existing_comment`. The host verifies the
++ * comment author, company, and active bound conversation before publication.
++ */
++export interface PluginChatClient {
++  publishComment(commentId: string, companyId: string): Promise<ChatPublication>;
++}
++
+ /**
+  * `ctx.approvals` — read and decide company approvals.
+  *
+@@ -2205,6 +2216,9 @@ export interface PluginContext {
+   /** Read and write issues, comments, and documents. Requires issue capabilities. */
+   issues: PluginIssuesClient;
+ 
++  /** Publish an existing comment through the host's native chat bridge. */
++  chat: PluginChatClient;
++
+   /** Read and decide company approvals. Requires `approvals.read` / `approvals.respond`. */
+   approvals: PluginApprovalsClient;
+ 
+diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
+index 44afce397..4259e88a1 100644
+--- a/packages/plugins/sdk/src/worker-rpc-host.ts
++++ b/packages/plugins/sdk/src/worker-rpc-host.ts
+@@ -1131,6 +1131,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
+         },
+       },
+ 
++      chat: {
++        async publishComment(commentId: string, companyId: string) {
++          const capability = "chat.publications.publish_existing_comment";
++          if (!manifest?.capabilities.includes(capability)) {
++            throw new CapabilityDeniedError(
++              manifest?.id ?? "unknown",
++              "chat.publishComment",
++              capability,
++            );
++          }
++          if (typeof companyId !== "string" || !companyId.trim()) {
++            throw new Error("chat.publishComment requires companyId");
++          }
++          const invocationCompanyId = invocationContextStorage.getStore()?.scope?.companyId;
++          if (invocationCompanyId && invocationCompanyId !== companyId) {
++            throw new Error("chat.publishComment company scope does not match the active invocation");
++          }
++          return callHost("chat.publishComment", { commentId, companyId });
++        },
++      },
++
+       approvals: {
+         async list(input: { companyId: string; status?: string | null }) {
+           return callHost("approvals.list", {
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 8ce8cc341..48884839a 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1360,6 +1360,7 @@ export const PLUGIN_CAPABILITIES = [
+   "issues.wakeup",
+   "issue.comments.create",
+   "issue.comments.create_human_attributed",
++  "chat.publications.publish_existing_comment",
+   "issue.interactions.create",
+   // Respond to (accept/reject) an issue-thread interaction on behalf of a
+   // paired board user. Impersonation surface: the host independently
