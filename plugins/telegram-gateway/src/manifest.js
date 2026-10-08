@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.3.4",
+  version: "0.3.5",
   displayName: "Telegram Gateway",
   description: "Routes authorized Telegram commands and publishes native chat messages, including Founder Liaison notifications.",
   author: "Journey Studios",
@@ -23,9 +23,22 @@ const manifest = {
     "companies.read",
     "projects.read",
     "access.members.read",
+    "instance.settings.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  ui: {
+    slots: [
+      {
+        type: "companySettingsPage",
+        id: "telegram-command-guide",
+        displayName: "Comandos do Telegram",
+        exportName: "TelegramCommandsSettingsPage",
+        routePath: "telegram-commands",
+      },
+    ],
   },
   instanceConfigSchema: {
     type: "object",
@@ -35,13 +48,13 @@ const manifest = {
         type: "string",
         minLength: 1,
         title: "Liaison agent ID",
-        description: "Company-specific Paperclip agent that receives founder communication events.",
+        description: "Company-specific Paperclip agent that receives Founder Liaison communication events. Configure the existing Telegram connector with the bot token; this plugin does not request or store it.",
       },
       founderUserId: {
         type: "string",
         minLength: 1,
         title: "Founder user ID",
-        description: "Company-specific Paperclip user ID used to identify founder-owned conversations and work.",
+        description: "Company-specific Paperclip user ID used to identify founder-owned conversations and work. Link the same Founder identity in the native Telegram connector.",
       },
       conversationIssueId: {
         type: "string",
@@ -81,13 +94,13 @@ const manifest = {
       commandsEnabled: {
         type: "boolean",
         title: "Direct Telegram commands",
-        description: "Allow owner-authenticated read-only /agents, /tasks, /credits and /help without a model invocation.",
+        description: "Allow owner-authenticated read-only /agents, /tasks, /credits and /help without a model invocation. This is separate from Telegram's suggested command menu.",
         default: true,
       },
       commandProviderIds: {
         type: "array",
         title: "Telegram command providers",
-        description: "Allowlisted plugin IDs that can contribute read-only founder commands.",
+        description: "Allowlisted plugin IDs whose discovered read-only Founder commands appear in the settings guide and Telegram menu. Update BotFather's menu after changing this list.",
         items: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{2,127}$" },
         maxItems: 12,
         default: ["journey-studios.agent-observatory"],

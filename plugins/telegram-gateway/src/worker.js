@@ -3,6 +3,7 @@ import { createTelegramCommandRegistry } from "./command-registry.js";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownHumanDecisions, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
 import { retryTerminalHumanDecisionPublication } from "./human-decision-delivery.js";
+import { registerTelegramCommandCatalogData } from "./settings-data.js";
 
 const companyLocks = new Map();
 
@@ -19,6 +20,7 @@ function serializeCompany(companyId, operation) {
 const plugin = definePlugin({
   async setup(ctx) {
     const registry = createTelegramCommandRegistry(ctx);
+    registerTelegramCommandCatalogData(ctx, registry);
     for (const eventName of [
       "issue.created",
       "issue.updated",

@@ -1,8 +1,18 @@
 # Telegram Gateway
 
+## Telegram command menu
+
+Open **Company settings → Telegram commands** (`/:companyPrefix/company/settings/telegram-commands`) to review the commands available for that company and copy the BotFather menu text. The page reads the existing company configuration and allowlisted provider registry; it never asks for or displays a bot token.
+
+For first-time setup, open [@BotFather](https://t.me/BotFather), choose an existing bot with `/mybots`, or use `/newbot` only if you have not created one. Configure that same bot in Paperclip's native Telegram connector, link the Founder identity, and select the Founder Liaison agent. In the existing Telegram Gateway company settings form, review `liaisonAgentId`, `founderUserId`, `commandsEnabled`, `chatChannels`, and `commandProviderIds`. The native connector remains the only place for the bot token.
+
+Then send `/setcommands` to @BotFather, select the same bot, and paste the copied lines without adding a leading slash. Repeat after changing allowed providers or reconnecting: Paperclip may restore the bot's default command menu. The menu only controls Telegram's suggestions; it does not grant access or prove that command delivery is active. This page does not probe command delivery.
+
+See [Telegram command menus](https://core.telegram.org/bots/features#commands) and [BotFather](https://core.telegram.org/bots/features#botfather).
+
 An event-driven Paperclip plugin that preserves founder notifications and digests, adds direct read-only Telegram commands without an agent run, and natively publishes the Liaison response from a plugin-triggered wake.
 
-**Compatibility:** the product name, npm package (`@journey-studios/telegram-gateway`), and source directory are renamed, but the manifest **`id` intentionally stays `journey-studios.founder-comms-router`**. That literal pluginKey is looked up by the currently installed Paperclip host and is the actor ID on existing plugin events. State keys, event types, action keys, and legacy idempotency/source markers stay unchanged. Install this as an in-place **0.3.1 update of the existing plugin**, not as a second identity, preserving its registry UUID, configuration, and stored state. Paperclip remains the authority over authentication, chat transport, issues, approvals and publications.
+**Compatibility:** the product name, npm package (`@journey-studios/telegram-gateway`), and source directory are renamed, but the manifest **`id` intentionally stays `journey-studios.founder-comms-router`**. That literal pluginKey is looked up by the currently installed Paperclip host and is the actor ID on existing plugin events. State keys, event types, action keys, and legacy idempotency/source markers stay unchanged. Install this as an in-place **0.3.5 update of the existing plugin**, not as a second identity, preserving its registry UUID, configuration, and stored state. Paperclip remains the authority over authentication, chat transport, issues, approvals and publications.
 
 ## Configuration
 
@@ -26,7 +36,7 @@ Commands are off when `commandsEnabled=false`, and disabled if the runtime bridg
 
 Configure `publicationEnabled=true` **only after** deploying a Paperclip image that implements the scoped `chat.publications.publish_existing_comment` capability. It defaults to **false** for compatibility and safe rollout. This manifest requests only that additional publication capability, and the host is responsible for verifying company, agent comment author, issue and bound chat.
 
-The plugin build bootstrap also applies a narrowly scoped compatibility patch to the pinned public Plugin SDK: it adds the typed `ctx.chat.publishComment` worker client for the already-supported host RPC. The patch changes only SDK capability/type/protocol/worker-client build inputs; it does not modify Paperclip Core or implement the host bridge. The deployed host must independently provide `chat.publishComment` and enforce the declared capability, company scope, Liaison author and active chat binding. Upgrading an existing install to 0.3.4 preserves its plugin ID, configuration and publication ledger.
+The plugin build bootstrap also applies a narrowly scoped compatibility patch to the pinned public Plugin SDK: it adds the typed `ctx.chat.publishComment` worker client for the already-supported host RPC. The patch changes only SDK capability/type/protocol/worker-client build inputs; it does not modify Paperclip Core or implement the host bridge. The deployed host must independently provide `chat.publishComment` and enforce the declared capability, company scope, Liaison author and active chat binding. Upgrading an existing install to 0.3.5 preserves its plugin ID, configuration and publication ledger.
 
 A notification/digest wake returns a canonical `runId`. The plugin persists a company-scoped pending run entry. On `agent.run.finished` (succeeded), it marks that exact run ready, locates only the Liaison-authored comment with `createdByRunId === runId` on the existing authorized chat Issue, and invokes `ctx.chat.publishComment(commentId, companyId)`. It does **not** publish an unrelated conversation run or change `externalChatExecutionBound`.
 
@@ -78,7 +88,7 @@ The Gateway accepts authorized read-only commands contributed by other installed
 
 ## Rename rollout (no Paperclip core changes)
 
-- **Current version:** `@journey-studios/telegram-gateway@0.3.4`, manifest `id=journey-studios.founder-comms-router`. `displayName` is `Telegram Gateway`.
+- **Current version:** `@journey-studios/telegram-gateway@0.3.5`, manifest `id=journey-studios.founder-comms-router`. `displayName` is `Telegram Gateway`.
 - **Preflight:** snapshot PostgreSQL, the current plugin package, registry UUID, company configuration and plugin state; verify that the host binds the legacy ID and the `telegram-command` action.
 - **Update:** use authenticated Paperclip plugin management. For a local package-path replacement, soft-uninstall **without purge** and reinstall this package from a persistent mount path. Never install a second plugin under a different ID or write directly to the registry tables.
 - **Validation:** verify the **same UUID**, `ready` health, same configuration and state, and authorized `/help`, `/agents`, `/tasks`, `/credits`, and Observatory-contributed `/custos` through the internal action. Confirm zero new agent runs for read-only commands; the existing bot and webhook must be untouched.

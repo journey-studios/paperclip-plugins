@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { companyConfig, processEvent, reconcilePendingPublications } from "../src/core.js";
-import { executeFounderCommand } from "../src/commands.js";
+import { executeFounderCommand, listBuiltinTelegramCommands, registerTelegramCommand } from "../src/commands.js";
 
 function fixture(publisher = async () => ({ state: "published" })) {
   const companyId = "company-a";
@@ -181,8 +181,15 @@ test("formats /agents and /help as multiline Telegram replies", async () => {
   assert.equal(await invoke("agents"), "**Agentes do Paperclip**\n\n• **Founder Liaison**\n  _Estado:_ Ocioso");
   const help = await invoke("help");
   assert.match(help, /^\*\*Comandos do Telegram Gateway\*\*\n\n`\/agents`/);
-  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/credits` — Ver créditos gastos no mês por grupo\n`\/help` — Exibir esta ajuda/);
+  assert.match(help, /`\/credits` — Ver créditos gastos no mês por grupo\n`\/help` — Exibir esta ajuda\n`\/tasks` — Listar tarefas abertas/);
   assert.match(help, /\n\n\*\*Comandos nativos do Paperclip\*\*\n\n`\/status`/);
+});
+
+test("provider registration cannot replace a built-in command or its catalog description", () => {
+  const before = listBuiltinTelegramCommands().find((command) => command.name === "credits");
+  assert.deepEqual(before, { name: "credits", description: "Ver créditos gastos no mês por grupo", source: "gateway" });
+  assert.throws(() => registerTelegramCommand("credits", async () => "overridden"), /Invalid or duplicate/);
+  assert.deepEqual(listBuiltinTelegramCommands().find((command) => command.name === "credits"), before);
 });
 
 test("formats /credits from native monthly spend and rolls descendants into CEO groups", async () => {
