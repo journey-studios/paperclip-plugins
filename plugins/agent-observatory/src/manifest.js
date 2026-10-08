@@ -19,13 +19,15 @@ const mcpApiRoute = (method) => ({
 const manifest = {
   id: "journey-studios.agent-observatory",
   apiVersion: 1,
-  version: "0.1.4",
+  version: "0.1.5",
   displayName: "Agent Observatory",
   description: "Read-only observability for agent runs, costs, failures, and suspected anomalies.",
   author: "Journey Studios",
   categories: ["ui", "automation"],
   capabilities: [
     "database.namespace.read",
+    "events.subscribe",
+    "events.emit",
     "database.namespace.migrate",
     "api.routes.register",
     "ui.sidebar.register",
@@ -48,6 +50,7 @@ const manifest = {
     apiRoute("anomalies", "/anomalies"),
     apiRoute("trace", "/trace"),
     apiRoute("tools", "/tools"),
+    apiRoute("monthly-costs", "/monthly-costs"),
   ],
   tools: [
     {
@@ -57,6 +60,16 @@ const manifest = {
       parametersSchema: {
         type: "object",
         properties: { windowHours: { type: "integer", minimum: 1, maximum: 168 } },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "observatory_monthly_costs",
+      displayName: "Monthly Agent Costs",
+      description: "Read spend by API and organization group for a calendar month; includes unpriced coverage.",
+      parametersSchema: {
+        type: "object",
+        properties: { period: { type: "string", pattern: "^[12][0-9]{3}-(0[1-9]|1[0-2])$" } },
         additionalProperties: false,
       },
     },
