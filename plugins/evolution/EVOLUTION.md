@@ -89,3 +89,18 @@ Runs can be explicitly attached as positive, neutral or negative evidence. Run l
 Evolution is bundled into the Journey custom paperclip:agy image and auto-provisioned by Paperclip's bundled-plugin lifecycle on self-hosted startup. Do not install it by bypassing Board authorization.
 
 The deploy script creates a PostgreSQL dump and rollback image before promoting the candidate.
+
+## Automated evidence and advisory assessments (v0.2)
+
+Live terminal run events are joined to the affected agent's Change Sets using the run's canonical company, agent, status and started-at timestamp from Paperclip; the event payload alone is not trusted. The seven-day post-change window, explicit validation end, and origin-run exclusion bound association. Human-curated verdicts take precedence; auto observations remain neutral. The plugin keeps only a safe run ID and minimal non-sensitive status metadata. An hourly scheduled job reconciles eligible records lost during short outages; the refresh button can also do so.
+
+The latest automatic observation resides in `change_assessments`, not `change_conclusions`. It does not update `change_sets.status` or `causality_level`. The following decision rules are **heuristics, not statistical causal inference**:
+
+- Fewer than 10 baseline/after runs, less than 24 hours after the change, missing success-rate telemetry, or a later overlapping recorded agent change => **inconclusive**.
+- Success-rate delta >= +10 percentage points or mean duration improvement >= 20%, without a conflicting signal => **improved**; delta <= -10 points or mean duration increase >= 25%, without a conflicting signal => **regressed**.
+- Conflicting signals or smaller changes => **inconclusive**. Relative duration is ignored if either window has fewer than 10 recorded runs; a speed win is ignored when the success rate decreases by more than three points.
+- Confidence is `low` unless both windows have at least 30 runs and the after-change observation spans >= 72 hours; then it is at most `moderate`. This is observation strength, **never** validated causal confidence.
+
+Run metrics use eligible runs as samples and cost/token metrics use reported cost events. Current and baseline periods can have different lengths; aggregate total cost and token deltas are informational and not ranked as improvements. Qualitative work quality, task difficulty, unrelated configuration edits, external model changes, skill-only edits without an affected agent record, and representative controlled A/B testing remain outside automatic attribution. A manually established `validated` causality level is separate and never inferred by the automation.
+
+Tool Gateway authorizes native plugin tools per agent/company. Tools derive company scope from trusted execution context, never tool arguments. The summary excludes before/after JSON and redacts common credential patterns in free text, but you should still avoid placing secrets in Change Set titles, conclusions, or other free text. The evaluation tool writes plugin-only evidence, metrics and assessments and should be governed as a write-capable agent tool.

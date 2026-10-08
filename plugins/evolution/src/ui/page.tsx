@@ -6,6 +6,7 @@ import {
   usePluginData,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
+import { AssessmentPanel, type Assessment } from "./assessment-panel.js";
 
 type ChangeSetSummary = {
   id: string;
@@ -20,6 +21,9 @@ type ChangeSetSummary = {
   itemCount: number;
   evidenceCount: number;
   metricCount: number;
+  assessmentOutcome?: string | null;
+  assessmentReason?: string | null;
+  assessmentEvaluatedAt?: string | null;
 };
 
 type Overview = {
@@ -115,6 +119,7 @@ type Detail = {
   conclusions: Conclusion[];
   links: LinkRow[];
   suggestedRuns: SuggestedRun[];
+  assessment: Assessment | null;
 };
 
 const shell: CSSProperties = {
@@ -310,7 +315,10 @@ function ChangeList({
                 {fmtDate(set.appliedAt)} · {set.itemCount} changes · {set.evidenceCount} evidence
               </div>
             </div>
-            <StatusPill value={set.status} />
+            <div style={{ display: "grid", gap: 5, justifyItems: "end" }}>
+              <StatusPill value={set.status} />
+              {set.assessmentOutcome ? <span style={{ ...muted, fontSize: 11 }}>Assessment: {statusLabel(set.assessmentOutcome)}</span> : null}
+            </div>
           </div>
           {set.hypothesis ? (
             <div style={{ ...muted, fontSize: 12, marginTop: 8, lineHeight: 1.4 }}>{set.hypothesis}</div>
@@ -335,6 +343,7 @@ function DetailView({
   const addLink = usePluginAction("add-link");
   const addConclusion = usePluginAction("add-conclusion");
   const recompute = usePluginAction("recompute-metrics");
+  const refreshAssessment = usePluginAction("refresh-assessment");
   const mergeChangeSet = usePluginAction("merge-change-set");
   const moveSelectedItems = usePluginAction("move-selected-change-items");
   const nav = useHostNavigation();
@@ -550,6 +559,12 @@ function DetailView({
         </div>
         {error ? <div style={{ marginTop: 10, color: "var(--destructive)", fontSize: 12 }}>{error}</div> : null}
       </div>
+
+      <AssessmentPanel
+        assessment={data.assessment}
+        busy={Boolean(busy)}
+        onRefresh={() => void act("assessment", () => refreshAssessment({ companyId, changeSetId: set.id }))}
+      />
 
       <div style={{ ...panel, padding: 14 }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Impact</h3>

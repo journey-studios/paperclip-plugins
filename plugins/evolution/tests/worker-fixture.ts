@@ -30,6 +30,7 @@ async function nativeHostValidators(): Promise<NativeHostValidators | null> {
 const migration001 = await readFile(new URL("../migrations/001_evolution.sql", import.meta.url), "utf8");
 const migration002 = await readFile(new URL("../migrations/002_evolution_integrity.sql", import.meta.url), "utf8");
 const migration003 = await readFile(new URL("../migrations/003_change_item_capture_metadata.sql", import.meta.url), "utf8");
+const migration004 = await readFile(new URL("../migrations/004_auto_evidence_assessments.sql", import.meta.url), "utf8");
 
 export async function createWorkerFixture() {
   const validators = await nativeHostValidators();
@@ -49,7 +50,7 @@ export async function createWorkerFixture() {
     `INSERT INTO public.companies VALUES ('${COMPANY}'), ('${OTHER_COMPANY}');` +
     `CREATE SCHEMA ${NS};`,
   );
-  for (const migration of [migration001, migration002, migration003]) {
+  for (const migration of [migration001, migration002, migration003, migration004]) {
     for (const statement of migration.split(";").map((part) => part.trim()).filter(Boolean)) {
       validators?.validatePluginMigrationStatement(statement, NS, CORE_READ_TABLES);
     }
@@ -57,10 +58,13 @@ export async function createWorkerFixture() {
   await db.exec(migration001);
   await db.exec(migration002);
   await db.exec(migration003);
+  await db.exec(migration004);
 
   const actions = new Map<string, Handler>();
   const data = new Map<string, Handler>();
   const events = new Map<string, EventHandler>();
+  const jobs = new Map<string, (job: Record<string, unknown>) => Promise<void>>();
+  const tools = new Map<string, (params: unknown, ctx: { agentId: string; runId: string; companyId: string; projectId: string }) => Promise<unknown>>();
   const logs: string[] = [];
   const ctx = {
     db: {
@@ -81,6 +85,8 @@ export async function createWorkerFixture() {
     data: { register: (key: string, handler: Handler) => data.set(key, handler) },
     actions: { register: (key: string, handler: Handler) => actions.set(key, handler) },
     events: { on: (key: string, handler: EventHandler) => events.set(key, handler) },
+    jobs: { register: (key: string, handler: (job: Record<string, unknown>) => Promise<void>) => jobs.set(key, handler) },
+    tools: { register: (key: string, _declaration: unknown, handler: (params: unknown, ctx: { agentId: string; runId: string; companyId: string; projectId: string }) => Promise<unknown>) => tools.set(key, handler) },
     logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
   } as unknown as PluginContext;
   await plugin.definition.setup!(ctx);
@@ -95,6 +101,8 @@ export async function createWorkerFixture() {
     actions,
     data,
     events,
+    jobs,
+    tools,
     logs,
     workerCtx,
     actorContext,

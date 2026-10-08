@@ -17,6 +17,8 @@ import {
   sourceSnapshotId,
 } from "./capture.mjs";
 import { sanitizeSnapshot, sanitizeTextSnapshot } from "./snapshot-safety.js";
+import { registerAutomation } from "./automation.js";
+import manifest from "./manifest.js";
 
 const CHANGE_STATUSES = new Set([
   "draft",
@@ -59,6 +61,7 @@ const EVOLUTION_TABLES = [
   "change_evidence",
   "change_metrics",
   "change_conclusions",
+  "change_assessments",
   "merge_operations",
 ] as const;
 
@@ -293,8 +296,8 @@ async function attachRunContext(
       'p.id::text AS "projectId", p.name AS "projectName", g.id::text AS "goalId", g.title AS "goalTitle" ' +
       'FROM public.heartbeat_runs r ' +
       'LEFT JOIN public.issues i ON i.company_id = r.company_id AND i.id::text = coalesce(r.native_issue_id::text, r.context_snapshot->>\'issueId\') ' +
-      'LEFT JOIN public.projects p ON p.id::text = coalesce(i.project_id::text, r.context_snapshot->>\'projectId\') ' +
-      'LEFT JOIN public.goals g ON g.id::text = coalesce(i.goal_id::text, p.goal_id::text) ' +
+      'LEFT JOIN public.projects p ON p.company_id = r.company_id AND p.id::text = coalesce(i.project_id::text, r.context_snapshot->>\'projectId\') ' +
+      'LEFT JOIN public.goals g ON g.company_id = r.company_id AND g.id::text = coalesce(i.goal_id::text, p.goal_id::text) ' +
       'WHERE r.company_id = $1 AND r.id = $2 LIMIT 1',
     [companyId, runId],
   );
@@ -1218,9 +1221,11 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
   if (!set) throw new Error("Change Set not found");
   const appliedAt = new Date(requiredIso(set.appliedAt));
   const baselineStart = new Date(appliedAt.getTime() - 7 * 86400000).toISOString();
-  const currentEnd = set.validationEndsAt
-    ? new Date(Math.min(Date.now(), new Date(requiredIso(set.validationEndsAt)).getTime())).toISOString()
-    : new Date(Math.min(Date.now(), appliedAt.getTime() + 7 * 86400000)).toISOString();
+  const currentEnd = new Date(Math.min(
+    Date.now(),
+    appliedAt.getTime() + 7 * 86400000,
+    set.validationEndsAt ? new Date(requiredIso(set.validationEndsAt)).getTime() : Infinity,
+  )).toISOString();
 
   const agentRows = await ctx.db.query<{ entityId: string }>(
     'SELECT DISTINCT entity_id AS "entityId" FROM change_items WHERE company_id = $1 AND change_set_id = $2 AND entity_type = \'agent\'',
@@ -1264,13 +1269,16 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
   return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd };
 }
 
+
 async function overview(ctx: PluginContext, companyId: string) {
   const changeSets = await ctx.db.query<Record<string, unknown>>(
     'SELECT cs.id, cs.title, cs.description, cs.hypothesis, cs.status, cs.causality_level AS "causalityLevel", ' +
       'cs.applied_at AS "appliedAt", cs.validation_ends_at AS "validationEndsAt", cs.updated_at AS "updatedAt", ' +
+      'max(ca.outcome) AS "assessmentOutcome", max(ca.reason_code) AS "assessmentReason", max(ca.evaluated_at) AS "assessmentEvaluatedAt", ' +
       'count(DISTINCT ci.id)::int AS "itemCount", count(DISTINCT ce.id)::int AS "evidenceCount", count(DISTINCT cm.id)::int AS "metricCount" ' +
       'FROM change_sets cs LEFT JOIN change_items ci ON ci.change_set_id = cs.id ' +
       'LEFT JOIN change_evidence ce ON ce.change_set_id = cs.id LEFT JOIN change_metrics cm ON cm.change_set_id = cs.id ' +
+      'LEFT JOIN change_assessments ca ON ca.company_id = cs.company_id AND ca.change_set_id = cs.id ' +
       'WHERE cs.company_id = $1 GROUP BY cs.id ORDER BY cs.applied_at DESC LIMIT 100',
     [companyId],
   );
@@ -1293,7 +1301,7 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   );
   if (!sets[0]) throw new Error("Change Set not found");
 
-  const [items, evidence, metrics, conclusions, links] = await Promise.all([
+  const [items, evidence, metrics, conclusions, links, assessments] = await Promise.all([
     ctx.db.query<Record<string, unknown>>(
       'SELECT ci.id, ci.entity_type AS "entityType", ci.entity_id AS "entityId", ci.entity_name AS "entityName", ci.change_kind AS "changeKind", ' +
         'ci.changed_keys AS "changedKeys", ci.source_type AS "sourceType", ci.source_ref AS "sourceRef", ci.source_activity_id AS "sourceActivityId", ci.metadata, ci.occurred_at AS "occurredAt", ' +
@@ -1323,6 +1331,12 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
         'FROM change_links WHERE company_id = $1 AND change_set_id = $2 ORDER BY created_at ASC',
       [companyId, changeSetId],
     ),
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT outcome, confidence, reason_code AS "reasonCode", summary, signals, baseline_run_count AS "baselineRunCount", ' +
+        'current_run_count AS "currentRunCount", evidence_count AS "evidenceCount", evaluated_at AS "evaluatedAt" ' +
+        'FROM change_assessments WHERE company_id = $1 AND change_set_id = $2 LIMIT 1',
+      [companyId, changeSetId],
+    ),
   ]);
 
   const agentIds = [...new Set(items.filter((item) => item.entityType === "agent").map((item) => String(item.entityId)))];
@@ -1337,7 +1351,7 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
     );
   }
 
-  return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns };
+  return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns, assessment: assessments[0] ?? null };
 }
 
 /**
@@ -1455,7 +1469,7 @@ async function assertCompanyRun(ctx: PluginContext, companyId: string, runId: st
   if (!rows[0]) throw new Error("Run not found in authorized company");
 }
 
-function registerActions(ctx: PluginContext) {
+function registerActions(ctx: PluginContext, assessSet: (ctx: PluginContext, companyId: string, changeSetId: string) => Promise<unknown>) {
   ctx.actions.register("create-change-set", async (params, actionContext) => {
     const companyId = authorizedCompanyId(params, actionContext);
     const title = requiredString(params, "title").slice(0, 180);
@@ -1696,9 +1710,17 @@ function registerActions(ctx: PluginContext) {
       '), moved_items AS (' +
         'UPDATE change_items SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
         'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+      '), dropped_duplicate_evidence AS (' +
+        'DELETE FROM change_evidence source WHERE source.company_id = $1 AND source.change_set_id = $2 ' +
+        'AND EXISTS (SELECT 1 FROM operation) AND source.evidence_type = \'run\' ' +
+        'AND source.metadata->>\'capture\' = \'automatic\' AND EXISTS (' +
+          'SELECT 1 FROM change_evidence target WHERE target.company_id = $1 AND target.change_set_id = $3 ' +
+          'AND target.evidence_type = \'run\' AND target.reference_id = source.reference_id' +
+        ') RETURNING source.id' +
       '), moved_evidence AS (' +
         'UPDATE change_evidence SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
-        'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
+        'AND EXISTS (SELECT 1 FROM operation) ' +
+        'AND id NOT IN (SELECT id FROM dropped_duplicate_evidence) RETURNING id' +
       '), moved_conclusions AS (' +
         'UPDATE change_conclusions SET change_set_id = $3 WHERE company_id = $1 AND change_set_id = $2 ' +
         'AND EXISTS (SELECT 1 FROM operation) RETURNING id' +
@@ -1742,14 +1764,18 @@ function registerActions(ctx: PluginContext) {
   });
 
   ctx.actions.register("recompute-metrics", async (params, actionContext) => {
-    return recomputeMetrics(ctx, authorizedCompanyId(params, actionContext), requiredString(params, "changeSetId"));
+    const companyId = authorizedCompanyId(params, actionContext);
+    const changeSetId = requiredString(params, "changeSetId");
+    await recomputeMetrics(ctx, companyId, changeSetId);
+    return assessSet(ctx, companyId, changeSetId);
   });
+
 }
 
 let mcpCtx: PluginContext;
 const mcpHandler = createPluginMcpEndpoint({
   name: "journeystudios.evolution",
-  version: "0.1.1",
+  version: "0.2.0",
   tools: [
     {
       name: "orgTrackerOverview",
@@ -1786,7 +1812,16 @@ const plugin = definePlugin({
     workerCtx.data.register("change-detail", async (params) =>
       detail(workerCtx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
 
-    registerActions(workerCtx);
+    const automation = registerAutomation(workerCtx, {
+      assertChangeSet,
+      asRecord,
+      attachRunContext,
+      authorizedCompanyId,
+      getOverview: overview,
+      requiredIso,
+      recomputeMetrics,
+    });
+    registerActions(workerCtx, automation.assessSet);
 
     workerCtx.events.on("agent.created", async (event) => recordAgentEvent(workerCtx, event));
     workerCtx.events.on("agent.updated", async (event) => recordAgentEvent(workerCtx, event));
