@@ -1,1 +1,1 @@
-pending
+@/tmp/push-gw-one.json
