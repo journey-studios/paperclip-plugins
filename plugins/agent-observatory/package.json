@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/agent-observatory",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": false,
   "type": "module",
   "engines": {
@@ -17,7 +17,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test",
-    "typecheck": "node --check src/service.js && node --check src/worker.js && node --check src/manifest.js && tsc -p tsconfig.json"
+    "typecheck": "node --check src/service.js && node --check src/monthly-costs.js && node --check src/worker.js && node --check src/manifest.js && tsc -p tsconfig.json"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

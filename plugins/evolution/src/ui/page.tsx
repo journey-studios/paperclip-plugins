@@ -6,6 +6,7 @@ import {
   usePluginData,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
+import { AssessmentPanel, type Assessment } from "./assessment-panel.js";
 
 type ChangeSetSummary = {
   id: string;
@@ -103,17 +104,6 @@ type SuggestedRun = {
   startedAt: string;
   finishedAt?: string | null;
   invocationSource?: string | null;
-};
-
-type Assessment = {
-  outcome: "improved" | "regressed" | "inconclusive";
-  confidence: "low" | "moderate";
-  reasonCode: string;
-  summary: string;
-  evidenceCount: number;
-  baselineRunCount: number;
-  currentRunCount: number;
-  evaluatedAt: string;
 };
 
 type Detail = {
@@ -460,14 +450,6 @@ function DetailView({
             >
               Recompute metrics
             </button>
-            <button
-              type="button"
-              style={primaryButton}
-              disabled={Boolean(busy)}
-              onClick={() => act("assessment", () => refreshAssessment({ companyId, changeSetId: set.id }))}
-            >
-              Refresh evidence & assessment
-            </button>
           </div>
         </div>
 
@@ -578,26 +560,11 @@ function DetailView({
         {error ? <div style={{ marginTop: 10, color: "var(--destructive)", fontSize: 12 }}>{error}</div> : null}
       </div>
 
-      <div style={{ ...panel, padding: 14 }}>
-        <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Observational assessment</h3>
-        {data.assessment ? (
-          <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <StatusPill value={data.assessment.outcome} />
-              <span style={muted}>Confidence: {data.assessment.confidence} · {fmtDate(data.assessment.evaluatedAt)}</span>
-            </div>
-            <div>{data.assessment.summary}</div>
-            <div style={muted}>
-              Baseline: {data.assessment.baselineRunCount} runs · After: {data.assessment.currentRunCount} runs · {data.assessment.evidenceCount} evidence records.
-            </div>
-          </div>
-        ) : (
-          <div style={muted}>No assessment yet. New run events and the hourly reconciliation will populate this section.</div>
-        )}
-        <div style={{ ...muted, fontSize: 11, marginTop: 10 }}>
-          These automatic assessments never change a human conclusion or establish causation.
-        </div>
-      </div>
+      <AssessmentPanel
+        assessment={data.assessment}
+        busy={Boolean(busy)}
+        onRefresh={() => void act("assessment", () => refreshAssessment({ companyId, changeSetId: set.id }))}
+      />
 
       <div style={{ ...panel, padding: 14 }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Impact</h3>

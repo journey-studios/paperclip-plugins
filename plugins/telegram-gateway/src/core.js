@@ -40,6 +40,7 @@ async function companyConfig(ctx, companyId) {
     digestEnabled: raw.digestEnabled !== false,
     publicationEnabled: raw.publicationEnabled === true,
     commandsEnabled: raw.commandsEnabled !== false,
+    commandProviderIds: raw.commandProviderIds === undefined ? ["journey-studios.agent-observatory"] : [...new Set(raw.commandProviderIds)],
     conversationIssueId: stringValue(raw.conversationIssueId),
     chatChannels: channels,
     projectId: stringValue(raw.projectId),
@@ -54,7 +55,7 @@ function validateConfig(value) {
   const errors = [];
   const knownKeys = new Set([
     "liaisonAgentId", "founderUserId", "conversationIssueId", "chatChannels", "projectId",
-    "immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays",
+    "immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays", "commandProviderIds",
   ]);
   for (const key of Object.keys(config)) {
     if (!knownKeys.has(key)) errors.push(`Unknown setting: ${key}`);
@@ -67,6 +68,9 @@ function validateConfig(value) {
   }
   for (const key of ["immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled"]) {
     if (config[key] !== undefined && typeof config[key] !== "boolean") errors.push(`${key} must be a boolean`);
+  }
+  if (config.commandProviderIds !== undefined && (!Array.isArray(config.commandProviderIds) || config.commandProviderIds.length > 12 || config.commandProviderIds.some((id) => typeof id !== "string" || !/^[a-z0-9][a-z0-9._-]{2,127}$/.test(id)))) {
+    errors.push("commandProviderIds must contain up to 12 valid plugin IDs");
   }
   if (config.chatChannels !== undefined) {
     if (!Array.isArray(config.chatChannels) || config.chatChannels.some((value) =>
@@ -401,6 +405,7 @@ async function publishToConversation(ctx, companyId, config, item) {
   await ensureSystemInputComment(ctx, companyId, conversation.id, `event:${item.id}`, body);
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_event",
+    // Keep the persisted wake source stable through package/UI renames.
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${item.id}`,
   });

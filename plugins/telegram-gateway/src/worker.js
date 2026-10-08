@@ -1,4 +1,5 @@
 import { executeFounderCommand } from "./commands.js";
+import { createTelegramCommandRegistry } from "./command-registry.js";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { companyConfig, flushDigest, flushPendingImmediate, processEvent, reconcileKnownPublications, reconcilePendingPublications, runDigestJob, validateConfig } from "./core.js";
 
@@ -16,6 +17,7 @@ function serializeCompany(companyId, operation) {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    const registry = createTelegramCommandRegistry(ctx);
     for (const eventName of [
       "issue.created",
       "issue.updated",
@@ -41,7 +43,7 @@ const plugin = definePlugin({
     });
 
     ctx.actions.register("telegram-command", (params, invocation) =>
-      executeFounderCommand(ctx, params, invocation));
+      executeFounderCommand(ctx, params, invocation, registry));
     ctx.actions.register("reconcile-founder-publications", async (params, invocation) => {
       const companyId = invocation?.companyId;
       if (!companyId || invocation?.actor?.type !== "user") throw new Error("Authenticated company user required");
@@ -66,7 +68,7 @@ const plugin = definePlugin({
   },
 
   async onHealth() {
-    return { status: "ok", message: "Founder Gateway is running" };
+    return { status: "ok", message: "Telegram Gateway is running" };
   },
 });
 

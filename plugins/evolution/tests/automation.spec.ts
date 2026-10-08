@@ -39,6 +39,14 @@ afterEach(async () => fixture.close());
 describe("Org Tracker automated evidence and native tools", () => {
   it("associates terminal runs idempotently, includes canonical run link and leaves manual status untouched", async () => {
     const set = await setWithAgent();
+    await fixture.action("update-change-set", { changeSetId: set, status: "validating", causalityLevel: "validated" });
+    await fixture.action("add-conclusion", {
+      changeSetId: set,
+      outcome: "proven",
+      confidence: "moderate",
+      summary: "Human review recorded before the automatic observation.",
+    });
+    await fixture.action("update-change-set", { changeSetId: set, status: "validating", causalityLevel: "validated" });
     await run(RUN1);
     await event(RUN1);
     await event(RUN1);
@@ -52,9 +60,9 @@ describe("Org Tracker automated evidence and native tools", () => {
     const assessment = (await fixture.db.query(`SELECT outcome,reason_code FROM ${NS}.change_assessments WHERE company_id=$1 AND change_set_id=$2`, [COMPANY, set])).rows;
     expect(assessment).toMatchObject([{ outcome: "inconclusive", reason_code: "insufficient_observation" }]);
     expect((await fixture.db.query(`SELECT status,causality_level FROM ${NS}.change_sets WHERE id=$1`, [set])).rows[0])
-      .toEqual({ status: "applied", causality_level: "observed" });
-    expect((await fixture.db.query(`SELECT count(*)::int AS n FROM ${NS}.change_conclusions WHERE change_set_id=$1`, [set])).rows[0])
-      .toMatchObject({ n: 0 });
+      .toEqual({ status: "validating", causality_level: "validated" });
+    expect((await fixture.db.query(`SELECT outcome,confidence,summary FROM ${NS}.change_conclusions WHERE change_set_id=$1`, [set])).rows)
+      .toEqual([{ outcome: "proven", confidence: "moderate", summary: "Human review recorded before the automatic observation." }]);
   });
   it("does not cross the company boundary or attach the run that created the Change Set", async () => {
     const set = await setWithAgent();
@@ -94,5 +102,9 @@ describe("Org Tracker automated evidence and native tools", () => {
     expect(evaluated).toMatchObject({ data: { changeSetId: set, assessment: { outcome: "inconclusive", causality: "observational_only" } } });
     const foreign = await fixture.tools.get("org_tracker_evaluate_change")!({ changeSetId: set }, toolCtx(OTHER_COMPANY));
     expect(foreign).toMatchObject({ error: expect.any(String) });
+    const missing = await fixture.tools.get("org_tracker_evaluate_change")!({ changeSetId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, toolCtx());
+    expect(missing).toMatchObject({ error: expect.any(String) });
+    expect((await fixture.db.query(`SELECT count(*)::int AS n FROM ${NS}.change_assessments WHERE change_set_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc'`)).rows[0])
+      .toMatchObject({ n: 0 });
   });
 });

@@ -1,13 +1,13 @@
 {
-  "name": "@journey-studios/founder-comms-router",
-  "version": "0.2.2",
+  "name": "@journey-studios/telegram-gateway",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "engines": {
     "node": ">=24.11.0"
   },
   "license": "MIT",
-  "description": "Founder Gateway: deterministic chat commands and scoped event-driven Telegram publication.",
+  "description": "Telegram Gateway: authenticated Founder commands and event-driven Telegram communications for Paperclip.",
   "files": [
     "dist",
     "README.md",
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test",
-    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/manifest.js"
+    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/manifest.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
