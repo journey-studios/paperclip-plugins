@@ -1,9 +1,9 @@
 import { companyConfig } from "./core.js";
+import { NATIVE_TELEGRAM_COMMANDS } from "./command-catalog.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_TEXT = 3600;
 const TITLE_LIMIT = 210;
-
 const TASK_STATUS_LABELS = {
   backlog: "Backlog",
   todo: "A fazer",
@@ -244,31 +244,47 @@ async function displayCredits(ctx, companyId) {
 }
 
 const commands = new Map([
-  ["help", async () => [
+  ["help", {
+    description: "Exibir esta ajuda",
+    handler: async () => [
     "**Comandos do Telegram Gateway**",
     "",
-    "`/agents` — Listar agentes",
-    "`/tasks` — Listar tarefas abertas",
-    "`/credits` — Ver créditos gastos no mês por grupo",
-    "`/help` — Exibir esta ajuda",
+    ...listBuiltinTelegramCommands().map(({ name, description }) =>
+      `\`/${name}\` — ${description}`),
     "",
     "**Comandos nativos do Paperclip**",
     "",
-    "`/status` — Consultar tarefa atual",
-    "`/task` — Iniciar tarefa com uma solicitação",
-    "`/new` — Criar uma nova tarefa",
-    "`/close` — Encerrar a conversa",
+    ...NATIVE_TELEGRAM_COMMANDS.filter((command) => command.name !== "start")
+      .map((command) => `\`/${command.name}\` — ${command.description}`),
     "",
     "_Mensagens normais continuam no Founder Liaison._",
-  ].join("\n")],
-  ["agents", async (ctx, companyId) => displayAgents(
-    await ctx.agents.list({ companyId, limit: 30 }),
-  )],
-  ["tasks", async (ctx, companyId) => displayTasks(
-    await ctx.issues.list({ companyId, limit: 100, includePluginOperations: false }),
-  )],
-  ["credits", async (ctx, companyId) => displayCredits(ctx, companyId)],
+    ].join("\n"),
+  }],
+  ["agents", {
+    description: "Listar agentes",
+    handler: async (ctx, companyId) => displayAgents(
+      await ctx.agents.list({ companyId, limit: 30 }),
+    ),
+  }],
+  ["tasks", {
+    description: "Listar tarefas abertas",
+    handler: async (ctx, companyId) => displayTasks(
+      await ctx.issues.list({ companyId, limit: 100, includePluginOperations: false }),
+    ),
+  }],
+  ["credits", {
+    description: "Ver créditos gastos no mês por grupo",
+    handler: async (ctx, companyId) => displayCredits(ctx, companyId),
+  }],
 ]);
+
+export function listBuiltinTelegramCommands() {
+  return [...commands].map(([name, command]) => ({
+    name,
+    description: command.description,
+    source: "gateway",
+  })).sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // Internal extensibility point: only trusted modules inside this installed
 // plugin can register handlers. Remote plugins never inject executable code.
@@ -277,12 +293,12 @@ export function registerTelegramCommand(command, handler) {
       typeof handler !== "function" || commands.has(command)) {
     throw new Error("Invalid or duplicate Telegram Gateway command");
   }
-  commands.set(command, handler);
+  commands.set(command, { description: "Comando contribuído pelo plugin", handler });
 }
 
 export async function executeFounderCommand(ctx, params, invocation, registry = null) {
   const name = typeof params?.command === "string" ? params.command.toLowerCase().trim() : "";
-  const command = commands.get(name);
+  const command = commands.get(name)?.handler;
   if (params?.provider !== "telegram" || (!command && !registry)) return { handled: false };
   // This context is minted by the Paperclip host after the provider principal
   // has been linked and allowed; never trust the request's user ID.

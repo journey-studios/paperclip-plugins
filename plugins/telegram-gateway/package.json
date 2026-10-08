@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/telegram-gateway",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": false,
   "type": "module",
   "engines": {
@@ -16,11 +16,12 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "pnpm build && node --test",
-    "typecheck": "node --check src/human-decisions.js && node --check src/human-decision-delivery.js && node --check src/publication-policy.js && node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/manifest.js"
+    "typecheck": "node --check src/human-decisions.js && node --check src/human-decision-delivery.js && node --check src/publication-policy.js && node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/command-catalog.js && node --check src/settings-data.js && node --check src/manifest.js && tsc --project tsconfig.json"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",

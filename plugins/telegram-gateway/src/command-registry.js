@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { listBuiltinTelegramCommands } from "./commands.js";
+import { NATIVE_TELEGRAM_COMMANDS } from "./command-catalog.js";
 import {
   API_VERSION, COMMAND_PATTERN, DECLARE_SUFFIX, DISCOVER_EVENT, EXECUTE_EVENT,
   PLUGIN_ID_PATTERN, RESULT_SUFFIX, cleanCommandDeclaration, providerFromEvent,
 } from "../../../shared/telegram-command-api.js";
 
-const BUILT_INS = new Set(["agents", "tasks", "help", "status", "task", "new", "close", "start"]);
 const DISCOVERY_MS = 650;
 const EXECUTION_MS = 1650; // Must fit existing 3000ms host action deadline.
 
@@ -63,6 +64,10 @@ export function createTelegramCommandRegistry(ctx) {
   }
 
   async function discover(companyId, providerIds) {
+    const builtIns = new Set([
+      ...listBuiltinTelegramCommands().map((command) => command.name),
+      ...NATIVE_TELEGRAM_COMMANDS.map((command) => command.name),
+    ]);
     const ids = [...new Set(providerIds)].filter((id) => PLUGIN_ID_PATTERN.test(id)).slice(0, 12);
     const replies = await Promise.all(ids.map(async (providerId) => {
       const requestId = randomUUID();
@@ -75,7 +80,7 @@ export function createTelegramCommandRegistry(ctx) {
     const registered = new Map();
     for (const { providerId, commands } of replies) {
       for (const command of commands) {
-        if (BUILT_INS.has(command.name)) continue;
+        if (builtIns.has(command.name)) continue;
         if (registered.has(command.name)) registered.set(command.name, null); // fail closed on conflict
         else registered.set(command.name, { ...command, providerId });
       }

@@ -71,7 +71,7 @@ async function initializedHarness(options = {}) {
   const harness = startWorker(options);
   harness.request("init-response", "initialize", {
     manifest: {
-      id: "journey-studios.founder-comms-router", apiVersion: 1, version: "0.3.4",
+      id: "journey-studios.founder-comms-router", apiVersion: 1, version: "0.3.5",
       capabilities: options.capabilities ?? ["chat.publications.publish_existing_comment"],
     },
     config: {},
