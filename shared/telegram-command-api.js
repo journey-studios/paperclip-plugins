@@ -1,5 +1,8 @@
 /** Versioned plugin-to-plugin Telegram command contract (no Paperclip core changes). */
 export const API_VERSION = 1;
+// Compatibility identity: the Paperclip host resolves telegram-command by this
+// literal pluginKey. Keep it stable across package/UI renames until the native
+// host supports a configurable binding. Also anchors the event actorId.
 export const GATEWAY_ID = "journey-studios.founder-comms-router";
 export const DISCOVER_EVENT = `plugin.${GATEWAY_ID}.telegram-command-discover-v1`;
 export const EXECUTE_EVENT = `plugin.${GATEWAY_ID}.telegram-command-execute-v1`;

@@ -68,7 +68,7 @@ const plugin = definePlugin({
   },
 
   async onHealth() {
-    return { status: "ok", message: "Founder Gateway is running" };
+    return { status: "ok", message: "Telegram Gateway is running" };
   },
 });
 

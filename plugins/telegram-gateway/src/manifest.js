@@ -1,9 +1,9 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.3.0",
-  displayName: "Founder Gateway",
-  description: "Bridges founder command routing and native chat publication with event-driven liaison notifications.",
+  version: "0.3.1",
+  displayName: "Telegram Gateway",
+  description: "Routes authorized Telegram commands and publishes native chat messages, including Founder Liaison notifications.",
   author: "Journey Studios",
   categories: ["automation"],
   capabilities: [

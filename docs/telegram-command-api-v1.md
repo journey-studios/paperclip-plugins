@@ -4,7 +4,7 @@
 
 ## Responsibilities
 
-- **Founder Gateway** (`journey-studios.founder-comms-router`): authorizes the host-linked Founder, enforces company scope, discovers allowlisted read-only providers, resolves command collisions, applies deadlines, and returns provider Markdown through Paperclip's existing native publishing path **when invoked by a supported command entry**. It contains no cost SQL or billing credentials.
+- **Telegram Gateway** (`journey-studios.founder-comms-router`, retained compatibility ID): authorizes the host-linked Founder, enforces company scope, discovers allowlisted read-only providers, resolves command collisions, applies deadlines, and returns provider Markdown through Paperclip's existing native publishing path **when invoked by a supported command entry**. It contains no cost SQL or billing credentials.
 - **Provider plugin** (initially `journey-studios.agent-observatory`): declares commands and executes its own read-only domain logic. One data source powers its Telegram result, MCP tool, agent tool, and board-authenticated API route.
 - **Paperclip**: authoritative cost ledger and access control. No secret, webhook, bot token, new table, duplicate ledger, or new agent run is required for a plugin command.
 
@@ -46,7 +46,7 @@ All v1 commands are **read-only** and **Founder-only**. Expansion to mutating co
 
 ## Implemented monthly cost command
 
-Owner: **Agent Observatory**, not Founder Gateway.
+Owner: **Agent Observatory**, not Telegram Gateway.
 
 - `custos`: current month (calendar month in `America/Sao_Paulo`).
 - `custos 2026-09`: explicitly selected month.
@@ -72,7 +72,11 @@ Do not repoint the Telegram webhook or claim the slash command is live until a n
 
 ## Tests / rollout
 
-- `node --test plugins/founder-comms-router/test/*.test.js plugins/agent-observatory/test/*.test.js`
+- `node --test plugins/telegram-gateway/test/*.test.js plugins/agent-observatory/test/*.test.js`
 - Provider/company isolation, forged event namespace, duplicate command collision, timeout/error fallback and explicit founder authorization.
 - São Paulo month boundaries, aggregate reconciliation, Gemini/DeepSeek and unpriced Cursor, Markdown escaping and bounded SQL.
 - Use a disposable sandbox for bundle/build validation. Existing production plugin installations and `paperclip:agy` stay untouched. Deploy plugin updates only after CI/CodeRabbit review and confirm the ingress caveat remains visible.
+
+### Gateway package identity
+
+The `@journey-studios/telegram-gateway` package (v0.3.1) and visible `Telegram Gateway` name replace the previous Founder Gateway branding. The **manifest `id` remains `journey-studios.founder-comms-router`** because the deployed Paperclip host looks up this exact pluginKey before dispatching native Telegram actions. Its namespaced event contract, persisted state and host authorization therefore remain compatible. This is a packaging/UI rename, **not** a runtime plugin identity migration and **not** a new bot or ingress implementation.
