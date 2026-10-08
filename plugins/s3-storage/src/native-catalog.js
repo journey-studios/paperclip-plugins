@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { StorageError, parseUuid } from "./catalog.js";
 
+/** Resolve the native attachment table inside this plugin's isolated SDK namespace. */
 function table(ctx) {
   const schema = ctx.db.namespace;
   if (typeof schema !== "string" || !/^[a-z][a-z0-9_]{0,62}$/.test(schema)) throw new StorageError("catalog_unavailable", 503);
   return `${schema}.native_objects`;
 }
 
+/** Enforce the company's UUID root and reject ambiguous or traversing native object keys. */
 export function validateNativeKey(value, companyId) {
   if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 1024 || !value) throw new StorageError("invalid_object_key");
   if (/[\\\u0000-\u001f\u007f]/.test(value)) throw new StorageError("invalid_object_key");
@@ -19,6 +21,7 @@ export function validateNativeKey(value, companyId) {
   return value;
 }
 
+/** Keep database projections explicit so catalog rows use one stable camel-case contract. */
 function selectColumns() {
   return `company_id AS "companyId", native_key AS "nativeKey", physical_key AS "physicalKey",
     staging_key AS "stagingKey", staging_version_id AS "stagingVersionId",
@@ -29,6 +32,7 @@ function selectColumns() {
     ready_at AS "readyAt", deleted_at AS "deletedAt"`;
 }
 
+/** Reuse matching logical keys idempotently while rejecting changed bytes or storage identity. */
 export async function createOrFindNativeIntent(ctx, input) {
   await ctx.db.execute(`INSERT INTO ${table(ctx)} (
     company_id, native_key, physical_key, staging_key, filename, content_type, byte_size,
@@ -54,12 +58,14 @@ export async function createOrFindNativeIntent(ctx, input) {
   return row;
 }
 
+/** Fetch a logical key only inside its authenticated company scope. */
 export async function getNativeObject(ctx, companyId, nativeKey) {
   const rows = await ctx.db.query(`SELECT ${selectColumns()} FROM ${table(ctx)} WHERE company_id = $1 AND native_key = $2`, [companyId, validateNativeKey(nativeKey, companyId)]);
   if (!rows[0]) throw new StorageError("native_object_not_found", 404);
   return rows[0];
 }
 
+/** Commit only a pending row and report whether this caller won the ready transition. */
 export async function markNativeReady(ctx, companyId, nativeKey, verified) {
   const result = await ctx.db.execute(`UPDATE ${table(ctx)} SET status = 'ready', staging_version_id = $3,
     physical_version_id = $4, etag = $5, last_modified = $6, ready_at = now(), updated_at = now()
@@ -69,17 +75,20 @@ export async function markNativeReady(ctx, companyId, nativeKey, verified) {
   return { row: await getNativeObject(ctx, companyId, nativeKey), transitioned: result.rowCount === 1 };
 }
 
+/** Tombstone before remote cleanup so retries cannot make a deleted key readable again. */
 export async function markNativeDeleted(ctx, companyId, nativeKey) {
   const result = await ctx.db.execute(`UPDATE ${table(ctx)} SET status = 'deleted', deleted_at = COALESCE(deleted_at, now()), updated_at = now()
     WHERE company_id = $1 AND native_key = $2 AND status <> 'deleted'`, [companyId, nativeKey]);
   return { row: await getNativeObject(ctx, companyId, nativeKey), transitioned: result.rowCount === 1 };
 }
 
+/** Drop the staging version reference after the staging object has been cleaned up. */
 export async function clearNativeStagingVersion(ctx, companyId, nativeKey) {
   await ctx.db.execute(`UPDATE ${table(ctx)} SET staging_version_id = NULL, updated_at = now()
     WHERE company_id = $1 AND native_key = $2`, [companyId, nativeKey]);
 }
 
+/** Return only safe logical metadata; physical keys, URLs, and credentials stay private. */
 export function safeNativeObject(row) {
   return {
     objectKey: row.nativeKey,
@@ -92,12 +101,14 @@ export function safeNativeObject(row) {
   };
 }
 
+/** Refuse to reuse an intent after its provider bucket or endpoint identity changes. */
 function assertNativeStorage(input, row) {
   if (row.storageFingerprint !== input.fingerprint || row.bucket !== input.bucket || row.endpoint !== input.endpoint || row.provider !== input.provider) {
     throw new StorageError("storage_settings_changed", 409);
   }
 }
 
+/** Allocate a unique immutable physical UUID key and a separate temporary staging key. */
 export function newNativeKeys(config, companyId) {
   const base = config.prefix ? `${config.prefix}/` : "";
   const id = randomUUID();

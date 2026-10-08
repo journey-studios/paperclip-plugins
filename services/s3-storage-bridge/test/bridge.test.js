@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { once } from "node:events";
+import { request as httpRequest } from "node:http";
 import { afterEach, test } from "node:test";
 import {
 	DeleteObjectCommand,
@@ -20,20 +21,25 @@ const credentials = {
 const apiKey = "paperclip-board-api-key-for-tests";
 const servers = new Set();
 
+/** Test-only Smithy adapter for genuine Node SHA-256 and HMAC signatures. */
 class TestSha256 {
+	/** Mirrors Smithy's secret-key constructor contract for test signatures. */
 	constructor(secret) {
 		this.hash = secret ? createHmac("sha256", secret) : createHash("sha256");
 	}
 
+	/** Adds request bytes to the test signer hash or HMAC. */
 	update(bytes) {
 		this.hash.update(bytes);
 	}
 
+	/** Returns the test digest used by the independent Smithy signer. */
 	async digest() {
 		return this.hash.digest();
 	}
 }
 
+/** Signs test requests independently so the bridge verifies rather than self-signs. */
 async function signForTest(request, signingDate = new Date()) {
 	const signer = new SignatureV4({
 		credentials,
@@ -55,6 +61,7 @@ afterEach(async () => {
 	servers.clear();
 });
 
+/** Starts an isolated loopback bridge with an injected Paperclip/provider API. */
 async function startBridge(fetchImpl, extra = {}) {
 	const server = createBridgeServer({
 		pluginBaseUrl: "https://paperclip.test",
@@ -72,6 +79,7 @@ async function startBridge(fetchImpl, extra = {}) {
 	return { server, endpoint: `http://127.0.0.1:${port}` };
 }
 
+/** Matches the safe metadata shape returned by the storage plugin catalog. */
 function storedObject(
 	objectKey,
 	bytes,
@@ -88,6 +96,7 @@ function storedObject(
 	};
 }
 
+/** Routes fixture calls by host and asserts board authentication and company scope. */
 function pluginFetch({ onPrepare, onRead, onDelete, providerFetch } = {}) {
 	const calls = [];
 	const fetchImpl = async (input, init = {}) => {
@@ -116,6 +125,7 @@ function pluginFetch({ onPrepare, onRead, onDelete, providerFetch } = {}) {
 	return { fetchImpl, calls };
 }
 
+/** Sends a SigV4-authenticated request through the same URL parser as the SDK. */
 async function sendSigned(
 	endpoint,
 	{
@@ -149,6 +159,22 @@ async function sendSigned(
 		method,
 		headers: signed.headers,
 		body: method === "PUT" ? body : undefined,
+	});
+}
+
+/** Leaves a declared PUT incomplete so tests can observe early auth rejection. */
+function sendPartialRequest(endpoint, path, headers, prefix) {
+	return new Promise((resolve, reject) => {
+		const request = httpRequest(
+			new URL(path, endpoint),
+			{ method: "PUT", headers, agent: false },
+			(response) => {
+				response.resume();
+				resolve({ request, response });
+			},
+		);
+		request.once("error", reject);
+		request.write(prefix);
 	});
 }
 
@@ -298,6 +324,113 @@ test("rejects altered payload, altered path, expired signatures, and missing aut
 	});
 	assert.equal(unauthenticated.status, 403);
 	assert.equal(pluginCalls, 0);
+});
+
+test("rejects a bad SigV4 signature before reading an incomplete upload body", async () => {
+	const bytes = Buffer.alloc(1024 * 1024, 0x61);
+	const objectKey = `${companyId}/attachments/early-reject.bin`;
+	let pluginCalls = 0;
+	const { fetchImpl } = pluginFetch({
+		onPrepare: async ({ objectKey: requestedKey, contentType }) => {
+			pluginCalls += 1;
+			return {
+				alreadyPresent: true,
+				object: storedObject(requestedKey, bytes, contentType),
+			};
+		},
+	});
+	const { endpoint } = await startBridge(fetchImpl, {
+		maxConcurrentRequests: 1,
+	});
+	const path = `/paperclip-native/${objectKey}`;
+	const url = new URL(endpoint);
+	const signed = await signForTest({
+		protocol: "http:",
+		hostname: url.host,
+		method: "PUT",
+		path,
+		headers: {
+			host: url.host,
+			"content-length": String(bytes.length),
+			"content-type": "application/octet-stream",
+			"x-amz-content-sha256": createHash("sha256").update(bytes).digest("hex"),
+		},
+		body: bytes,
+	});
+	signed.headers.authorization = signed.headers.authorization.replace(
+		/Signature=([0-9a-f])([0-9a-f]{63})$/,
+		(_match, first, rest) => `Signature=${first === "0" ? "1" : "0"}${rest}`,
+	);
+	let timeout;
+	let partial;
+	try {
+		partial = await Promise.race([
+			sendPartialRequest(endpoint, path, signed.headers, bytes.subarray(0, 1)),
+			new Promise((_, reject) => {
+				timeout = setTimeout(
+					() => reject(new Error("invalid signature waited for request body")),
+					500,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timeout);
+		partial?.request.destroy();
+	}
+	assert.equal(partial.response.statusCode, 403);
+	assert.equal(pluginCalls, 0);
+	let missingHashResponse;
+	const missingHashDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+	try {
+		missingHashResponse = await Promise.race([
+			sendPartialRequest(
+				endpoint,
+				path,
+				{
+					host: url.host,
+					"content-length": String(bytes.length),
+					"content-type": "application/octet-stream",
+					"x-amz-date": missingHashDate,
+					authorization: `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${missingHashDate.slice(0, 8)}/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${"0".repeat(64)}`,
+				},
+				bytes.subarray(0, 1),
+			),
+			new Promise((_, reject) => {
+				timeout = setTimeout(
+					() =>
+						reject(new Error("missing payload hash waited for request body")),
+					500,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timeout);
+		missingHashResponse?.request.destroy();
+	}
+	assert.equal(missingHashResponse.response.statusCode, 400);
+	assert.equal(pluginCalls, 0);
+
+	const client = new S3Client({
+		endpoint,
+		region: "us-east-1",
+		forcePathStyle: true,
+		credentials,
+		maxAttempts: 1,
+	});
+	try {
+		await client.send(
+			new PutObjectCommand({
+				Bucket: "paperclip-native",
+				Key: objectKey,
+				Body: bytes,
+				ContentLength: bytes.length,
+				ContentType: "application/octet-stream",
+			}),
+		);
+		assert.equal(pluginCalls, 1);
+	} finally {
+		client.destroy();
+	}
 });
 
 test("GET Range streams only verified range bytes while HEAD and DELETE use metadata/API", async () => {
@@ -493,8 +626,8 @@ test("rejects non-company keys without contacting the plugin", async () => {
 	const { endpoint } = await startBridge(fetchImpl);
 	const response = await sendSigned(endpoint, {
 		method: "GET",
-		path: "/paperclip-native/../external/object",
+		path: "/paperclip-native/not-a-company-id/attachments/object",
 	});
-	assert.notEqual(response.status, 200);
+	assert.equal(response.status, 400);
 	assert.equal(calls, 0);
 });

@@ -22,7 +22,8 @@ Set these non-secret environment values:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PAPERCLIP_PLUGIN_BASE_URL` | required | Paperclip API origin reachable from the bridge. Internal HTTP is permitted only for a trusted private service network; prefer HTTPS otherwise. |
+| `PAPERCLIP_PLUGIN_BASE_URL` | required | Paperclip API origin reachable from the bridge. HTTPS is required except for loopback HTTP or the explicit internal-network opt-in below. |
+| `PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP` | `false` | Set to `true` only when the board API is reachable solely over a trusted private service network, such as a private Docker network. This applies only to the board API; provider-signed object URLs always require HTTPS. |
 | `AWS_SHARED_CREDENTIALS_FILE` | required | Read-only shared credentials file also used by the Paperclip S3 client. |
 | `PAPERCLIP_BOARD_API_KEY_FILE` | required | Mounted file containing the Paperclip board API key. |
 | `PAPERCLIP_BRIDGE_PORT` | `9000` | HTTP listen port. Place the bridge behind the deployment's TLS termination before exposing it outside a trusted private network. |
@@ -32,6 +33,8 @@ Set these non-secret environment values:
 | `PAPERCLIP_BRIDGE_MAX_CONCURRENT_REQUESTS` | `2` | Concurrent authenticated object operations, maximum 16. |
 
 Configure Paperclip's existing global S3 provider with the bridge endpoint, bucket `paperclip-native`, region `us-east-1`, path-style addressing, empty prefix, and the shared local bridge credentials. The bridge is not a provider router: Paperclip's provider selection is global, so existing native attachments must be migrated and verified before switching the endpoint. Keep a backup and rollback plan for the prior endpoint and catalog references.
+
+The Paperclip board API connection uses HTTPS by default; HTTP loopback URLs are allowed for local testing. For a private Docker deployment only, set `PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP=true` when the board API is reachable exclusively on a trusted private service network. Keep the board API key and bridge signing credentials off public networks. This opt-in never relaxes HTTPS validation for provider-signed upload or download URLs.
 
 `GET /healthz` is an unauthenticated liveness check containing no configuration data. API failures return bounded S3-style XML errors; provider signed URLs, board keys, and credentials are never included in bridge error bodies.
 

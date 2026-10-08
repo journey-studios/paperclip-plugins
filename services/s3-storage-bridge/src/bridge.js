@@ -8,7 +8,6 @@ import {
 	parseContentLength,
 	parseS3Target,
 	readBoundedBody,
-	validateAuthEnvelope,
 	verifyPayloadHash,
 	verifySdkChecksums,
 	verifySigV4,
@@ -19,6 +18,7 @@ const SHA256 = /^[0-9a-f]{64}$/i;
 const ACCESS_KEY = /^[A-Z0-9]{16,128}$/;
 const ALLOWED_METHODS = new Set(["PUT", "GET", "HEAD", "DELETE"]);
 
+/** Rejects plugin metadata that would misidentify bytes or leak another object. */
 function validateStoredObject(
 	object,
 	objectKey,
@@ -47,6 +47,7 @@ function validateStoredObject(
 	return object;
 }
 
+/** Escapes untrusted error codes before embedding them in the S3 XML response. */
 function xmlEscape(value) {
 	return String(value).replace(
 		/[&<>"']/g,
@@ -61,6 +62,7 @@ function xmlEscape(value) {
 	);
 }
 
+/** Sends bounded, credential-free S3 error XML for bridge and upstream failures. */
 function sendXml(res, error, requestId) {
 	const status = error instanceof BridgeError ? error.status : 502;
 	const code = error instanceof BridgeError ? error.code : "ServiceUnavailable";
@@ -74,12 +76,14 @@ function sendXml(res, error, requestId) {
 	res.end(xml);
 }
 
+/** Returns a header-safe string or omits the supplied value. */
 function safeHeaderValue(value) {
 	return typeof value === "string" && !hasHeaderControl(value)
 		? value
 		: undefined;
 }
 
+/** Detects control characters that Node would reject or interpret in a header. */
 function hasHeaderControl(value) {
 	return [...value].some((character) => {
 		const code = character.codePointAt(0);
@@ -87,6 +91,7 @@ function hasHeaderControl(value) {
 	});
 }
 
+/** Builds response headers from catalog metadata without trusting arbitrary values. */
 function safeObjectHeaders(object) {
 	const headers = {
 		"content-length": String(object.size),
@@ -108,6 +113,7 @@ function safeObjectHeaders(object) {
 	return headers;
 }
 
+/** Parses one satisfiable byte range; multiple ranges are outside the bridge API. */
 function parseRange(value, size) {
 	if (
 		typeof value !== "string" ||
@@ -150,6 +156,7 @@ function parseRange(value, size) {
 	return { start, end: Math.min(end, size - 1) };
 }
 
+/** Caps concurrent object operations and makes each acquired slot release once. */
 function createSemaphore(limit) {
 	let active = 0;
 	return {
@@ -166,6 +173,7 @@ function createSemaphore(limit) {
 	};
 }
 
+/** Creates the bounded S3 API after validating local signing and plugin settings. */
 export function createBridgeServer(options) {
 	const config = normalizeOptions(options);
 	const semaphore = createSemaphore(config.maxConcurrentRequests);
@@ -194,8 +202,8 @@ export function createBridgeServer(options) {
 			if (!ALLOWED_METHODS.has(req.method))
 				throw new BridgeError("MethodNotAllowed", 405);
 			release = semaphore.acquire();
-			validateAuthEnvelope(req, config);
 			const target = parseS3Target(req, config.bucket);
+			await verifySigV4(req, Buffer.alloc(0), config, target);
 			let body = Buffer.alloc(0);
 			if (req.method === "PUT") {
 				if (
@@ -222,7 +230,6 @@ export function createBridgeServer(options) {
 			) {
 				throw new BridgeError("InvalidRequest", 400);
 			}
-			await verifySigV4(req, body, config, target);
 			await handleS3Request(req, res, target, body, config, requestId);
 		} catch (error) {
 			config.onRequestError?.({
@@ -253,6 +260,7 @@ export function createBridgeServer(options) {
 	return server;
 }
 
+/** Validates fixed bridge limits and constructs the authenticated plugin client. */
 function normalizeOptions(options) {
 	if (!options || typeof options !== "object")
 		throw new TypeError("bridge options are required");
@@ -274,6 +282,9 @@ function normalizeOptions(options) {
 	) {
 		throw new TypeError("Paperclip board API key is required");
 	}
+	const allowInternalHttp = options.allowInternalHttp ?? false;
+	if (typeof allowInternalHttp !== "boolean")
+		throw new TypeError("allowInternalHttp must be boolean");
 	const bucket = options.bucket ?? "paperclip-native";
 	if (bucket !== "paperclip-native")
 		throw new TypeError("native bridge bucket must be paperclip-native");
@@ -299,6 +310,7 @@ function normalizeOptions(options) {
 	const pluginClient = createPluginClient({
 		pluginBaseUrl,
 		apiKey: options.apiKey,
+		allowInternalHttp,
 		apiTimeoutMs: options.apiTimeoutMs ?? 30_000,
 		providerTimeoutMs: options.providerTimeoutMs ?? 120_000,
 		fetchImpl: options.fetchImpl ?? fetch,
@@ -321,6 +333,7 @@ function normalizeOptions(options) {
 	};
 }
 
+/** Prepares, streams, and finalizes bytes only after their signed digest is checked. */
 async function handlePut(req, res, target, body, config, requestId) {
 	const contentType =
 		safeHeaderValue(req.headers["content-type"]) ?? "application/octet-stream";
@@ -406,6 +419,7 @@ async function handlePut(req, res, target, body, config, requestId) {
 	sendPutSuccess(res, object, requestId);
 }
 
+/** Returns the small successful PutObject response without echoing signed URLs. */
 function sendPutSuccess(res, object, requestId) {
 	const headers = { "x-amz-request-id": requestId };
 	if (
@@ -423,6 +437,7 @@ function sendPutSuccess(res, object, requestId) {
 	res.end();
 }
 
+/** Uses plugin metadata for HEAD and bounded, cancellable provider streams for GET. */
 async function handleRead(req, res, target, config, requestId) {
 	const result = await config.pluginClient.call(
 		"read",
@@ -510,6 +525,7 @@ async function handleRead(req, res, target, config, requestId) {
 	}
 }
 
+/** Maps plugin deletion to S3's idempotent no-content response. */
 async function handleDelete(req, res, target, config, requestId) {
 	let result;
 	try {
@@ -533,6 +549,7 @@ async function handleDelete(req, res, target, config, requestId) {
 	res.end();
 }
 
+/** Dispatches only the four S3 operations accepted after authentication. */
 async function handleS3Request(req, res, target, body, config, requestId) {
 	if (req.method === "PUT")
 		return handlePut(req, res, target, body, config, requestId);

@@ -1,10 +1,12 @@
+import { isIP } from "node:net";
 import { BridgeError } from "./errors.js";
 
 const PLUGIN_ID = "journey-studios.s3-storage";
 const API_PATH = `/api/plugins/${PLUGIN_ID}/api/native`;
 const MAX_JSON_BYTES = 300 * 1024;
 
-function configuredUrl(value) {
+/** Accept the operator-configured Paperclip origin; non-loopback HTTP is an explicit opt-in. */
+function configuredUrl(value, allowInternalHttp) {
 	let url;
 	try {
 		url = new URL(value);
@@ -18,9 +20,19 @@ function configuredUrl(value) {
 	) {
 		throw new TypeError("Paperclip plugin API URL is invalid");
 	}
+	if (
+		url.protocol === "http:" &&
+		!isLoopback(url.hostname) &&
+		!allowInternalHttp
+	) {
+		throw new TypeError(
+			"Paperclip plugin API URL requires HTTPS unless internal HTTP is explicitly enabled",
+		);
+	}
 	return url.origin;
 }
 
+/** Signed object URLs always use HTTPS, even when the board API is on an internal HTTP network. */
 function signedUrl(value) {
 	let url;
 	try {
@@ -33,6 +45,18 @@ function signedUrl(value) {
 	return url;
 }
 
+/** Identify standard loopback host forms that do not need the internal-network opt-in. */
+function isLoopback(hostname) {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	return (
+		host === "localhost" ||
+		host.endsWith(".localhost") ||
+		host === "::1" ||
+		(isIP(host) === 4 && host.startsWith("127."))
+	);
+}
+
+/** Link per-request deadlines with caller cancellation and release the timer afterward. */
 function timeoutSignal(timeoutMs, outerSignal) {
 	const controller = new AbortController();
 	const timer = setTimeout(
@@ -54,6 +78,7 @@ function timeoutSignal(timeoutMs, outerSignal) {
 	};
 }
 
+/** Read bounded JSON from the plugin API while cancelling oversized responses. */
 async function responseJson(response) {
 	const declared = Number(response.headers.get("content-length"));
 	if (Number.isFinite(declared) && declared > MAX_JSON_BYTES) {
@@ -78,6 +103,7 @@ async function responseJson(response) {
 	}
 }
 
+/** Translate plugin HTTP statuses into the supported S3-compatible error surface. */
 function pluginError(status) {
 	if (status === 404) return new BridgeError("NoSuchKey", 404);
 	if (status === 401 || status === 403)
@@ -88,14 +114,18 @@ function pluginError(status) {
 	return new BridgeError("ServiceUnavailable", 503);
 }
 
+/** Build the tenant-scoped board client and HTTPS-only signed-provider transport. */
 export function createPluginClient({
 	pluginBaseUrl,
 	apiKey,
+	allowInternalHttp = false,
 	apiTimeoutMs,
 	providerTimeoutMs,
 	fetchImpl = fetch,
 }) {
-	const origin = configuredUrl(pluginBaseUrl);
+	if (typeof allowInternalHttp !== "boolean")
+		throw new TypeError("allowInternalHttp must be boolean");
+	const origin = configuredUrl(pluginBaseUrl, allowInternalHttp);
 	return {
 		assertDownloadUrl: signedUrl,
 		async call(operation, target, body, outerSignal) {

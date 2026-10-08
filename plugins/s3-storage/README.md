@@ -65,6 +65,8 @@ Board-authenticated JSON endpoints are `POST /native/prepare`, `/native/finalize
 
 See the [S3 storage bridge README](../../services/s3-storage-bridge/README.md) for the bridge setup and local SigV4 contract. The bridge should support only the host operations it needs (PUT, HEAD, GET including Range, and DELETE), authenticate SigV4 locally, and pass only the logical key and object metadata to the plugin. Do not expose bucket listing, multipart upload, provider credentials, or arbitrary physical keys through the bridge. Before switching a Paperclip instance's global S3 endpoint to a bridge, migrate and verify existing native objects: Paperclip's built-in provider selection is global and does not dispatch reads by the attachment's provider field.
 
+For AWS S3, Backblaze B2, and generic S3 providers, native reconciliation requires `ListBucketVersions` and `DeleteObjectVersion` permissions so retries can remove orphaned copies and old versions for the plugin-owned UUID key without touching neighboring keys. Cloudflare R2 follows its unversioned path and does not call `ListObjectVersions`. Scope lifecycle expiration to the configured `<prefix>/_staging/` subtree (or `_staging/` when the prefix is empty) and its noncurrent versions after at least one day. Never apply expiration or noncurrent-version cleanup to `<prefix>/native/`: the cataloged ready version can be older than the latest version. Reconciliation removes only versions visible when it runs, while a still-valid staging URL can create another version later.
+
 ## Native agent tools and plugin MCP
 
 The worker registers status, connection test, list, prepare, finalize, read-link, and opt-in bucket-create tools with Paperclip. The board-authenticated MCP endpoint is:
@@ -81,4 +83,4 @@ The plugin owns separate namespace migrations and tables for regular project med
 
 The supplied SHA-256 is an expected digest only. The plugin does not trust provider metadata as proof: it recomputes the digest from a streamed GET before publication. The SDK's optional checksum middleware is set to `WHEN_REQUIRED` for S3-compatible providers that do not implement AWS checksum extensions.
 
-Native delete requests tombstone the logical key and remove only the provider version owned by the native catalog row. The regular project-media catalog does not automatically purge ready media, and this package does not migrate existing core files or claim hosted-runtime acceptance.
+Native delete requests tombstone the logical key and reconcile every version and delete marker under that native row's unique physical UUID key. This namespace is separate from the regular project-media content-addressed keys. The regular project-media catalog does not automatically purge ready media, and this package does not migrate existing core files or claim hosted-runtime acceptance.

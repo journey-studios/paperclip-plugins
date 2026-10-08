@@ -1,6 +1,5 @@
-import { storageFingerprint } from "./config.js";
 import { StorageError } from "./catalog.js";
-import { audit } from "./service.js";
+import { storageFingerprint } from "./config.js";
 import {
   clearNativeStagingVersion,
   createOrFindNativeIntent,
@@ -11,7 +10,9 @@ import {
   safeNativeObject,
   validateNativeKey,
 } from "./native-catalog.js";
+import { audit } from "./service.js";
 import {
+  reconcileNativeVersions,
   removeNativeObject,
   removeStagingObject,
   signDownload,
@@ -23,6 +24,7 @@ import {
 const SHA256 = /^[a-f0-9]{64}$/;
 const MIME = /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+(?:;[^\r\n]{0,80})?$/;
 
+/** Create or reuse a company-owned intent; ready retries reconcile provider versions before returning. */
 export async function prepareNativeAttachment(ctx, companyId, config, value) {
   assertNativeEnabled(config);
   const input = normalizePrepare(value, config, companyId);
@@ -41,7 +43,9 @@ export async function prepareNativeAttachment(ctx, companyId, config, value) {
     uploadExpiresAt,
   });
   assertSameStorage(config, row);
-  if (row.status === "ready") return { alreadyPresent: true, object: safeNativeObject(row) };
+  if (row.status === "ready") {
+    return { alreadyPresent: true, ...(await completeReadyNativeAttachment(ctx, companyId, config, row)) };
+  }
   const signed = await signUpload(ctx, companyId, config, {
     stagingKey: row.stagingKey,
     contentType: row.contentType,
@@ -49,32 +53,38 @@ export async function prepareNativeAttachment(ctx, companyId, config, value) {
     uploadExpiresAt: row.uploadExpiresAt,
   });
   await audit(ctx, companyId, "Prepared a native S3 attachment upload", "storage.native_attachment_prepared", config, {
-    objectKey: input.nativeKey, size: Number(row.size), sha256: row.sha256,
+    objectKey: input.nativeKey,
+    size: Number(row.size),
+    sha256: row.sha256,
   });
   return { alreadyPresent: false, ...signed, object: safeNativeObject(row) };
 }
 
+/** Verify staged bytes, publish an immutable UUID object, then CAS the catalog and reconcile versions. */
 export async function finalizeNativeAttachment(ctx, companyId, config, value) {
   assertNativeEnabled(config);
   const { objectKey } = normalizeKeyBody(value, companyId);
   let row = await getNativeObject(ctx, companyId, objectKey);
   assertSameStorage(config, row);
   if (row.status === "deleted") throw new StorageError("native_object_not_found", 404);
-  if (row.status === "ready") {
-    try {
-      await removeStagingObject(ctx, companyId, config, row);
-      await clearNativeStagingVersion(ctx, companyId, objectKey);
-    } catch {
-      ctx.logger.warn("Native S3 attachment staging cleanup failed", { companyId, objectKey });
-    }
-    return { object: safeNativeObject(row) };
-  }
+  if (row.status === "ready") return completeReadyNativeAttachment(ctx, companyId, config, row);
 
-  const verified = await verifyAndPublish(ctx, companyId, config, {
-    ...row,
-    objectId: nativePhysicalId(row.physicalKey),
-    objectKey: row.physicalKey,
-  });
+  let verified;
+  try {
+    verified = await verifyAndPublish(ctx, companyId, config, {
+      ...row,
+      objectId: nativePhysicalId(row.physicalKey),
+      objectKey: row.physicalKey,
+    });
+  } catch (error) {
+    if (!(error instanceof StorageError && error.status === 404)) throw error;
+    const current = await getNativeObject(ctx, companyId, objectKey);
+    assertSameStorage(config, current);
+    if (current.status === "deleted") throw new StorageError("native_object_not_found", 404);
+    if (current.status !== "ready") throw error;
+    // A concurrent finalizer can prune this copy before its HEAD returns; converge only after verifying its winner.
+    return completeReadyNativeAttachment(ctx, companyId, config, current);
+  }
   const result = await markNativeReady(ctx, companyId, objectKey, verified);
   row = result.row;
   if (row.status !== "ready") {
@@ -82,38 +92,37 @@ export async function finalizeNativeAttachment(ctx, companyId, config, value) {
     await removeNativeObject(ctx, companyId, config, {
       ...row,
       physicalVersionId: verified.physicalVersionId,
-      stagingVersionId: verified.stagingVersionId,
+      stagingKey: null,
     });
     throw new StorageError("native_object_not_found", 404);
   }
-  if (verified.physicalVersionId && verified.physicalVersionId !== row.physicalVersionId) {
-    // Another finalizer won the catalog transition. In versioned buckets,
-    // remove only this request's extra physical version; unversioned buckets
-    // share one key and must keep the winner's object untouched.
-    try {
-      await removeNativeObject(ctx, companyId, config, {
-        ...row,
-        physicalVersionId: verified.physicalVersionId,
-        stagingKey: null,
-      });
-    } catch {
-      ctx.logger.warn("Native S3 losing copy cleanup failed", { companyId, objectKey });
-    }
-  }
-  try {
-    await removeStagingObject(ctx, companyId, config, row);
-    await clearNativeStagingVersion(ctx, companyId, objectKey);
-  } catch {
-    ctx.logger.warn("Native S3 attachment staging cleanup failed", { companyId, objectKey });
-  }
+  const completed = await completeReadyNativeAttachment(ctx, companyId, config, row);
   if (result.transitioned) {
     await audit(ctx, companyId, "Finalized a native S3 attachment", "storage.native_attachment_finalized", config, {
-      objectKey, size: Number(row.size), sha256: row.sha256,
+      objectKey,
+      size: Number(row.size),
+      sha256: row.sha256,
+    });
+  }
+  return completed;
+}
+
+/** Verify a ready winner, reconcile its physical versions, and retry best-effort staging cleanup. */
+async function completeReadyNativeAttachment(ctx, companyId, config, row) {
+  await reconcileNativeVersions(ctx, companyId, config, row);
+  try {
+    await removeStagingObject(ctx, companyId, config, row);
+    await clearNativeStagingVersion(ctx, companyId, row.nativeKey);
+  } catch {
+    ctx.logger.warn("Native S3 attachment staging cleanup failed", {
+      companyId,
+      objectKey: row.nativeKey,
     });
   }
   return { object: safeNativeObject(row) };
 }
 
+/** Confirm the exact cataloged provider version still exists before returning a private read URL. */
 export async function readNativeAttachment(ctx, companyId, config, value) {
   assertNativeEnabled(config);
   const { objectKey } = normalizeKeyBody(value, companyId);
@@ -128,10 +137,13 @@ export async function readNativeAttachment(ctx, companyId, config, value) {
     contentType: row.contentType,
     filename: row.filename,
   });
-  await audit(ctx, companyId, "Created a native S3 attachment read link", "storage.native_attachment_read", config, { objectKey });
+  await audit(ctx, companyId, "Created a native S3 attachment read link", "storage.native_attachment_read", config, {
+    objectKey,
+  });
   return { object: safeNativeObject(row), ...signed };
 }
 
+/** Persist a tombstone before removing every version of the native-only physical key. */
 export async function deleteNativeAttachment(ctx, companyId, config, value) {
   assertNativeEnabled(config);
   const { objectKey } = normalizeKeyBody(value, companyId);
@@ -140,48 +152,71 @@ export async function deleteNativeAttachment(ctx, companyId, config, value) {
   const deleted = await markNativeDeleted(ctx, companyId, objectKey);
   const row = deleted.row;
   assertSameStorage(config, row);
-  await removeNativeObject(ctx, companyId, config, row);
+  await reconcileNativeVersions(ctx, companyId, config, row, {
+    removeAll: true,
+  });
+  if (row.stagingKey) await removeStagingObject(ctx, companyId, config, row);
   if (deleted.transitioned) {
     await audit(ctx, companyId, "Deleted a native S3 attachment", "storage.native_attachment_deleted", config, {
-      objectKey, size: Number(row.size), sha256: row.sha256,
+      objectKey,
+      size: Number(row.size),
+      sha256: row.sha256,
     });
   }
   return { deleted: true };
 }
 
+/** Validate exact upload metadata and bind its logical key to the authenticated company. */
 function normalizePrepare(value, config, companyId) {
-  if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).some((key) => !["objectKey", "filename", "contentType", "size", "sha256"].includes(key)) ||
-      ["objectKey", "filename", "contentType", "size", "sha256"].some((key) => !Object.hasOwn(value, key))) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !["objectKey", "filename", "contentType", "size", "sha256"].includes(key)) ||
+    ["objectKey", "filename", "contentType", "size", "sha256"].some((key) => !Object.hasOwn(value, key))
+  ) {
     throw new StorageError("invalid_request");
   }
   const objectKey = validateNativeKey(value.objectKey, companyId);
   if (typeof value.filename !== "string") throw new StorageError("invalid_filename");
-  const filename = value.filename.trim().split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, "_");
+  const filename = value.filename
+    .trim()
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\u0000-\u001f\u007f]/g, "_");
   if (!filename || filename.length > 255 || filename === "." || filename === "..") throw new StorageError("invalid_filename");
   if (typeof value.contentType !== "string" || value.contentType.length > 160 || !MIME.test(value.contentType)) throw new StorageError("invalid_content_type");
   if (!Number.isSafeInteger(value.size) || value.size < 1 || value.size > config.maxUploadBytes) throw new StorageError("upload_size_out_of_range");
   if (typeof value.sha256 !== "string" || !SHA256.test(value.sha256)) throw new StorageError("invalid_sha256");
-  return { nativeKey: objectKey, filename, contentType: value.contentType, size: value.size, sha256: value.sha256 };
+  return {
+    nativeKey: objectKey,
+    filename,
+    contentType: value.contentType,
+    size: value.size,
+    sha256: value.sha256,
+  };
 }
 
+/** Accept only a company-scoped logical key; callers cannot select physical provider keys. */
 function normalizeKeyBody(value, companyId) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => key !== "objectKey") ||
-      typeof value.objectKey !== "string") throw new StorageError("invalid_request");
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => key !== "objectKey") || typeof value.objectKey !== "string") throw new StorageError("invalid_request");
   return { objectKey: validateNativeKey(value.objectKey, companyId) };
 }
 
+/** Require the explicit company opt-in and a complete storage configuration for native routes. */
 function assertNativeEnabled(config) {
   if (!config.enableNativeAttachments) throw new StorageError("native_attachments_disabled", 403);
   if (!config.configured) throw new StorageError("storage_not_configured", 503);
 }
 
+/** Prevent an existing logical object from silently switching backend identity after settings change. */
 function assertSameStorage(config, row) {
   if (row.storageFingerprint !== storageFingerprint(config) || row.bucket !== config.bucket || row.endpoint !== config.endpoint || row.provider !== config.provider) {
     throw new StorageError("storage_settings_changed", 409);
   }
 }
 
+/** Extract the UUID allocated by the catalog for its separate immutable physical object key. */
 function nativePhysicalId(key) {
   const id = key.split("/").at(-1);
   // newNativeKeys always appends a UUID, which is also the copy metadata ID.

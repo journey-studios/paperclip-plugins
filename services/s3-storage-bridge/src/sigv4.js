@@ -13,22 +13,27 @@ const OPERATION_BY_METHOD = {
 	DELETE: "DeleteObject",
 };
 
+/** Supplies Smithy SHA-256 and HMAC-SHA-256 using Node's native crypto API. */
 class NodeSha256 {
 	#hash;
 
+	/** Selects hashing for digests or HMAC when Smithy supplies a signing key. */
 	constructor(secret) {
 		this.#hash = secret ? createHmac("sha256", secret) : createHash("sha256");
 	}
 
+	/** Adds bytes to the active native crypto operation. */
 	update(data) {
 		this.#hash.update(data);
 	}
 
+	/** Finalizes the digest once for Smithy's canonical request calculation. */
 	async digest() {
 		return this.#hash.digest();
 	}
 }
 
+/** Parses the supported Authorization-header form and canonical header list. */
 function parseAuthorization(value) {
 	if (typeof value !== "string" || value.length > 2048)
 		throw new BridgeError("AccessDenied", 403);
@@ -59,6 +64,7 @@ function parseAuthorization(value) {
 	};
 }
 
+/** Rejects repeated raw headers so Node's merged values cannot alter signatures. */
 function rejectDuplicateHeaders(req) {
 	const seen = new Set();
 	for (let index = 0; index < req.rawHeaders.length; index += 2) {
@@ -68,6 +74,7 @@ function rejectDuplicateHeaders(req) {
 	}
 }
 
+/** Enforces the SigV4 date scope and configured freshness window. */
 function validateDate(req, auth, now, maxClockSkewMs) {
 	const dateHeader = req.headers["x-amz-date"];
 	if (
@@ -97,11 +104,13 @@ function validateDate(req, auth, now, maxClockSkewMs) {
 	return new Date(signedAt);
 }
 
+/** Ensures every header named by Authorization is present on the request. */
 function validateSignedHeaders(req, auth) {
 	if (auth.signedHeaders.some((name) => req.headers[name] === undefined))
 		throw new BridgeError("AccessDenied", 403);
 }
 
+/** Validates the signed headers and clock window without consuming request data. */
 export function validateAuthEnvelope(req, config) {
 	rejectDuplicateHeaders(req);
 	if (req.headers["x-amz-security-token"] !== undefined)
@@ -116,6 +125,7 @@ export function validateAuthEnvelope(req, config) {
 	return { auth, signedAt };
 }
 
+/** Parses the raw path/query while preserving the canonical target for SigV4. */
 export function parseS3Target(req, expectedBucket) {
 	const target = req.url;
 	if (
@@ -172,6 +182,7 @@ export function parseS3Target(req, expectedBucket) {
 	return { companyId, objectKey, rawPath, query };
 }
 
+/** Parses one bounded decimal Content-Length without accepting ambiguous forms. */
 export function parseContentLength(req, { allowMissing = false } = {}) {
 	const raw = req.headers["content-length"];
 	if (raw === undefined && allowMissing) return undefined;
@@ -182,6 +193,7 @@ export function parseContentLength(req, { allowMissing = false } = {}) {
 	return size;
 }
 
+/** Buffers only a declared request body within the configured upload limits. */
 export async function readBoundedBody(
 	req,
 	maxBytes,
@@ -208,6 +220,7 @@ export async function readBoundedBody(
 	return Buffer.concat(chunks, total);
 }
 
+/** Compares the complete request bytes against the signed SHA-256 payload header. */
 export function verifyPayloadHash(req, body) {
 	const expected = req.headers["x-amz-content-sha256"];
 	if (typeof expected !== "string" || !SHA256.test(expected))
@@ -217,6 +230,7 @@ export function verifyPayloadHash(req, body) {
 		throw new BridgeError("SignatureDoesNotMatch", 403);
 }
 
+/** Verifies the supported AWS SDK CRC32 and Content-MD5 checksums. */
 export function verifySdkChecksums(req, body) {
 	const algorithm = req.headers["x-amz-sdk-checksum-algorithm"];
 	const checksum = req.headers["x-amz-checksum-crc32"];
@@ -246,8 +260,14 @@ export function verifySdkChecksums(req, body) {
 	}
 }
 
+/** Verifies SigV4 against signed payload metadata before a PUT body is buffered. */
 export async function verifySigV4(req, body, config, target) {
 	const envelope = validateAuthEnvelope(req, config);
+	if (
+		req.method === "PUT" &&
+		!SHA256.test(req.headers["x-amz-content-sha256"] ?? "")
+	)
+		throw new BridgeError("InvalidRequest", 400);
 	const request = {
 		protocol: "http:",
 		hostname: req.headers.host,
