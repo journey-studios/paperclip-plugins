@@ -4,7 +4,7 @@
 
 ## Install
 
-The host must run the stock pinned Paperclip `2026.1001.0` SDK v1 API or newer. From the `v0.2.1` GitHub plugin release, download `journey-studios-paperclip-s3-storage-0.2.1.tgz` and `SHA256SUMS`, verify and install the extracted package:
+The host must run the stock pinned Paperclip `2026.1001.0` SDK v1 API or newer. From the [plugins-v0.2.1 GitHub release](https://github.com/journey-studios/paperclip-plugins/releases/tag/plugins-v0.2.1), download `journey-studios-paperclip-s3-storage-0.2.1.tgz` and `SHA256SUMS`, verify and install the extracted package:
 
 ```sh
 sha256sum -c SHA256SUMS
