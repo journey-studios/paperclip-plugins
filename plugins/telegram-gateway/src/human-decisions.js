@@ -209,6 +209,15 @@ function buildInteractionCardBody(interaction, issue, companyId) {
   if (details) {
     lines.push("", "### Details", details);
   }
+  if (sanitizedPayload.secretProposal) {
+    const proposal = asObject(sanitizedPayload.secretProposal);
+    lines.push(
+      "",
+      "### Credential proposal",
+      `- **Label:** ${proposal.label ?? "secret"}`,
+      `- **Value:** ${proposal.value ?? "[redacted — open in Paperclip]"}`,
+    );
+  }
   lines.push("", "### Risks", ...risks.map((line) => `- ${line}`));
   lines.push("", "### Telegram", `- ${telegramHint}`);
   lines.push(
