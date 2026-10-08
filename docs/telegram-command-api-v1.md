@@ -51,7 +51,7 @@ Owner: **Agent Observatory**, not Founder Gateway.
 - `custos`: current month (calendar month in `America/Sao_Paulo`).
 - `custos 2026-09`: explicitly selected month.
 - Known spend: only `public.cost_events` rows with `cost_status = 'reported'`, summed in integer cents and displayed in **USD**.
-- By API/provider: ledger `biller`/provider (`google` shown as Gemini/Google; DeepSeek, Cursor, OmniRoute, etc.). Not a breakdown by individual API key unless that identity is stored in the authoritative ledger.
+- By API/provider: ledger `provider` (`google` shown as Gemini/Google; DeepSeek, Cursor, OmniRoute, etc.); a shared `biller` such as OmniRoute must not merge different APIs. The biller remains available separately in the source data. Not a breakdown by individual API key unless that identity is stored in the authoritative ledger.
 - By organizational group: active agent reporting hierarchy (CEO, CTO, CMO, descendants); detached experiment agents stay **outside the hierarchy**. Group/provider totals derive from the **same bounded SQL aggregate**, avoiding conflicting totals.
 - Coverage: counts of reported and unpriced events, explicit warning that external balances/invoices, quotas and completely unrecorded usage are **not** represented. Subscription-only unpriced Cursor events must **not** appear as US$ 0,00 known cost.
 - Limits: 500 agents / 2,000 aggregated rows, no partial financial totals when limits are exceeded; reply is bounded for native Telegram Markdown.

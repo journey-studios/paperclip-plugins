@@ -37,7 +37,9 @@ function markdownText(value, max = 64) {
 }
 
 function apiName(row) {
-  const raw = String(row.biller || row.provider || "Não identificado").trim();
+  // The execution provider is the API identity; the biller may be a gateway
+  // shared by multiple providers and must not merge their costs.
+  const raw = String(row.provider || "Não identificado").trim();
   const normalized = raw.toLowerCase();
   if (normalized === "google" || normalized === "gemini" || normalized === "google-ai") return "Gemini (Google)";
   if (normalized === "deepseek") return "DeepSeek";
@@ -146,32 +148,57 @@ function itemLine(item) {
   return `• **${markdownText(item.name)}:** ${markdownText(displayMoney(item.cents))}${unpriced}`;
 }
 
+// The Telegram Markdown reply must reserve readable space for BOTH breakdowns.
+// Rows and their omission indicators are appended as complete Markdown units.
+const TELEGRAM_REPORT_LIMIT = 3450;
+
+function formatBreakdown(heading, items, budget) {
+  let text = `\n\n${heading}`;
+  if (items.length === 0) return { text: text + "\n_Nenhum evento registrado._", omitted: false };
+  let included = 0;
+  for (const item of items) {
+    const candidate = text + "\n" + itemLine(item);
+    const remaining = items.length - included - 1;
+    const omitted = remaining > 0
+      ? `\n_${included + 1} de ${items.length} categorias exibidas\._` : "";
+    if (candidate.length + omitted.length > budget) break;
+    text = candidate;
+    included++;
+  }
+  const omitted = included < items.length;
+  if (omitted) text += `\n_${included} de ${items.length} categorias exibidas\._`;
+  return { text, omitted };
+}
+
 export function formatMonthlyCosts(data) {
   const header = [
     `**Custos dos agentes · ${markdownText(data.period)}**`,
     "",
     `**Total reportado:** ${markdownText(displayMoney(data.reportedCostCents))}`,
-  ];
-  const footer = [
+  ].join("\n");
+  const footer = "\n" + [
     "",
     `_Cobertura: ${data.reportedEvents} eventos com custo reportado; ${data.unpricedEvents} sem preço\._`,
     "_Valores do ledger Paperclip em USD, não saldos de créditos nem faturas dos provedores. Uso sem telemetria não está incluído._",
-  ];
-  const max = 3450 - footer.join("\n").length;
-  let body = header.join("\n");
-  for (const [heading, items] of [["**Por API / provedor**", data.byApi], ["**Por equipe**", data.byGroup]]) {
-    body += "\n\n" + heading;
-    let included = 0;
-    for (const item of items) {
-      const line = itemLine(item);
-      if (body.length + line.length + 2 > max - 75) break;
-      body += "\n" + line;
-      included++;
-    }
-    if (included < items.length) body += `\n_${included} de ${items.length} categorias exibidas\._`;
-    if (items.length === 0) body += "\n_Nenhum evento registrado._";
+  ].join("\n");
+
+  const available = TELEGRAM_REPORT_LIMIT - header.length - footer.length;
+  if (available < 300) throw new Error("Telegram report metadata exceeds safe length");
+  // An API-heavy report cannot starve the team section (or vice versa).
+  // Any unused share may be borrowed by the other section on a second pass.
+  const apiBudget = Math.floor(available / 2);
+  const groupBudget = available - apiBudget;
+  let api = formatBreakdown("**Por API / provedor**", data.byApi, apiBudget);
+  let group = formatBreakdown("**Por equipe**", data.byGroup, groupBudget);
+  if (api.omitted && group.text.length < groupBudget) {
+    api = formatBreakdown("**Por API / provedor**", data.byApi, available - group.text.length);
   }
-  return body + "\n" + footer.join("\n");
+  if (group.omitted && api.text.length < apiBudget) {
+    group = formatBreakdown("**Por equipe**", data.byGroup, available - api.text.length);
+  }
+  const output = header + api.text + group.text + footer;
+  if (output.length > TELEGRAM_REPORT_LIMIT) throw new Error("Telegram report exceeds safe length");
+  return output;
 }
 
 /** Invalid arguments are user errors, not database or provider failures. */

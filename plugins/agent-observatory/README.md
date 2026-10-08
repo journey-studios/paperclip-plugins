@@ -31,6 +31,6 @@ The installed SDK binds arrays as SQL tuples. Cost lookups therefore use scalar 
 
 The Observatory owns `getMonthlyCosts()` and reuses it for plugin-contributed Telegram `custos [AAAA-MM]`, native agent tool `observatory_monthly_costs`, MCP tool `paperclipMonthlyCosts`, and a board-authenticated scoped API route `/monthly-costs`.
 
-The report shows month-to-date (São Paulo timezone) **USD amounts recorded in Paperclip**, first aggregated by biller/provider (Gemini/Google, DeepSeek, Cursor, etc.) and then by agent reporting group. Unpriced usage is shown separately and is **not** silently counted as free. Provider quotas, wallet balances, subscription invoices and missing events are outside this ledger.
+The report shows month-to-date (São Paulo timezone) **USD amounts recorded in Paperclip**, first aggregated by execution provider/API (Gemini/Google, DeepSeek, Cursor, etc.), independent of any shared biller and then by agent reporting group. Unpriced usage is shown separately and is **not** silently counted as free. Provider quotas, wallet balances, subscription invoices and missing events are outside this ledger.
 
 **Telegram ingress is pending:** provider registration/dispatch is implemented but the existing native Telegram parser does not yet forward arbitrary slash commands. See [Telegram Command API v1](../../docs/telegram-command-api-v1.md). No Paperclip core changes are part of this feature.

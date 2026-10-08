@@ -71,12 +71,70 @@ test("unpriced-only provider is never rendered as known zero spend", async () =>
   assert.doesNotMatch(text, /\*\*Cursor:\*\* US/);
 });
 
-test("untrusted API names are Markdown-escaped and cannot inject links", async () => {
-  const { ctx } = fixture(agents, [{ ...costs[2], biller: "[danger](https://bad.invalid) *bold*" }]);
+test("untrusted provider names are Markdown-escaped and billers cannot affect API names", async () => {
+  const { ctx } = fixture(agents, [{ ...costs[2], provider: "[danger](https://bad.invalid) *bold*", biller: "omniroute" }]);
   const text = formatMonthlyCosts(await getMonthlyCosts(ctx, companyId, "2026-10"));
   assert.doesNotMatch(text, /\[danger\]\(https:\/\/bad.invalid\)/);
   assert.match(text, /\\\[danger\\\]/);
   assert.ok(text.includes("\u200b"));
+});
+
+test("Gemini and DeepSeek remain separate when they share the same billing gateway", async () => {
+  const rows = [
+    { ...costs[0], biller: "omniroute", provider: "google", events: 2, costCents: "170" },
+    { ...costs[2], biller: "omniroute", provider: "deepseek", events: 3, costCents: "80" },
+    { ...costs[2], biller: "omniroute", provider: "deepseek", costStatus: "unpriced", events: 1, costCents: "0" },
+  ];
+  const { ctx } = fixture(agents, rows);
+  const data = await getMonthlyCosts(ctx, companyId, "2026-10");
+  assert.deepEqual(data.byApi.map((row) => [row.name, row.cents, row.unpricedEvents]), [
+    ["Gemini (Google)", 170, 0],
+    ["DeepSeek", 80, 1],
+  ]);
+  assert.equal(data.reportedCostCents, 250);
+  assert.equal(data.byGroup.reduce((sum, row) => sum + row.cents, 0), 250);
+  const output = formatMonthlyCosts(data);
+  assert.match(output, /Gemini/);
+  assert.match(output, /DeepSeek/);
+  assert.doesNotMatch(output, /OmniRoute/);
+});
+
+test("Telegram report always allocates space to both long breakdowns", () => {
+  const rows = (prefix, count) => Array.from({ length: count }, (_, index) => ({
+    name: `${prefix} ${String(index).padStart(3, "0")} ${"L".repeat(72)}`,
+    cents: 120 - index,
+    reportedEvents: 1,
+    unpricedEvents: index % 7 === 0 ? 1 : 0,
+  }));
+  const output = formatMonthlyCosts({
+    period: "2026-10", reportedCostCents: 9999, reportedEvents: 95, unpricedEvents: 14,
+    byApi: rows("API", 60), byGroup: rows("Equipe", 35),
+  });
+  assert.ok(output.length <= 3450, `message length ${output.length}`);
+  const [apiSection, groupSection] = output.split("**Por equipe**");
+  assert.match(apiSection, /\*\*Por API \/ provedor\*\*/);
+  assert.match(apiSection, /API 000/);
+  assert.match(apiSection, /_\d+ de 60 categorias exibidas/);
+  assert.ok(groupSection, "team heading is present");
+  assert.match(groupSection, /Equipe 000/);
+  assert.match(groupSection, /_\d+ de 35 categorias exibidas/);
+  assert.match(groupSection, /_Cobertura:/);
+  assert.doesNotMatch(groupSection, /_0 de 35 categorias exibidas/);
+});
+
+test("unused team budget can be reassigned to a larger API breakdown", () => {
+  const rows = Array.from({ length: 50 }, (_, index) => ({
+    name: `Provider ${String(index).padStart(3, "0")} ${"Long".repeat(16)}`,
+    cents: 1, reportedEvents: 1, unpricedEvents: 0,
+  }));
+  const output = formatMonthlyCosts({
+    period: "2026-10", reportedCostCents: 50, reportedEvents: 50, unpricedEvents: 0,
+    byApi: rows, byGroup: [{ name: "Marketing", cents: 50, reportedEvents: 50, unpricedEvents: 0 }],
+  });
+  const apiSection = output.split("**Por equipe**")[0];
+  assert.ok((apiSection.match(/•/g) ?? []).length >= 20, "API section borrows unused team space");
+  assert.match(output, /Marketing/);
+  assert.ok(output.length <= 3450);
 });
 
 test("fails closed rather than present partial costs for oversized datasets", async () => {
