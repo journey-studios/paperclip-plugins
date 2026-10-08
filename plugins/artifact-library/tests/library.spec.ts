@@ -709,6 +709,13 @@ describe("Artifact Library real PostgreSQL migration and worker", () => {
     const failed = await callMcp("artifactLibrarySearch", { limit: 1, cursor: first.result.structuredContent!.nextCursor! });
     expect(failed.result.isError).toBe(true);
     expect(failed.result.content[0]?.text).toBe("Tool execution failed or result unavailable");
+
+    // A stuck provider may repeat a nextCursor even if the caller's cursor was
+    // valid. Do not mislabel this server-side fault as a client cursor error.
+    ctx.artifacts.list = async () => ({ artifacts: [], nextCursor: "stuck" });
+    const stalled = await callMcp("artifactLibrarySearch", { limit: 1, cursor: first.result.structuredContent!.nextCursor! });
+    expect(stalled.result.isError).toBe(true);
+    expect(stalled.result.content[0]?.text).toBe("Tool execution failed or result unavailable");
   });
 
 });

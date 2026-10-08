@@ -73,11 +73,8 @@ const mcpHandler = createPluginMcpEndpoint({
           result = await listLibrary(mcpCtx, { companyId, filters, limit: args.limit ?? 30, cursor: args.cursor });
         } catch (error) {
           // Surface only recognized cursor failures, never arbitrary backend messages.
-          const cursorErrors = new Set([
-            "Invalid library cursor; restart this search",
-            "Artifact pagination did not advance",
-          ]);
-          if (args.cursor !== undefined && error instanceof Error && cursorErrors.has(error.message)) {
+          if (args.cursor !== undefined && error instanceof Error &&
+            error.message === "Invalid library cursor; restart this search") {
             throw new PluginMcpToolError("invalid_cursor");
           }
           throw error;
