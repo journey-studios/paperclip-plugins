@@ -1,4 +1,6 @@
-import type { CompanyArtifact } from "@paperclipai/plugin-sdk";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+// Derived from the pinned SDK artifacts.list return contract.
+type CompanyArtifact = Awaited<ReturnType<PluginContext["artifacts"]["list"]>>["artifacts"][number];
 
 export interface LibraryFilters {
   q?: string;
