@@ -1,3 +1,4 @@
+import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   definePlugin,
   runWorker,
@@ -1339,6 +1340,74 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns };
 }
 
+/**
+ * Minimal MCP projection, separate from the board's full change detail.
+ * Bounded SELECTs prevent copying raw snapshots, metadata and suggested runs
+ * into worker memory; exact counts preserve coverage/truncation semantics.
+ */
+async function mcpChangeSummary(ctx: PluginContext, companyId: string, changeSetId: string) {
+  const [changeSet] = await ctx.db.query<Record<string, unknown>>(
+    'SELECT id, title, status, hypothesis, causality_level AS "causalityLevel", ' +
+      'applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt" ' +
+      'FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+    [companyId, changeSetId],
+  );
+  if (!changeSet) throw new Error("Change Set not found");
+
+  const params = [companyId, changeSetId];
+  const [items, metrics, conclusions, itemTotals, metricTotals, conclusionTotals] = await Promise.all([
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT entity_type AS "entityType", entity_name AS "entityName", ' +
+        'change_kind AS "changeKind", occurred_at AS "occurredAt" ' +
+        'FROM change_items WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY occurred_at ASC, id ASC LIMIT 51',
+      params,
+    ),
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT metric_key AS "metricKey", baseline_value::float AS "baselineValue", ' +
+        'current_value::float AS "currentValue", delta_value::float AS "deltaValue", ' +
+        'unit, baseline_sample_size AS "baselineSampleSize", current_sample_size AS "currentSampleSize" ' +
+        'FROM change_metrics WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY metric_key ASC LIMIT 51',
+      params,
+    ),
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT outcome, confidence, summary ' +
+        'FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY created_at DESC, id DESC LIMIT 21',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_items WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+  ]);
+  const itemCount = Number(itemTotals[0]?.count ?? 0);
+  const metricCount = Number(metricTotals[0]?.count ?? 0);
+  const conclusionCount = Number(conclusionTotals[0]?.count ?? 0);
+  return {
+    companyId,
+    changeSet,
+    items: items.slice(0, 50),
+    metrics: metrics.slice(0, 50),
+    conclusions: conclusions.slice(0, 20),
+    coverage: {
+      itemCount, metricCount, conclusionCount,
+      itemsTruncated: itemCount > 50,
+      metricsTruncated: metricCount > 50,
+      conclusionsTruncated: conclusionCount > 20,
+    },
+  };
+}
+
 async function assertChangeSet(ctx: PluginContext, companyId: string, changeSetId: string) {
   const rows = await ctx.db.query<{ id: string }>(
     'SELECT id FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
@@ -1677,9 +1746,42 @@ function registerActions(ctx: PluginContext) {
   });
 }
 
+let mcpCtx: PluginContext;
+const mcpHandler = createPluginMcpEndpoint({
+  name: "journeystudios.evolution",
+  version: "0.1.1",
+  tools: [
+    {
+      name: "orgTrackerOverview",
+      title: "Org Tracker Overview",
+      description: "List up to 100 tracked change sets and status counts within the authorized company.",
+      readOnly: true,
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: async (_args, { companyId }) => ({ companyId, ...await overview(mcpCtx, companyId) }),
+    },
+    {
+      name: "orgTrackerChangeSummary",
+      title: "Org Tracker Change Summary",
+      description: "Read a bounded, redacted change set summary without raw before/after snapshots or metadata.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { changeSetId: { type: "string", format: "uuid" } },
+        required: ["changeSetId"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => mcpChangeSummary(mcpCtx, companyId, args.changeSetId as string),
+    },
+  ],
+});
+
 const plugin = definePlugin({
+  async onApiRequest(input) {
+    if (input.routeKey !== "mcp") return { status: 404, body: { error: "Unknown Org Tracker API route" } };
+    return mcpHandler(input);
+  },
   async setup(ctx) {
     const workerCtx = withEvolutionDatabaseNamespace(ctx);
+    mcpCtx = workerCtx;
     workerCtx.data.register("changes-overview", async (params) => overview(workerCtx, requiredString(params, "companyId")));
     workerCtx.data.register("change-detail", async (params) =>
       detail(workerCtx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));

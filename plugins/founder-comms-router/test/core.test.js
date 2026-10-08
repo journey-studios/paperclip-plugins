@@ -1,7 +1,7 @@
 import test from "node:test";
 import { executeFounderCommand } from "../src/commands.js";
 import assert from "node:assert/strict";
-import { companyConfig, getLocalSlot, processEvent, reconcilePendingPublications, runDigestJob, validateConfig } from "../src/core.js";
+import { companyConfig, flushDigest, flushPendingImmediate, getLocalSlot, processEvent, reconcilePendingPublications, runDigestJob, validateConfig } from "../src/core.js";
 
 function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
   const state = new Map();
@@ -18,6 +18,7 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
       },
       set: async (key, value) => {
         if (overrides.delayKnownCompanies && key.stateKey === "known-companies") await new Promise((resolve) => setTimeout(resolve, 2));
+        if (overrides.stateSet) await overrides.stateSet(key, value);
         return state.set(JSON.stringify(key), structuredClone(value));
       },
       delete: async (key) => state.delete(JSON.stringify(key)),
@@ -29,11 +30,15 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
         .map(([, issue]) => issue),
       listComments: async (issueId, companyId) => issues[companyIssueKey(companyId, issueId)]?.comments ?? [],
       createComment: async (issueId, body, companyId) => {
-        const entry = { issueId, body, companyId };
-        if (overrides.createComment) return overrides.createComment(entry, comments);
-        comments.push(entry);
+        const entry = { id: `created-${comments.length + 1}`, issueId, body, companyId, authorType: "plugin" };
+        if (overrides.createComment) await overrides.createComment(entry, comments);
+        else comments.push(entry);
+        const issue = issues[companyIssueKey(companyId, issueId)];
+        if (issue) (issue.comments ??= []).push(structuredClone(entry));
+        return entry;
       },
       requestWakeup: async (issueId, companyId, options) => {
+        if (overrides.requestWakeup) await overrides.requestWakeup({ issueId, companyId, options, wakes, state });
         const runId = `run-${wakes.length + 1}`;
         wakes.push({ issueId, companyId, options, runId });
         return { queued: true, runId };
@@ -440,4 +445,110 @@ test("marked plugin comments are ignored to prevent event loops", async () => {
   });
   assert.deepEqual(ctx.inspect.comments, []);
   assert.deepEqual(ctx.inspect.wakes, []);
+});
+
+const approvalEvent = { eventId: "retry-event", eventType: "approval.created", entityId: "approval-a", companyId: "companyA" };
+const approvalConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
+const approvalIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
+const approvalRecords = () => ({ "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" } });
+
+test("replaying a founder event after wakeup failure keeps one input comment", async () => {
+  let attempts = 0;
+  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+    requestWakeup: async () => { if (++attempts === 1) throw new Error("wakeup unavailable"); },
+  });
+  await assert.rejects(processEvent(ctx, approvalEvent), /wakeup unavailable/);
+  assert.equal(ctx.inspect.comments.length, 1);
+  await processEvent(ctx, approvalEvent);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.wakes.length, 1);
+  assert.equal(attempts, 2);
+  assert.match(ctx.inspect.comments[0].body, /^\[FOUNDER_COMMS_EVENT\]\ndelivery=[0-9a-f]{64}\n/);
+  await processEvent(ctx, approvalEvent);
+  assert.equal(ctx.inspect.comments.length, 1);
+});
+
+test("replaying a crash between comment creation and marker storage finds the existing comment", async () => {
+  let lostOnce = true;
+  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+    stateSet: async (key) => {
+      if (lostOnce && key.stateKey.startsWith("comment-created:")) {
+        lostOnce = false;
+        throw new Error("simulated crash after persisted issue comment");
+      }
+    },
+  });
+  await assert.rejects(processEvent(ctx, approvalEvent), /simulated crash/);
+  assert.equal(ctx.inspect.comments.length, 1);
+  await processEvent(ctx, approvalEvent);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.wakes.length, 1);
+});
+
+test("pending flush retries without a duplicate system comment or losing queued items", async () => {
+  const issues = {};
+  let failWakeOnce = true;
+  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+    requestWakeup: async () => {
+      if (failWakeOnce) { failWakeOnce = false; throw new Error("flush wakeup unavailable"); }
+    },
+  });
+  await processEvent(ctx, approvalEvent); // conversation absent -> pending
+  assert.equal(ctx.inspect.comments.length, 0);
+  issues["companyA:chat-a"] = chat("chat-a", "source:telegram:room-a");
+  const config = await companyConfig(ctx, "companyA");
+  await assert.rejects(flushPendingImmediate(ctx, "companyA", config), /flush wakeup unavailable/);
+  assert.equal(ctx.inspect.comments.length, 1);
+  await flushPendingImmediate(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.wakes.length, 1);
+  assert.deepEqual(await ctx.state.get({ scopeKind: "company", scopeId: "companyA", stateKey: "pending-immediate" }), []);
+});
+
+test("digest retry after wakeup failure reuses a single comment", async () => {
+  let failWakeOnce = true;
+  const issues = {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:issue-a": { id: "issue-a", companyId: "companyA", identifier: "OPS-10", comments: [
+      { id: "source-comment", body: "FOUNDER_UPDATE: Invoice is due." },
+    ] },
+  };
+  const ctx = makeContext({ companyA: {
+    liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a",
+    digestTimezone: "America/Sao_Paulo", digestTimes: ["09:00"], digestWeekdays: [1],
+  } }, issues, {}, {
+    requestWakeup: async () => {
+      if (failWakeOnce) { failWakeOnce = false; throw new Error("digest wakeup unavailable"); }
+    },
+  });
+  await processEvent(ctx, { eventId: "source-event", companyId: "companyA", entityId: "issue-a", eventType: "issue.comment.created", payload: { commentId: "source-comment" } });
+  const slot = { scheduledAt: "2026-10-05T12:00:00.000Z" };
+  await runDigestJob(ctx, slot);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.wakes.length, 0);
+  await runDigestJob(ctx, slot);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.wakes.length, 1);
+  assert.deepEqual(await ctx.state.get({ scopeKind: "company", scopeId: "companyA", stateKey: "digest-queue" }), []);
+});
+
+test("a pending flush preserves items arriving while its wakeup is in flight", async () => {
+  let injectOnce = true;
+  const issues = { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") };
+  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+    requestWakeup: async () => {
+      if (!injectOnce) return;
+      injectOnce = false;
+      const key = { scopeKind: "company", scopeId: "companyA", stateKey: "pending-immediate" };
+      const queue = await ctx.state.get(key);
+      await ctx.state.set(key, [...queue, { id: "new-event", message: "Just arrived", priority: "P1" }]);
+    },
+  });
+  const key = { scopeKind: "company", scopeId: "companyA", stateKey: "pending-immediate" };
+  await ctx.state.set(key, [{ id: "first-event", message: "Initial", priority: "P1" }]);
+  await flushPendingImmediate(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  const pending = await ctx.state.get(key);
+  assert.deepEqual(pending.map((item) => item.id), ["new-event"]);
+  await flushPendingImmediate(ctx, "companyA", await companyConfig(ctx, "companyA"));
+  assert.equal(ctx.inspect.comments.length, 2);
 });

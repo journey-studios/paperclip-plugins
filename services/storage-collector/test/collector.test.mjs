@@ -47,6 +47,43 @@ test("bounded read-only command list, missing dirs, and partial coverage", async
   assert.deepEqual(calls.map((call) => call.cmd), ["df", "docker", "du", "du"]);
   assert.deepEqual(calls[2].args, ["-x", "-s", "-B1", "--", "/var/lib/containerd"]);
 });
+test("directory scanning respects a total deadline and marks unvisited sources unavailable", async () => {
+  let elapsed = 0;
+  const duTimeouts = [];
+  let inspectCalls = 0;
+  const directories = Array.from({ length: 4 }, (_, i) => ({
+    id: "source-" + i, label: "Source " + i, path: "/allowlisted/" + i,
+  }));
+  const snapshot = await collect({
+    now: () => date, clock: () => elapsed, directories,
+    inspect: async () => {
+      inspectCalls++;
+      if (inspectCalls === 1) elapsed += 155_000;
+      return true;
+    },
+    run: async (command, args, timeout) => {
+      if (command === "df") return df;
+      if (command === "docker") return docker;
+      if (command === "du") {
+        duTimeouts.push(timeout);
+        elapsed += timeout;
+        return "100\t" + args.at(-1) + "\n";
+      }
+      throw new Error("Unexpected command");
+    },
+  });
+  assert.deepEqual(duTimeouts, [25_000]);
+  assert.equal(inspectCalls, 1);
+  assert.deepEqual(snapshot.directories.map((row) => row.status),
+    ["ok", "unavailable", "unavailable", "unavailable"]);
+  assert.deepEqual(snapshot.coverage.issues, [
+    { source: "source-1", code: "deadline_exceeded" },
+    { source: "source-2", code: "deadline_exceeded" },
+    { source: "source-3", code: "deadline_exceeded" },
+  ]);
+  assert.equal(snapshot.coverage.partial, true);
+});
+
 test("Docker failure is isolated; root disk remains available", async () => {
   const value = await collect({ now: () => date, directories: [],
     run: async (cmd) => cmd === "df" ? df : Promise.reject(new Error("socket unavailable")) });

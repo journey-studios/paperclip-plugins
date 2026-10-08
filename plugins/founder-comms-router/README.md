@@ -6,11 +6,11 @@ An event-driven Paperclip plugin that preserves founder notifications and digest
 
 ## Configuration
 
-Settings are read per company. Configure the liaison agent ID and founder user ID for each company. The plugin then discovers an active chat issue matching those identities, or can be pinned to a specific `conversationIssueId`. A pinned issue is checked through the company scoped API and must still match the configured liaison, founder, channel, and optional project filter.
+Settings are read per company. Configure the liaison agent ID and founder user ID for each company. The plugin then discovers an active chat issue matching those identities, or can be pinned to a specific `conversationIssueId`. A pinned issue is checked through the company-scoped API and must still match the configured liaison, founder, channel, and optional project filter.
 
 `chatChannels` accepts channel names from chat issue origin IDs and defaults to `telegram` to preserve existing installations. `projectId` restricts the destination conversation to one project. Immediate alerts and scheduled digests can be disabled independently.
 
-Digest settings use a validated IANA timezone, local 24 hour times, and ISO weekdays (Monday is 1). The host checks the configured slots each minute, then sends only when the company has queued updates and a matching conversation. Public defaults use UTC, weekdays, and 09:00 and 17:00. For an existing 0.1.0 installation that should retain its former schedule, set the company timezone to `America/Sao_Paulo` and keep the 09:00 and 17:00 times before upgrading.
+Digest settings use a validated IANA timezone, local 24-hour times, and ISO weekdays (Monday is 1). The host checks the configured slots each minute, then sends only when the company has queued updates and a matching conversation. Public defaults use UTC, weekdays, and 09:00 and 17:00. For an existing 0.1.0 installation that should retain its former schedule, set the company timezone to `America/Sao_Paulo` and keep the 09:00 and 17:00 times before upgrading.
 
 ## Founder Gateway — direct Telegram commands
 
@@ -40,10 +40,19 @@ Paperclip's native `explicit:<commentId>:<endpointId>` key prevents duplicate lo
 
 - High priority blocked issues, founder reviews, approvals, explicit `FOUNDER_ATTENTION:` comments, and open budget incidents are routed immediately.
 - `FOUNDER_UPDATE:` comments are queued for the next configured digest.
-- Plugin generated comments have a marker that prevents them from being treated as founder authored events.
-- Events, queues, processed IDs, and conversation bindings are stored under company scoped plugin state. The instance scoped company list is used only to enumerate configured companies for scheduled jobs.
+- Plugin-generated comments have a marker that prevents them from being treated as founder-authored events.
+- Events, queues, processed IDs, and conversation bindings are stored under company-scoped plugin state. The instance-scoped company list is used only to enumerate configured companies for scheduled jobs.
 - The plugin uses idempotency keys for liaison wakeups and keeps bounded event and queue history.
 
 ## Development
 
 Run `pnpm --filter @journey-studios/founder-comms-router build`, `test`, or `typecheck` from the repository root. Node.js 24.11 or newer is required.
+
+### Native Telegram formatting
+
+Founder Gateway renders `/agents`, `/tasks` and `/help` as CommonMark with
+bold section headings, structured multiline records and visible status labels.
+Paperclip's existing native chat publisher converts the Markdown to Telegram
+MarkdownV2; there is no direct Telegram API client, added webhook or LLM
+invocation. Names, IDs, titles and unknown status values are Markdown-escaped
+before rendering. Long responses only include complete records.

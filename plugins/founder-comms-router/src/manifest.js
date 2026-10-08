@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.2",
   displayName: "Founder Gateway",
   description: "Bridges founder command routing and native chat publication with event-driven liaison notifications.",
   author: "Journey Studios",

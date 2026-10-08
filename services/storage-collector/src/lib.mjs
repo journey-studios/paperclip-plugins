@@ -99,7 +99,7 @@ export function parseAlertPolicy(env) {
   }
   return { warnFreeBytes, criticalFreeBytes };
 }
-export async function collect({ run, inspect = async () => true, now = () => new Date(), directories = DIRECTORIES, alertPolicy = {} }) {
+export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {} }) {
   const generatedAt = now().toISOString();
   const filesystem = parseDf(await run("df", ["-B1", "--output=size,used,avail,pcent", "--", "/"], 15000));
   const coverage = { partial: false, issues: [] };
@@ -108,13 +108,29 @@ export async function collect({ run, inspect = async () => true, now = () => new
   try { docker = parseDocker(await run("docker", ["system", "df", "--format", "{{json .}}"], 20000)); }
   catch { issue("docker", "command_failed"); }
   const readings = [];
+  // df + Docker allow up to 35s. Leave >25s within systemd's 240s for
+  // a bounded directory scan, serializing the snapshot, and atomic save.
+  const deadline = clock() + 180_000;
   for (const dir of directories) {
+    if (clock() >= deadline) {
+      readings.push({ id: dir.id, label: dir.label, status: "unavailable", bytes: null });
+      issue(dir.id, "deadline_exceeded");
+      continue;
+    }
     let present = false;
     try { present = await inspect(dir.path); }
     catch { issue(dir.id, "inspection_failed"); }
     if (!present) { readings.push({ id: dir.id, label: dir.label, status: "missing", bytes: null }); continue; }
+    // Also limit the last du invocation to the remaining budget: simply
+    // checking the deadline before a 30s call can overrun TimeoutStartSec.
+    const remaining = deadline - clock();
+    if (remaining <= 0) {
+      readings.push({ id: dir.id, label: dir.label, status: "unavailable", bytes: null });
+      issue(dir.id, "deadline_exceeded");
+      continue;
+    }
     try {
-      const bytes = parseDu(await run("du", ["-x", "-s", "-B1", "--", dir.path], 30000));
+      const bytes = parseDu(await run("du", ["-x", "-s", "-B1", "--", dir.path], Math.min(30_000, remaining)));
       readings.push({ id: dir.id, label: dir.label, status: "ok", bytes });
     } catch {
       readings.push({ id: dir.id, label: dir.label, status: "unavailable", bytes: null });

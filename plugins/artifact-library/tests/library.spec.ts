@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { CompanyArtifact, PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginApiRequestInput, PluginContext } from "@paperclipai/plugin-sdk";
+type CompanyArtifact = Awaited<ReturnType<PluginContext["artifacts"]["list"]>>["artifacts"][number];
 import manifest, { DATABASE_NAMESPACE } from "../src/manifest.js";
 import { updateArtifact } from "../src/library.js";
 import type { LibraryNavigation, LibraryResponse } from "../src/contracts.js";
@@ -70,6 +71,27 @@ async function read<T = LibraryResponse>(
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return (await data.get(key)!({ companyId: COMPANY, ...params })) as T;
+}
+
+/** Exercise the actual plugin-owned MCP route handler without an agent run. */
+async function callMcp(name: string, args: Record<string, unknown>) {
+  const input: PluginApiRequestInput = {
+    routeKey: "mcp",
+    method: "POST",
+    path: "/mcp",
+    params: {},
+    query: { companyId: COMPANY },
+    body: { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name, arguments: args } },
+    actor: { actorType: "user", actorId: "test-user" },
+    companyId: COMPANY,
+    headers: {},
+  };
+  const response = await plugin.definition.onApiRequest!(input);
+  return response.body as { result: {
+    isError: boolean;
+    content: { type: string; text: string }[];
+    structuredContent?: { companyId: string; artifacts: { id: string }[]; nextCursor: string | null };
+  } };
 }
 
 beforeAll(async () => {
@@ -670,4 +692,30 @@ describe("Artifact Library real PostgreSQL migration and worker", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("provides safe cursor recovery through the MCP API while keeping successful results", async () => {
+    source.set(COMPANY, [artifact(0), artifact(1)]);
+    const first = await callMcp("artifactLibrarySearch", { limit: 1 });
+    expect(first.result.isError).toBe(false);
+    expect(first.result.structuredContent?.companyId).toBe(COMPANY);
+    expect(first.result.structuredContent?.artifacts.map((item) => item.id)).toEqual(["attachment:0"]);
+    expect(first.result.structuredContent?.nextCursor).toBeTruthy();
+
+    const invalid = await callMcp("artifactLibrarySearch", { limit: 1, cursor: "not-a-valid-cursor" });
+    expect(invalid.result.isError).toBe(true);
+    expect(invalid.result.content[0]?.text).toBe("Invalid or expired cursor. Retry the search without a cursor.");
+
+    // An underlying provider error is intentionally redacted, not mislabeled as a cursor issue.
+    ctx.artifacts.list = async () => { throw new Error("secret-provider-error"); };
+    const failed = await callMcp("artifactLibrarySearch", { limit: 1, cursor: first.result.structuredContent!.nextCursor! });
+    expect(failed.result.isError).toBe(true);
+    expect(failed.result.content[0]?.text).toBe("Tool execution failed or result unavailable");
+
+    // A stuck provider may repeat a nextCursor even if the caller's cursor was
+    // valid. Do not mislabel this server-side fault as a client cursor error.
+    ctx.artifacts.list = async () => ({ artifacts: [], nextCursor: "stuck" });
+    const stalled = await callMcp("artifactLibrarySearch", { limit: 1, cursor: first.result.structuredContent!.nextCursor! });
+    expect(stalled.result.isError).toBe(true);
+    expect(stalled.result.content[0]?.text).toBe("Tool execution failed or result unavailable");
+  });
+
 });
