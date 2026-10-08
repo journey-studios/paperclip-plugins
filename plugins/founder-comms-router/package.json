@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/founder-comms-router",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "engines": {
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test",
-    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/manifest.js"
+    "typecheck": "node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/manifest.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

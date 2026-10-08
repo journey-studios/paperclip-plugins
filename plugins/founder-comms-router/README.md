@@ -56,3 +56,10 @@ Paperclip's existing native chat publisher converts the Markdown to Telegram
 MarkdownV2; there is no direct Telegram API client, added webhook or LLM
 invocation. Names, IDs, titles and unknown status values are Markdown-escaped
 before rendering. Long responses only include complete records.
+
+
+## Plugin-contributed Telegram Commands v1
+
+The Gateway accepts authorized read-only commands contributed by other installed plugins through the host-namespaced plugin event bus. Providers are allowlisted per company with `commandProviderIds` (default: `journey-studios.agent-observatory`), declare their names, and answer through correlated, bounded events. Command registration does not grant permission to bypass the linked-Founder check, mutate Paperclip state, or impersonate a different provider.
+
+**Ingress status:** the existing Telegram channel currently recognizes only `/agents`, `/tasks` and `/help`. The internal `telegram-command` plugin action can dispatch `custos`, but sending `/custos` to the current bot **is not yet handled by the native parser**. This PR intentionally does not change the core. Full rollout requires a separately verified plugin-only inbound adapter; see [Telegram Command API v1](../../docs/telegram-command-api-v1.md).

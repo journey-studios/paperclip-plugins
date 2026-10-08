@@ -120,10 +120,10 @@ export function registerFounderCommand(command, handler) {
   commands.set(command, handler);
 }
 
-export async function executeFounderCommand(ctx, params, invocation) {
+export async function executeFounderCommand(ctx, params, invocation, registry = null) {
   const name = typeof params?.command === "string" ? params.command.toLowerCase().trim() : "";
   const command = commands.get(name);
-  if (!command || params?.provider !== "telegram") return { handled: false };
+  if (params?.provider !== "telegram" || (!command && !registry)) return { handled: false };
   // This context is minted by the Paperclip host after the provider principal
   // has been linked and allowed; never trust the request's user ID.
   const actor = invocation?.actor;
@@ -139,6 +139,11 @@ export async function executeFounderCommand(ctx, params, invocation) {
     handled: true,
     text: "Este comando é restrito ao Founder vinculado no Paperclip.",
   };
-  const text = await command(ctx, companyId);
-  return { handled: true, text: String(text).slice(0, MAX_TEXT) };
+  if (command) {
+    const text = await command(ctx, companyId);
+    return { handled: true, text: String(text).slice(0, MAX_TEXT) };
+  }
+  // External providers never run before the linked Founder is authorized.
+  const args = typeof params?.args === "string" ? params.args.trim() : "";
+  return registry.execute(companyId, config.commandProviderIds, name, args);
 }
