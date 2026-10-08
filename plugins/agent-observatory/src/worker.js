@@ -1,4 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   getAgent,
   getAnomalies,
@@ -13,6 +14,74 @@ import {
 const objectParams = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
 let workerContext;
 
+const mcpHandler = createPluginMcpEndpoint({
+  name: "journey-studios.agent-observatory",
+  version: "0.1.4",
+  tools: [
+    {
+      name: "paperclipAgentHealthOverview",
+      title: "Agent Health Overview",
+      description: "Read bounded company agent health, runs, failures, retries and reported costs.",
+      readOnly: true,
+      inputSchema: {
+        type: "object", properties: { windowHours: { type: "integer", minimum: 1, maximum: 168 } },
+        required: ["windowHours"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => getOverview(workerContext, companyId, normalizeWindowHours(args.windowHours)),
+    },
+    {
+      name: "paperclipDiagnoseAgent",
+      title: "Diagnose Agent",
+      description: "Read safe per-agent health and bounded run summary for the authorized company.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          agentId: { type: "string", format: "uuid" },
+          windowHours: { type: "integer", minimum: 1, maximum: 168 },
+        },
+        required: ["agentId", "windowHours"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => getAgent(workerContext, companyId, args.agentId, normalizeWindowHours(args.windowHours)),
+    },
+    {
+      name: "paperclipListRunFailures",
+      title: "List Run Failures",
+      description: "Read recent failed runs, error codes and coverage from the authorized company.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { windowHours: { type: "integer", minimum: 1, maximum: 168 }, limit: { type: "integer", minimum: 1, maximum: 100 } },
+        required: ["windowHours", "limit"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => getFailures(workerContext, companyId, normalizeWindowHours(args.windowHours), parsePage({ limit: args.limit })),
+    },
+    {
+      name: "paperclipFindAgentAnomalies",
+      title: "Find Agent Anomalies",
+      description: "Read suspected anomalies with evidence and bounded scan coverage (heuristic, not proof).",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { windowHours: { type: "integer", minimum: 1, maximum: 168 }, limit: { type: "integer", minimum: 1, maximum: 100 } },
+        required: ["windowHours", "limit"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => getAnomalies(workerContext, companyId, normalizeWindowHours(args.windowHours), parsePage({ limit: args.limit })),
+    },
+    {
+      name: "paperclipTraceRun",
+      title: "Trace Agent Run",
+      description: "Read safe run timeline and retry links; raw events are NOT available through the plugin SDK.",
+      readOnly: true,
+      inputSchema: {
+        type: "object", properties: { runId: { type: "string", format: "uuid" } },
+        required: ["runId"], additionalProperties: false,
+      },
+      execute: (args, { companyId }) => getTrace(workerContext, companyId, args.runId, 24),
+    },
+  ],
+});
+
 async function readForUi(ctx, surface, operation) {
   try {
     return await operation();
@@ -26,6 +95,7 @@ const plugin = definePlugin({
   async onApiRequest(input) {
     try {
       const companyId = input.companyId;
+      if (input.routeKey === "mcp") return mcpHandler(input);
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
       switch (input.routeKey) {
         case "overview":

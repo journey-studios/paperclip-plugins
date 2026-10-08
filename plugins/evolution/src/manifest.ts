@@ -11,6 +11,7 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Journey Studios",
   categories: ["automation", "ui"],
   capabilities: [
+    "api.routes.register",
     "events.subscribe",
     "jobs.schedule",
     "agent.tools.register",
@@ -79,8 +80,18 @@ const manifest: PaperclipPluginManifestV1 = {
       "agent_config_revisions",
       "company_skills",
       "company_skill_versions"
-    ]
+    ] as unknown as NonNullable<PaperclipPluginManifestV1["database"]>["coreReadTables"]
   },
+  apiRoutes: [
+    ...(["POST", "GET"] as const).map((method) => ({
+      routeKey: "mcp",
+      method,
+      path: "/mcp",
+      auth: "board" as const,
+      capability: "api.routes.register" as const,
+      companyResolution: { from: "query" as const, key: "companyId" },
+    })),
+  ],
   ui: {
     slots: [
       {
