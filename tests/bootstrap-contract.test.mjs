@@ -1,15 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assertEvolutionCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertRepository,
+  assertTelegramChatPublicationPatch,
   assertWorkspaceAlias,
   checkoutNeedsPin,
 } from "../scripts/bootstrap-contract.mjs";
 
 const remote = "https://github.com/paperclipai/paperclip.git";
 const pinned = "8f8a0ab7effbd6a0584107d8038736c134ee5047";
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("accepts only the public upstream origin", () => {
   assert.doesNotThrow(() => assertRepository(remote, remote));
@@ -49,6 +54,18 @@ test("validates the Evolution compatibility patch contract", () => {
   ].join("\n");
   assert.doesNotThrow(() => assertEvolutionCompatibilityPatch(valid));
   assert.throws(() => assertEvolutionCompatibilityPatch('"activity_log" only'), /Evolution compatibility/);
+});
+
+test("Telegram chat publication compatibility patch is limited to SDK client files", () => {
+  const valid = readFileSync(resolve(repositoryRoot, "compat/paperclip-telegram-chat-publication.patch"), "utf8");
+  assert.doesNotThrow(() => assertTelegramChatPublicationPatch(valid));
+  assert.throws(() => assertTelegramChatPublicationPatch(valid.replace("+++ b/packages/plugins/sdk/src/types.ts", "+++ b/server/src/types.ts")), /only the SDK/);
+  assert.throws(() => assertTelegramChatPublicationPatch(valid.replace("--- a/packages/plugins/sdk/src/types.ts", "--- a/packages/db/src/types.ts")), /only the SDK/);
+  assert.throws(() => assertTelegramChatPublicationPatch(valid.replaceAll("chat.publications.publish_existing_comment", "missing")), /missing its capability/);
+  assert.throws(() => assertTelegramChatPublicationPatch(valid.replace(
+    '+  "chat.publications.publish_existing_comment",',
+    '+  "chat.publications.publish_existing_comment",\n+  "issues.delete",',
+  )), /single capability/);
 });
 
 test("rejects Evolution patches that omit a required read table or Audit forwarding field", () => {

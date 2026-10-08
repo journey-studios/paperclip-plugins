@@ -48,7 +48,7 @@ function harness() {
 test("Telegram Gateway rename preserves runtime ID and event namespace", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.name, "@journey-studios/telegram-gateway");
-  assert.equal(pkg.version, "0.3.3");
+  assert.equal(pkg.version, "0.3.4");
   assert.equal(manifest.version, pkg.version);
   assert.equal(manifest.displayName, "Telegram Gateway");
   assert.equal(manifest.id, "journey-studios.founder-comms-router");

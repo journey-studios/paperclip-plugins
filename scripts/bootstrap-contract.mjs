@@ -43,3 +43,45 @@ export function assertEvolutionCompatibilityPatch(patchText) {
     throw new Error("Evolution compatibility patch is missing required read tables, Audit forwarding, or bundled-plugin registration");
   }
 }
+
+export function assertTelegramChatPublicationPatch(patchText) {
+  const allowed = new Set([
+    "packages/plugins/sdk/src/index.ts",
+    "packages/plugins/sdk/src/host-client-factory.ts",
+    "packages/plugins/sdk/src/types.ts",
+    "packages/plugins/sdk/src/testing.ts",
+    "packages/plugins/sdk/src/worker-rpc-host.ts",
+    "packages/shared/src/constants.ts",
+    "packages/plugins/sdk/src/protocol.ts",
+  ]);
+  const diffPaths = [...patchText.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
+  const changedFiles = [...patchText.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]);
+  const deletedFiles = [...patchText.matchAll(/^--- a\/(.+)$/gm)].map((match) => match[1]).filter((file) => file !== "/dev/null");
+  if (
+    diffPaths.length !== allowed.size ||
+    diffPaths.some(([, from, to]) => from !== to || !allowed.has(from)) ||
+    changedFiles.length !== allowed.size || new Set(changedFiles).size !== allowed.size ||
+    changedFiles.some((file) => !allowed.has(file)) ||
+    deletedFiles.length !== allowed.size || deletedFiles.some((file) => !allowed.has(file))
+  ) {
+    throw new Error("Telegram chat publication patch may modify only the SDK protocol, types, and worker context files");
+  }
+  const required = [
+    '"chat.publishComment"',
+    "chat.publications.publish_existing_comment",
+    "PluginChatClient",
+    "ctx.chat",
+  ];
+  if (required.some((token) => !patchText.includes(token))) {
+    throw new Error("Telegram chat publication patch is missing its capability, protocol, or SDK context contract");
+  }
+  if (/server\/src|packages\/db\//.test(patchText)) {
+    throw new Error("Telegram chat publication patch must not modify host implementation or database files");
+  }
+  const sharedConstantsPatch = patchText.match(/diff --git a\/packages\/shared\/src\/constants\.ts[\s\S]*?(?=diff --git|$)/)?.[0] ?? "";
+  const sharedAdded = [...sharedConstantsPatch.matchAll(/^\+(?!\+)(.*)$/gm)].map((match) => match[1]);
+  const sharedRemoved = [...sharedConstantsPatch.matchAll(/^-(?!-)(.*)$/gm)].map((match) => match[1]);
+  if (sharedAdded.length !== 1 || sharedAdded[0].trim() !== '"chat.publications.publish_existing_comment",' || sharedRemoved.length !== 0) {
+    throw new Error("Telegram chat publication patch may add only its single capability to shared constants");
+  }
+}
