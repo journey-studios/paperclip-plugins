@@ -127,6 +127,68 @@ test("direct Telegram commands enforce host-proven user identity and company", a
   )).handled, false);
 });
 
+test("formats /tasks as separate Telegram blocks with readable Portuguese states", async () => {
+  const f = fixture();
+  f.ctx.issues.list = async () => [
+    {
+      identifier: "JOU-38",
+      title: "Execution Reliability v1 — serialização, dedup de wakes e retomada segura",
+      status: "blocked",
+    },
+    {
+      identifier: "JOU-53",
+      title: "Definir a experiência de primeiro valor para um novo usuário sem campanha",
+      status: "in_review",
+    },
+    { identifier: "JOU-99", title: "Concluída", status: "done" },
+  ];
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "tasks", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+  assert.deepEqual(result, {
+    handled: true,
+    text: [
+      "Tarefas abertas",
+      "",
+      "JOU-38 · Bloqueada",
+      "Execution Reliability v1 — serialização, dedup de wakes e retomada segura",
+      "",
+      "JOU-53 · Em revisão",
+      "Definir a experiência de primeiro valor para um novo usuário sem campanha",
+    ].join("\n"),
+  });
+});
+
+test("formats /agents and /help as multiline Telegram replies", async () => {
+  const f = fixture();
+  const invoke = async (command) => (await executeFounderCommand(f.ctx,
+    { provider: "telegram", command, assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } })).text;
+
+  assert.equal(await invoke("agents"), "Agentes do Paperclip\n\n• Founder Liaison\n  Estado: Ocioso");
+  const help = await invoke("help");
+  assert.match(help, /^Comandos do Founder Gateway\n\n\/agents/);
+  assert.match(help, /\/tasks — Listar tarefas abertas\n\/help — Exibir esta ajuda/);
+  assert.match(help, /\n\nComandos nativos do Paperclip\n\n\/status/);
+});
+
+test("limits Telegram task replies without breaking records or allowing injected line breaks", async () => {
+  const f = fixture();
+  f.ctx.issues.list = async () => Array.from({ length: 50 }, (_, index) => ({
+    identifier: "JOU-" + index,
+    title: "Título extenso\n" + "x".repeat(1000),
+    status: "blocked",
+  }));
+  const { text } = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "tasks", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+  assert.ok(text.length <= 3600);
+  assert.equal(text.split(" · Bloqueada\n").length - 1, 10);
+  assert.match(text, /JOU-0 · Bloqueada\nTítulo extenso x+/);
+  assert.doesNotMatch(text, /\nJOU-10 · Bloqueada/);
+  assert.ok(text.endsWith("…"));
+});
+
 const pendingKey = (companyId) => ({ scopeKind: "company", scopeId: companyId, stateKey: "pending-publication-runs" });
 
 test("one failed publication cannot block later pending runs", async () => {
