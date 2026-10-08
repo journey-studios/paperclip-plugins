@@ -31,7 +31,7 @@ function input(overrides = {}) {
   };
 }
 
-function makeContext() {
+function makeContext(companyConfig = rawConfig) {
   const calls = { companyReads: [], configReads: [], tools: new Map(), data: new Map() };
   const ctx = {
     companies: { get: async (id) => {
@@ -40,7 +40,7 @@ function makeContext() {
     } },
     config: { get: async (id) => {
       calls.configReads.push(id);
-      return rawConfig;
+      return companyConfig;
     } },
     tools: { register: (name, declaration, handler) => calls.tools.set(name, { declaration, handler }) },
     data: { register: (name, handler) => calls.data.set(name, handler) },
@@ -158,4 +158,29 @@ test("native registered tool requires run identity and rejects scope override ar
   assert.deepEqual(calls.companyReads, [COMPANY, COMPANY]);
   assert.deepEqual(calls.configReads, [COMPANY, COMPANY]);
   assert.equal(manifest.tools.find((tool) => tool.name === "s3_storage_prepare_upload").parametersSchema.additionalProperties, false);
+});
+
+test("native routes require explicit company enablement and reject foreign object keys", async () => {
+  const disabled = makeContext({ ...rawConfig, enableNativeAttachments: false });
+  await plugin.definition.setup(disabled.ctx);
+  const status = await plugin.definition.onApiRequest(input({ routeKey: "status", method: "GET", body: undefined }));
+  assert.equal(status.status, 200);
+  assert.equal(status.body.nativeAttachmentsEnabled, false);
+  const off = await plugin.definition.onApiRequest(input({
+    routeKey: "native-prepare",
+    body: { objectKey: `${COMPANY}/attachments/id`, filename: "x.png", contentType: "image/png", size: 1, sha256: "a".repeat(64) },
+  }));
+  assert.equal(off.status, 403);
+  assert.equal(off.body.error, "native_attachments_disabled");
+
+  const enabled = makeContext({ ...rawConfig, enableNativeAttachments: true });
+  await plugin.definition.setup(enabled.ctx);
+  const foreign = await plugin.definition.onApiRequest(input({
+    routeKey: "native-prepare",
+    body: { objectKey: `${OTHER_COMPANY}/attachments/id`, filename: "x.png", contentType: "image/png", size: 1, sha256: "a".repeat(64) },
+  }));
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "company_scope_violation");
+  assert.deepEqual(enabled.calls.companyReads, [COMPANY]);
+  assert.ok(manifest.apiRoutes.some((route) => route.routeKey === "native-delete" && route.auth === "board"));
 });
