@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.2.2",
+  version: "0.2.3",
   displayName: "Founder Gateway",
   description: "Bridges founder command routing and native chat publication with event-driven liaison notifications.",
   author: "Journey Studios",
@@ -79,7 +79,7 @@ const manifest = {
       commandsEnabled: {
         type: "boolean",
         title: "Direct Telegram commands",
-        description: "Allow owner-authenticated read-only /agents, /tasks and /help without a model invocation.",
+        description: "Allow owner-authenticated read-only /agents, /tasks, /credits and /help without a model invocation.",
         default: true,
       },
       digestTimezone: {

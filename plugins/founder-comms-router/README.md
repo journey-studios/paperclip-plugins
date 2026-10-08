@@ -14,7 +14,9 @@ Digest settings use a validated IANA timezone, local 24-hour times, and ISO week
 
 ## Founder Gateway — direct Telegram commands
 
-The custom Paperclip runtime (Founder Gateway integration) handles `/agents`, `/tasks` and `/help` through the existing, provider-verified inbound delivery and task-control publication paths. The host passes its linked Paperclip principal to the `telegram-command` plugin action. The worker rechecks that the host-authenticated user is the configured `founderUserId`, that the endpoint has the expected Liaison assigned, and that the company is allowed. The plugin performs read-only company-scoped SDK calls; **no LLM or agent run is started**. Native `/status`, `/new`, `/close`, and `/task` are deliberately unchanged.
+The custom Paperclip runtime (Founder Gateway integration) handles `/agents`, `/tasks`, `/credits` and `/help` through the existing, provider-verified inbound delivery and task-control publication paths. The host passes its linked Paperclip principal to the `telegram-command` plugin action. The worker rechecks that the host-authenticated user is the configured `founderUserId`, that the endpoint has the expected Liaison assigned, and that the company is allowed. The plugin performs read-only company-scoped SDK calls; **no LLM or agent run is started**. Native `/status`, `/new`, `/close`, and `/task` are deliberately unchanged.
+
+`/credits` reads Paperclip's native monthly spend fields only: the company total comes from `Company.spentMonthlyCents`, while the breakdown sums each agent's `spentMonthlyCents` into the organizational tree defined by `reportsTo`. The CEO is its own leadership bucket, each direct CEO report owns its descendant subtree, and agents outside the CEO tree are grouped as `Fora da hierarquia`. This does not infer prices for unpriced/subscription usage.
 
 Known commands use a small in-plugin registry, with duplicate registration rejected. Installing another plugin does not automatically grant that plugin authority to register or execute Telegram commands.
 
@@ -50,7 +52,7 @@ Run `pnpm --filter @journey-studios/founder-comms-router build`, `test`, or `typ
 
 ### Native Telegram formatting
 
-Founder Gateway renders `/agents`, `/tasks` and `/help` as CommonMark with
+Founder Gateway renders `/agents`, `/tasks`, `/credits` and `/help` as CommonMark with
 bold section headings, structured multiline records and visible status labels.
 Paperclip's existing native chat publisher converts the Markdown to Telegram
 MarkdownV2; there is no direct Telegram API client, added webhook or LLM

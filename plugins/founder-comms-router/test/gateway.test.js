@@ -168,8 +168,43 @@ test("formats /agents and /help as multiline Telegram replies", async () => {
   assert.equal(await invoke("agents"), "**Agentes do Paperclip**\n\n• **Founder Liaison**\n  _Estado:_ Ocioso");
   const help = await invoke("help");
   assert.match(help, /^\*\*Comandos do Founder Gateway\*\*\n\n`\/agents`/);
-  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/help` — Exibir esta ajuda/);
+  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/credits` — Ver créditos gastos no mês por grupo\n`\/help` — Exibir esta ajuda/);
   assert.match(help, /\n\n\*\*Comandos nativos do Paperclip\*\*\n\n`\/status`/);
+});
+
+test("formats /credits from native monthly spend and rolls descendants into CEO groups", async () => {
+  const f = fixture();
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 1050 });
+  f.ctx.agents.list = async () => [
+    { id: "ceo", name: "CEO", title: "CEO / Coordenação Geral", role: "ceo", reportsTo: null, spentMonthlyCents: 200 },
+    { id: "cmo", name: "CMO", title: "CMO / Marketing & Growth", role: "cmo", reportsTo: "ceo", spentMonthlyCents: 300 },
+    { id: "research", name: "Research", role: "researcher", reportsTo: "cmo", spentMonthlyCents: 150 },
+    { id: "cto", name: "CTO", title: "CTO / Produto & Engenharia", role: "cto", reportsTo: "ceo", spentMonthlyCents: 250 },
+    { id: "dev", name: "Dev", role: "engineer", reportsTo: "cto", spentMonthlyCents: 50 },
+    { id: "canary", name: "Canary", role: "general", reportsTo: null, spentMonthlyCents: 50 },
+  ];
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.deepEqual(result, {
+    handled: true,
+    text: [
+      "**Créditos do mês**",
+      "",
+      "**Total reportado:** US$ 10,50",
+      "",
+      "**Por grupo**",
+      "• **CMO / Marketing & Growth** — US$ 4,50",
+      "• **CTO / Produto & Engenharia** — US$ 3,00",
+      "• **CEO / Coordenação Geral** — US$ 2,00",
+      "• **Fora da hierarquia** — US$ 0,50",
+      "• **Não atribuído** — US$ 0,50",
+      "",
+      "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
+    ].join("\n"),
+  });
 });
 
 test("limits Telegram task replies without breaking records or allowing injected line breaks", async () => {

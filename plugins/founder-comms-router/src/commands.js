@@ -85,12 +85,112 @@ function displayTasks(issues) {
   return displayList("Tarefas abertas", rows, "Nenhuma tarefa aberta encontrada.");
 }
 
+function cents(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : 0;
+}
+
+function formatUsd(value) {
+  return "US$ " + new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents(value) / 100);
+}
+
+function creditGroupLabel(agent) {
+  return agent?.title ?? agent?.name ?? agent?.id ?? "Grupo sem nome";
+}
+
+function monthlyCreditGroups(agents) {
+  const byId = new Map(agents.filter((agent) => agent?.id).map((agent) => [agent.id, agent]));
+  const ceoIds = new Set(agents
+    .filter((agent) => String(agent?.role ?? "").toLowerCase() === "ceo")
+    .map((agent) => agent.id));
+  const groups = new Map();
+
+  const resolveGroup = (agent) => {
+    if (ceoIds.has(agent.id)) {
+      return { key: "ceo:" + agent.id, label: creditGroupLabel(agent) };
+    }
+
+    let current = agent;
+    const seen = new Set([agent.id]);
+    while (current?.reportsTo) {
+      const parent = byId.get(current.reportsTo);
+      if (!parent || seen.has(parent.id)) break;
+      if (ceoIds.has(parent.id)) {
+        return { key: "leader:" + current.id, label: creditGroupLabel(current) };
+      }
+      seen.add(parent.id);
+      current = parent;
+    }
+
+    return { key: "outside-hierarchy", label: "Fora da hierarquia" };
+  };
+
+  for (const agent of agents) {
+    if (!agent?.id) continue;
+    const group = resolveGroup(agent);
+    const existing = groups.get(group.key) ?? { ...group, cents: 0 };
+    existing.cents += cents(agent.spentMonthlyCents);
+    groups.set(group.key, existing);
+  }
+
+  return [...groups.values()].sort((left, right) =>
+    right.cents - left.cents || left.label.localeCompare(right.label, "pt-BR"));
+}
+
+async function listAllAgents(ctx, companyId) {
+  const agents = [];
+  const pageSize = 100;
+  for (let offset = 0; offset < 1000; offset += pageSize) {
+    const page = await ctx.agents.list({ companyId, limit: pageSize, offset });
+    agents.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return agents;
+}
+
+async function displayCredits(ctx, companyId) {
+  const [company, agents] = await Promise.all([
+    ctx.companies.get({ companyId }),
+    listAllAgents(ctx, companyId),
+  ]);
+  const groups = monthlyCreditGroups(agents);
+  const agentTotal = groups.reduce((sum, group) => sum + group.cents, 0);
+  const companyTotal = company ? cents(company.spentMonthlyCents) : agentTotal;
+  const rows = groups
+    .filter((group) => group.cents > 0)
+    .map((group) => "• **" + markdownContent(group.label, 120) + "** — " + formatUsd(group.cents));
+
+  if (companyTotal > agentTotal) {
+    rows.push("• **Não atribuído** — " + formatUsd(companyTotal - agentTotal));
+  }
+
+  const lines = [
+    "**Créditos do mês**",
+    "",
+    "**Total reportado:** " + formatUsd(companyTotal),
+    "",
+    "**Por grupo**",
+    ...(rows.length ? rows : ["_Nenhum custo reportado neste mês._"]),
+    "",
+    "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
+  ];
+
+  if (agentTotal > companyTotal) {
+    lines.push("_A soma por grupo ainda está convergindo com o total da empresa._");
+  }
+  return lines.join("\n");
+}
+
 const commands = new Map([
   ["help", async () => [
     "**Comandos do Founder Gateway**",
     "",
     "`/agents` — Listar agentes",
     "`/tasks` — Listar tarefas abertas",
+    "`/credits` — Ver créditos gastos no mês por grupo",
     "`/help` — Exibir esta ajuda",
     "",
     "**Comandos nativos do Paperclip**",
@@ -108,6 +208,7 @@ const commands = new Map([
   ["tasks", async (ctx, companyId) => displayTasks(
     await ctx.issues.list({ companyId, limit: 100, includePluginOperations: false }),
   )],
+  ["credits", async (ctx, companyId) => displayCredits(ctx, companyId)],
 ]);
 
 // Internal extensibility point: only trusted modules inside this installed
