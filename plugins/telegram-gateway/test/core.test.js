@@ -1,1 +1,1 @@
-LOAD_FROM_TMP
+@file:/home/daytona/paperclip-plugins/plugins/telegram-gateway/test/core.test.js
