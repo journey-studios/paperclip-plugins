@@ -13,7 +13,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
 const rpcResult = (id, result) => ({ jsonrpc: "2.0", id, result });
+const SAFE_TOOL_ERRORS = Object.freeze({
+  invalid_cursor: "Invalid or expired cursor. Retry the search without a cursor.",
+});
 
+/** A fixed, non-sensitive domain error that may safely be returned to an MCP client. */
+export class PluginMcpToolError extends Error {
+  constructor(code) {
+    if (!Object.hasOwn(SAFE_TOOL_ERRORS, code)) throw new Error("Unknown safe MCP tool error");
+    super(SAFE_TOOL_ERRORS[code]);
+    this.name = "PluginMcpToolError";
+  }
+}
+
+/** Validate only flat, bounded scalar arguments; reject unsupported schema types. */
 export function validateToolArguments(schema, value) {
   if (!object(value)) return false;
   const props = schema.properties ?? {};
@@ -22,6 +35,7 @@ export function validateToolArguments(schema, value) {
   for (const [key, item] of Object.entries(value)) {
     const property = props[key];
     if (!property) continue;
+    if (!["integer", "number", "boolean", "string"].includes(property.type)) return false;
     if (property.type === "integer" && !Number.isSafeInteger(item)) return false;
     if (property.type === "number" && (typeof item !== "number" || !Number.isFinite(item))) return false;
     if (property.type === "boolean" && typeof item !== "boolean") return false;
@@ -113,9 +127,12 @@ export function createPluginMcpEndpoint({ name, version, tools }) {
         structuredContent: object(data) ? data : { value: data },
         isError: false,
       }) };
-    } catch {
+    } catch (error) {
+      const safeMessage = error instanceof PluginMcpToolError
+        ? error.message
+        : "Tool execution failed or result unavailable";
       return { status: 200, headers, body: rpcResult(id, {
-        content: [{ type: "text", text: "Tool execution failed or result unavailable" }],
+        content: [{ type: "text", text: safeMessage }],
         isError: true,
       }) };
     }
