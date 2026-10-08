@@ -148,6 +148,20 @@ afterEach(async () => {
 });
 
 describe("Evolution detail actions", () => {
+  it("refreshes evidence and assessment from the assessment panel", async () => {
+    const refreshAssessment = vi.fn(async () => ({ outcome: "inconclusive" }));
+    mocks.actions["refresh-assessment"] = refreshAssessment;
+    const container = await renderPage();
+
+    await act(async () => {
+      clickButton(container, "Refresh evidence & assessment");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(refreshAssessment).toHaveBeenCalledWith({ companyId: "company-1", changeSetId: "source" });
+    expect(mocks.detailRefresh).toHaveBeenCalledOnce();
+  });
+
   it("waits for overview refresh before navigating after a merge", async () => {
     let resolveRefresh!: () => void;
     mocks.overviewRefresh.mockImplementation(() => new Promise<void>((resolve) => { resolveRefresh = resolve; }));
