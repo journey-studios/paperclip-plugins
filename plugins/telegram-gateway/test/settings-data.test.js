@@ -31,7 +31,7 @@ test("settings catalog derives built-ins, native commands, and allowlisted provi
 
 test("catalog preserves gateway collisions, sorts deterministically, and caps BotFather output", () => {
   const many = Array.from({ length: 110 }, (_, index) => ({
-    name: `custom_${String(index).padStart(3, "0")}`,
+    name: `aa_custom_${String(index).padStart(3, "0")}`,
     description: `Read-only item ${index}`,
     providerId: "journey-studios.provider",
   }));
@@ -48,6 +48,12 @@ test("catalog preserves gateway collisions, sorts deterministically, and caps Bo
   assert.equal(catalog.botFatherLines.length, 100);
   assert.equal(catalog.omittedFromBotFather, catalog.commands.length - 100);
   assert.deepEqual(catalog.botFatherLines, [...catalog.botFatherLines].sort((a, b) => a.split(" - ")[0].localeCompare(b.split(" - ")[0])));
+  const reservedCommands = [...listBuiltinTelegramCommands(), ...NATIVE_TELEGRAM_COMMANDS];
+  assert.equal(reservedCommands.length, 9);
+  for (const command of reservedCommands) {
+    assert.ok(catalog.botFatherLines.some((line) => line.startsWith(`${command.name} - `)), `${command.name} remains in BotFather menu`);
+  }
+  assert.equal(catalog.omittedFromBotFather, 19);
 });
 
 test("worker data registration requires company context and discovers only configured provider IDs", async () => {

@@ -21,7 +21,11 @@ export function buildTelegramCommandCatalog({ config, providerCommands }) {
   }
 
   const commands = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const botFatherCommands = commands.slice(0, TELEGRAM_COMMAND_LIMIT);
+  const builtInCommands = commands.filter((command) => command.source !== "provider");
+  const providerCommandsForMenu = commands.filter((command) => command.source === "provider");
+  const providerSlots = Math.max(0, TELEGRAM_COMMAND_LIMIT - builtInCommands.length);
+  const botFatherCommands = [...builtInCommands, ...providerCommandsForMenu.slice(0, providerSlots)]
+    .sort((a, b) => a.name.localeCompare(b.name));
   return {
     commands,
     botFatherLines: botFatherCommands.map((command) => `${command.name} - ${command.description}`),
