@@ -43,10 +43,17 @@ async function humanDecisionFingerprints(ctx, companyId) {
   return asObject(await ctx.state.get(companyScope(companyId, FINGERPRINTS_KEY)));
 }
 
-async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null) {
+async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null) {
   const key = companyScope(companyId, FINGERPRINTS_KEY);
   const prior = await humanDecisionFingerprints(ctx, companyId);
-  prior[trackKey] = issueId ? { fingerprint, issueId } : fingerprint;
+  if (issueId || commentId) {
+    const record = { fingerprint };
+    if (issueId) record.issueId = issueId;
+    if (commentId) record.commentId = commentId;
+    prior[trackKey] = record;
+  } else {
+    prior[trackKey] = fingerprint;
+  }
   await ctx.state.set(key, prior);
 }
 
@@ -123,12 +130,22 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   const { kind, entityId, fingerprint, cardBody, wakeEventId } = delivery;
   const trackKey = `${kind}:${entityId}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
-  const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : asObject(prior[trackKey]).fingerprint;
-  if (stringValue(priorFingerprint) === fingerprint && !config.publicationEnabled) return { skipped: true };
+  const priorRecord = asObject(prior[trackKey]);
+  const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;
+  if (stringValue(priorFingerprint) === fingerprint) {
+    if (!config.publicationEnabled) return { skipped: true };
+    const priorCommentId = stringValue(priorRecord.commentId);
+    if (priorCommentId) {
+      const published = await ctx.state.get(companyScope(companyId, "published-comment-ids"));
+      if (Array.isArray(published) && published.includes(priorCommentId)) return { skipped: true };
+    }
+  }
 
   const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, fingerprint);
   const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody, resolveConversation);
-  if (result.delivered !== false) await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, delivery.issueId);
+  if (result.delivered !== false) {
+    await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId);
+  }
   return result;
 }
 

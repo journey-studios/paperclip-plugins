@@ -281,6 +281,61 @@ test("interaction reconciliation ignores other-company issues", async () => {
   assert.equal(ctx.inspect.comments.length, 0);
 });
 
+test("completed interaction cleanup tracks its source issue rather than the founder chat issue", async () => {
+  const interaction = {
+    id: "interaction-source-1", kind: "request_confirmation", status: "pending",
+    effectiveResolverPolicy: "human_only", payload: { prompt: "Review source task" },
+  };
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:source-task": { id: "source-task", companyId: "companyA", status: "todo" },
+  }, {}, {
+    interactionsByIssue: { "companyA:source-task": [interaction] },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  const fingerprintsKey = JSON.stringify({ scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-fingerprints" });
+  let fingerprints = ctx.inspect.state.get(fingerprintsKey);
+  assert.equal(fingerprints["interaction:interaction-source-1"].issueId, "source-task");
+  assert.equal(fingerprints["interaction:interaction-source-1"].issueId === "chat-a", false);
+
+  ctx.issues.listInteractions = async () => [];
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  fingerprints = ctx.inspect.state.get(fingerprintsKey);
+  assert.equal("interaction:interaction-source-1" in fingerprints, false);
+});
+
+test("published unchanged interactions skip conversation resolution", async () => {
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true,
+    },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:source-task": { id: "source-task", companyId: "companyA", status: "todo" },
+  }, {}, {
+    interactionsByIssue: {
+      "companyA:source-task": [{
+        id: "interaction-source-1", kind: "request_confirmation", status: "pending",
+        effectiveResolverPolicy: "human_only", payload: { prompt: "Review source task" },
+      }],
+    },
+  });
+  let resolutionChecks = 0;
+  const getCompany = ctx.companies.get;
+  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+  await reconcilePendingInteractions(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+});
+
 test("human decision issue polling rotates bounded pages so issues after the first 12 are visited", async () => {
   const taskIssues = Array.from({ length: 14 }, (_, index) => ({
     id: `task-${String(index + 1).padStart(2, "0")}`,
@@ -385,6 +440,51 @@ test("provider rejection is terminal after one company-scoped publication attemp
   assert.equal(ledger.attempts, 1);
   assert.equal(ledger.terminal, true);
   assert.equal(ledger.lastFailure, "provider_rejected");
+});
+
+test("published human decision cards skip conversation resolution until their fingerprint changes", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  let resolutionChecks = 0;
+  const getCompany = ctx.companies.get;
+  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  ctx.approvals.list = async () => [{
+    id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+  }];
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(resolutionChecks, 2);
+  assert.equal(ctx.inspect.publications.length, 2);
+});
+
+test("enabling publication later publishes the existing canonical comment", async () => {
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: false },
+  }, { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 0);
+
+  await reconcilePendingApprovals(ctx, "companyA", { ...config, publicationEnabled: true });
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.equal(ctx.inspect.publications[0].commentId, "created-1");
 });
 
 test("one failed card does not starve later approvals in the same reconciliation", async () => {
