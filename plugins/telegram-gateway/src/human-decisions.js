@@ -178,8 +178,9 @@ function buildApprovalCardBody(approval, issueHint, companyId) {
 function buildInteractionCardBody(interaction, issue, companyId) {
   const payload = asObject(interaction.payload);
   const sanitizedPayload = redactPayloadForCard(interaction.kind, payload);
-  const prompt = sanitizeMarkdownField(sanitizedPayload.prompt ?? (payload.secretProposal ? null : payload.prompt) ?? interaction.title);
-  const details = sanitizeMarkdownField(sanitizedPayload.detailsMarkdown ?? (payload.secretProposal ? null : payload.detailsMarkdown));
+  const restricted = Boolean(payload.secretProposal || payload.toolAction || payload.connectionAuthorization || payload.connectionIntent);
+  const prompt = sanitizeMarkdownField(sanitizedPayload.prompt ?? (restricted ? null : payload.prompt) ?? interaction.title);
+  const details = sanitizeMarkdownField(sanitizedPayload.detailsMarkdown ?? (restricted ? null : payload.detailsMarkdown));
   const risks = interactionRisks(interaction);
   const telegramHint = nativeTelegramButtonsLikely(interaction)
     ? "Native Telegram confirmation buttons may be available when this interaction is linked to the founder chat."

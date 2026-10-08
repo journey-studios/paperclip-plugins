@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-s3-storage",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": false,
   "type": "module",
   "engines": {
@@ -17,7 +17,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "pnpm run build && node --test",
-    "typecheck": "node --check src/config.js && node --check src/catalog.js && node --check src/storage.js && node --check src/service.js && node --check src/manifest.js && node --check src/plugin.js && node --check src/worker.js"
+    "typecheck": "node --check src/config.js && node --check src/catalog.js && node --check src/native-catalog.js && node --check src/native-service.js && node --check src/secret-cache.js && node --check src/storage.js && node --check src/service.js && node --check src/manifest.js && node --check src/plugin.js && node --check src/worker.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

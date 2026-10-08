@@ -43,6 +43,25 @@ test("JOU-84 style interaction card is readable without secret payload", () => {
   assert.match(body, /\[redacted/);
 });
 
+test("restricted action and connection cards never fall back to raw prompt or details", () => {
+  const issue = { id: "issue-1", identifier: "JOU-1", companyId: "companyA" };
+  for (const restricted of [
+    { toolAction: { toolName: "deploy", arguments: { token: "raw-token" } } },
+    { connectionAuthorization: { token: "raw-token" } },
+    { connectionIntent: { token: "raw-token" } },
+  ]) {
+    const body = buildInteractionCardBody({
+      id: "interaction-1",
+      kind: "request_confirmation",
+      status: "pending",
+      title: "Review in Paperclip",
+      payload: { ...restricted, prompt: "OAuth-code-abc12345", detailsMarkdown: "opaque-bearer-abcdef123456" },
+    }, issue, "companyA");
+    assert.match(body, /Review in Paperclip/);
+    assert.doesNotMatch(body, /OAuth-code-abc12345|opaque-bearer-abcdef123456|raw-token/);
+  }
+});
+
 test("approval card includes canonical link and coverage gap note", () => {
   const approval = {
     id: "appr-1",

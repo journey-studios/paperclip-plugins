@@ -4,6 +4,12 @@ import manifest from "./manifest.js";
 import { validateConfig } from "./config.js";
 import { StorageError, parseUuid } from "./catalog.js";
 import {
+  deleteNativeAttachment,
+  finalizeNativeAttachment,
+  prepareNativeAttachment,
+  readNativeAttachment,
+} from "./native-service.js";
+import {
   createReadLink,
   finalizeUpload,
   getStatus,
@@ -47,15 +53,18 @@ const tools = manifest.tools.map((declaration) => {
 });
 const byTool = new Map(tools.map((tool) => [tool.name, tool]));
 
+/** Builds a JSON-RPC error while leaving HTTP status handling to the route. */
 function rpcError(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+/** Redacts provider and secret details from tool-facing failures. */
 function safeFailure(error) {
   if (error instanceof StorageError) return error.code.replaceAll("_", " ");
   return "S3 storage operation failed";
 }
 
+/** Requires board-authenticated user identity for direct API/MCP requests. */
 function actorFromRequest(input) {
   const actor = input.actor;
   if (!actor || actor.actorType !== "user" || typeof actor.actorId !== "string") {
@@ -64,6 +73,7 @@ function actorFromRequest(input) {
   return { actorType: actor.actorType, actorId: actor.actorId, runId: null };
 }
 
+/** Binds tool operations to the authenticated company, agent, and run context. */
 function actorFromRun(runCtx) {
   if (!runCtx || typeof runCtx.companyId !== "string" || typeof runCtx.agentId !== "string" || typeof runCtx.runId !== "string") {
     throw new StorageError("agent_run_context_required", 403);
@@ -71,11 +81,13 @@ function actorFromRun(runCtx) {
   return { actorType: "agent", actorId: runCtx.agentId, runId: runCtx.runId };
 }
 
+/** Validates declared input before dispatching a company-scoped storage tool. */
 async function invoke(ctx, companyId, config, tool, args, actor) {
   if (!validateToolArguments(tool.inputSchema, args)) throw new StorageError("invalid_tool_arguments");
   return tool.execute(ctx, companyId, config, args, actor);
 }
 
+/** Creates the board-authenticated JSON-RPC surface for plugin tools. */
 function createMcpEndpoint(ctx) {
   return async (input) => {
     const headers = { "cache-control": "no-store" };
@@ -139,17 +151,20 @@ function createMcpEndpoint(ctx) {
   };
 }
 
+/** Maps storage failures to stable, non-sensitive API error bodies. */
 function apiError(error) {
   if (error instanceof StorageError) return { status: error.status, body: { error: error.code } };
   return { status: 503, body: { error: "storage_operation_failed" } };
 }
 
+/** Accepts only string query values before route-specific numeric parsing. */
 function queryValue(value, label) {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw new StorageError(`invalid_${label}`);
   return value;
 }
 
+/** Enforces the empty request contract used by status and connection routes. */
 function emptyBody(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length) throw new StorageError("invalid_request");
   return value;
@@ -160,8 +175,10 @@ let mcpEndpoint;
 
 const plugin = definePlugin({
   multiCompanyConfig: true,
+  /** Validates company settings without resolving credentials into config output. */
   async onValidateConfig(config) { return validateConfig(config); },
 
+  /** Registers plugin tools and context-bound status/MCP handlers once per worker. */
   async setup(ctx) {
     workerContext = ctx;
     mcpEndpoint = createMcpEndpoint(ctx);
@@ -191,6 +208,7 @@ const plugin = definePlugin({
     });
   },
 
+  /** Dispatches company-scoped API routes after board identity validation. */
   async onApiRequest(input) {
     const ctx = workerContext;
     if (!ctx) return { status: 503, body: { error: "worker_not_ready" } };
@@ -212,12 +230,17 @@ const plugin = definePlugin({
       if (input.routeKey === "upload-finalize") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_finalize_upload"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "object-download") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_read_link"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "bucket-create") return { status: 201, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_create_bucket"), input.body, actor) };
+      if (input.routeKey === "native-prepare") return { status: 200, headers: { "cache-control": "no-store" }, body: await prepareNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-finalize") return { status: 200, headers: { "cache-control": "no-store" }, body: await finalizeNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-read") return { status: 200, headers: { "cache-control": "no-store" }, body: await readNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-delete") return { status: 200, headers: { "cache-control": "no-store" }, body: await deleteNativeAttachment(ctx, companyId, config, input.body) };
       return { status: 404, body: { error: "unknown_route" } };
     } catch (error) {
       return apiError(error);
     }
   },
 
+  /** Reports worker readiness without returning company settings or secrets. */
   async onHealth() {
     return { status: "ok", message: "S3 Storage routes and tools are ready" };
   },

@@ -44,7 +44,7 @@ const route = (routeKey, method, path) => ({
 const manifest = {
   id: "journey-studios.s3-storage",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.1",
   displayName: "S3 Storage",
   description: "Private, company-scoped S3-compatible media storage for AWS S3, Cloudflare R2 and Backblaze B2.",
   author: "Journey Studios",
@@ -81,6 +81,7 @@ const manifest = {
       secretAccessKeyRef: { ...secretRef, title: "Secret access key secret" },
       sessionTokenRef: { ...secretRef, title: "Session token secret (optional)" },
       allowProvisioning: { type: "boolean", title: "Allow bucket creation", description: "Requires bucket-creation permission on the same credential refs.", default: false },
+      enableNativeAttachments: { type: "boolean", title: "Bridge native attachments", description: "Allow the external S3-compatible bridge to route Paperclip native attachment operations through this company storage configuration.", default: false },
     },
   },
   apiRoutes: [
@@ -91,6 +92,10 @@ const manifest = {
     route("upload-finalize", "POST", "/uploads/:objectId/finalize"),
     route("object-download", "GET", "/objects/:objectId/download"),
     route("bucket-create", "POST", "/buckets"),
+    route("native-prepare", "POST", "/native/prepare"),
+    route("native-finalize", "POST", "/native/finalize"),
+    route("native-read", "POST", "/native/read"),
+    route("native-delete", "POST", "/native/delete"),
     route("mcp", "POST", "/mcp"),
     route("mcp-get", "GET", "/mcp"),
   ],

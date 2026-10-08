@@ -75,7 +75,7 @@ const manifest = {
       publicationEnabled: {
         type: "boolean",
         title: "Automatic native chat publication",
-        description: "Safe rollout gate. Publishes only the Liaison comment linked to a plugin-requested run using Paperclip's native publication bridge.",
+        description: "Safe rollout gate for the Liaison run reply and deterministic human decision cards through Paperclip's native publication bridge.",
         default: false,
       },
       commandsEnabled: {

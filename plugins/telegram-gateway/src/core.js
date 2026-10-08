@@ -1,26 +1,15 @@
 import { createHash } from "node:crypto";
+import { createHumanDecisionDelivery } from "./human-decision-delivery.js";
 import {
-  CARD_MARKER,
-  INTERACTION_ISSUE_LIMIT_PER_STATUS,
-  INTERACTION_ISSUE_STATUSES,
-  approvalFingerprint,
-  buildApprovalCardBody,
-  buildInteractionCardBody,
-  cardDeliveryId,
-  interactionFingerprint,
-  isFounderReachableInteraction,
-} from "./human-decisions.js";
+  assertPublicationAccepted,
+  nextPublicationFailure,
+} from "./publication-policy.js";
 
 const EVENT_PREFIX = "[FOUNDER_COMMS_EVENT]";
-const HUMAN_DECISION_STATE_KEY = "human-decision-fingerprints";
 const MAX_PROCESSED = 500;
 const MAX_QUEUE = 100;
 const MAX_PENDING_RUNS = 200;
 const MAX_PUBLISHED = 500;
-const MAX_PUBLICATION_ATTEMPTS = 5;
-
-class PermanentPublicationError extends Error {}
-
 let knownCompaniesTail = Promise.resolve();
 
 function asObject(value) {
@@ -200,6 +189,15 @@ async function resolveConversation(ctx, companyId, config) {
   return conversation;
 }
 
+const {
+  clearApprovalFingerprint,
+  handleApproval,
+  reconcileHumanDecisions,
+  reconcileKnownHumanDecisions,
+  reconcilePendingApprovals,
+  reconcilePendingInteractions,
+} = createHumanDecisionDelivery({ companyConfig, resolveConversation });
+
 async function hasCompanyRoutingMemberships(ctx, companyId, config) {
   const company = await ctx.companies.get(companyId);
   if (!company || company.id !== companyId) return false;
@@ -266,9 +264,7 @@ async function publishForRun(ctx, companyId, config, runId) {
   if (!ids.includes(comment.id)) {
     try {
       const result = await ctx.chat.publishComment(comment.id, companyId);
-      if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
-        throw new PermanentPublicationError(`Chat publication rejected: ${result?.state ?? "unknown"}`);
-      }
+      assertPublicationAccepted(result);
       ids.push(comment.id);
       await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
     } catch (error) {
@@ -277,15 +273,8 @@ async function publishForRun(ctx, companyId, config, runId) {
       const attempted = runs.map((entry) => {
         if (asObject(entry).runId !== runId) return entry;
         const priorAttempts = asObject(entry).attempts;
-        const attempts = (Number.isSafeInteger(priorAttempts) && priorAttempts >= 0 ? priorAttempts : 0) + 1;
-        const permanent = error instanceof PermanentPublicationError;
-        return {
-          ...entry,
-          attempts,
-          lastFailure: permanent ? "provider_rejected" : "publication_attempt_failed",
-          lastAttemptAt: new Date().toISOString(),
-          terminal: permanent || attempts >= MAX_PUBLICATION_ATTEMPTS,
-        };
+        const attempts = Number.isSafeInteger(priorAttempts) && priorAttempts >= 0 ? priorAttempts : 0;
+        return { ...entry, ...nextPublicationFailure(attempts, error) };
       });
       await ctx.state.set(key, attempted);
       throw error;
@@ -544,225 +533,9 @@ async function handleComment(ctx, event, config) {
   }
 }
 
-async function humanDecisionFingerprints(ctx, companyId) {
-  const prior = asObject(await ctx.state.get(companyScope(companyId, HUMAN_DECISION_STATE_KEY)));
-  return prior;
-}
-
-async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint) {
-  const key = companyScope(companyId, HUMAN_DECISION_STATE_KEY);
-  const prior = asObject(await ctx.state.get(key));
-  prior[trackKey] = fingerprint;
-  await ctx.state.set(key, prior);
-}
-
-async function clearHumanDecisionFingerprint(ctx, companyId, trackKey) {
-  const key = companyScope(companyId, HUMAN_DECISION_STATE_KEY);
-  const prior = asObject(await ctx.state.get(key));
-  if (!(trackKey in prior)) return;
-  delete prior[trackKey];
-  await ctx.state.set(key, prior);
-}
-
-async function ensureHumanDecisionComment(ctx, companyId, conversation, config, deliveryId, cardBody) {
-  if (!stringValue(cardBody)?.includes(CARD_MARKER)) {
-    throw new Error("Invalid founder human decision card marker");
-  }
-  const token = createHash("sha256")
-    .update(JSON.stringify([companyId, conversation.id, deliveryId]))
-    .digest("hex");
-  const key = companyScope(companyId, `human-decision-comment:${token}`);
-  const prior = asObject(await ctx.state.get(key));
-  if (prior.created === true && stringValue(prior.commentId)) {
-    return { commentId: prior.commentId, issueId: conversation.id };
-  }
-
-  const deliveryLine = `delivery=${token}`;
-  const tagged = cardBody.includes(deliveryLine)
-    ? cardBody
-    : `${cardBody}\n${deliveryLine}`;
-  const existing = (await ctx.issues.listComments(conversation.id, companyId)).find((comment) =>
-    comment.issueId === conversation.id &&
-    comment.companyId === companyId &&
-    !comment.deletedAt &&
-    typeof comment.body === "string" &&
-    comment.body.includes(CARD_MARKER) &&
-    comment.body.includes(deliveryLine));
-  const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
-  const created = existing ?? await ctx.issues.createComment(
-    conversation.id,
-    tagged,
-    companyId,
-    { authorAgentId },
-  );
-  const commentId = stringValue(created?.id);
-  const record = { created: true, issueId: conversation.id, commentId };
-  await ctx.state.set(key, record);
-  return record;
-}
-
-async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody) {
-  const conversation = await resolveConversation(ctx, companyId, config);
-  if (!conversation) return { delivered: false, reason: "conversation_not_bound" };
-
-  const { commentId } = await ensureHumanDecisionComment(
-    ctx,
-    companyId,
-    conversation,
-    config,
-    deliveryId,
-    cardBody,
-  );
-  if (!commentId) return { delivered: false, reason: "comment_not_created" };
-
-  const publishedKey = companyScope(companyId, "published-comment-ids");
-  const prior = await ctx.state.get(publishedKey);
-  const ids = Array.isArray(prior) ? prior.filter((value) => typeof value === "string") : [];
-  if (ids.includes(commentId)) return { delivered: true, commentId, issueId: conversation.id };
-
-  const result = await ctx.chat.publishComment(commentId, companyId);
-  if (!["published", "pending", "retry", "delivery_unknown"].includes(result?.state)) {
-    throw new PermanentPublicationError(`Chat publication rejected: ${result?.state ?? "unknown"}`);
-  }
-  ids.push(commentId);
-  await ctx.state.set(publishedKey, ids.slice(-MAX_PUBLISHED));
-  return { delivered: true, commentId, issueId: conversation.id };
-}
-
-async function deliverHumanDecisionCard(ctx, companyId, config, {
-  kind,
-  entityId,
-  fingerprint,
-  cardBody,
-  wakeEventId,
-}) {
-  const trackKey = `${kind}:${entityId}`;
-  const prior = await humanDecisionFingerprints(ctx, companyId);
-  if (stringValue(prior[trackKey]) === fingerprint) return { skipped: true };
-
-  const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, fingerprint);
-
-  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody);
-  if (result.delivered !== false) {
-    await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint);
-  }
-  return result;
-}
-
-async function reconcilePendingApprovals(ctx, companyId, config) {
-  if (!config.immediateEnabled || !ctx.approvals?.list) return;
-  const list = await ctx.approvals.list({ companyId, status: "pending" });
-  const pendingIds = new Set();
-  for (const summary of Array.isArray(list) ? list : []) {
-    if (!summary?.id || summary.companyId !== companyId) continue;
-    const approval = await ctx.approvals.get(summary.id, companyId);
-    if (!approval || approval.companyId !== companyId || approval.status !== "pending") continue;
-    pendingIds.add(approval.id);
-    const fingerprint = approvalFingerprint(approval);
-    const cardBody = buildApprovalCardBody(approval, null, companyId);
-    await deliverHumanDecisionCard(ctx, companyId, config, {
-      kind: "approval",
-      entityId: approval.id,
-      fingerprint,
-      cardBody,
-      wakeEventId: `reconcile-approval:${approval.id}:${fingerprint}`,
-    });
-  }
-
-  const tracked = await humanDecisionFingerprints(ctx, companyId);
-  for (const trackKey of Object.keys(tracked)) {
-    if (!trackKey.startsWith("approval:")) continue;
-    const approvalId = trackKey.slice("approval:".length);
-    if (!pendingIds.has(approvalId)) await clearHumanDecisionFingerprint(ctx, companyId, trackKey);
-  }
-}
-
-async function listOpenIssuesForInteractionPoll(ctx, companyId) {
-  const byId = new Map();
-  for (const status of INTERACTION_ISSUE_STATUSES) {
-    const batch = await ctx.issues.list({
-      companyId,
-      status,
-      limit: INTERACTION_ISSUE_LIMIT_PER_STATUS,
-    });
-    for (const issue of Array.isArray(batch) ? batch : []) {
-      if (!issue?.id || issue.companyId !== companyId) continue;
-      byId.set(issue.id, issue);
-    }
-  }
-  return [...byId.values()];
-}
-
-async function reconcilePendingInteractions(ctx, companyId, config) {
-  if (!config.immediateEnabled || !ctx.issues?.listInteractions) return;
-  const issues = await listOpenIssuesForInteractionPoll(ctx, companyId);
-  const pendingKeys = new Set();
-
-  for (const issue of issues) {
-    const interactions = await ctx.issues.listInteractions(issue.id, companyId);
-    for (const interaction of Array.isArray(interactions) ? interactions : []) {
-      if (!isFounderReachableInteraction(interaction, config.founderUserId)) continue;
-      pendingKeys.add(`interaction:${interaction.id}`);
-      const fingerprint = interactionFingerprint(interaction);
-      const cardBody = buildInteractionCardBody(interaction, issue, companyId);
-      await deliverHumanDecisionCard(ctx, companyId, config, {
-        kind: "interaction",
-        entityId: interaction.id,
-        fingerprint,
-        cardBody,
-        wakeEventId: `reconcile-interaction:${interaction.id}:${fingerprint}`,
-      });
-    }
-  }
-
-  const tracked = await humanDecisionFingerprints(ctx, companyId);
-  for (const trackKey of Object.keys(tracked)) {
-    if (!trackKey.startsWith("interaction:")) continue;
-    if (!pendingKeys.has(trackKey)) await clearHumanDecisionFingerprint(ctx, companyId, trackKey);
-  }
-}
-
-async function reconcileHumanDecisions(ctx, companyId, config) {
-  await reconcilePendingApprovals(ctx, companyId, config);
-  await reconcilePendingInteractions(ctx, companyId, config);
-}
-
-async function reconcileKnownHumanDecisions(ctx, serialize = async (_companyId, fn) => fn()) {
-  const known = await ctx.state.get({ scopeKind: "instance", stateKey: "known-companies" });
-  for (const companyId of Array.isArray(known) ? known : []) {
-    if (!stringValue(companyId)) continue;
-    await serialize(companyId, async () => {
-      try {
-        const config = await companyConfig(ctx, companyId);
-        await reconcileHumanDecisions(ctx, companyId, config);
-      } catch (error) {
-        ctx.logger.error("Founder human decision reconciliation failed", {
-          companyId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    });
-  }
-}
-
-async function handleApproval(ctx, event, config) {
-  if (!config.immediateEnabled || !event.entityId) return;
-  const approval = await ctx.approvals.get(event.entityId, event.companyId);
-  if (!approval || approval.companyId !== event.companyId || approval.status !== "pending") return;
-  const fingerprint = approvalFingerprint(approval);
-  const cardBody = buildApprovalCardBody(approval, null, event.companyId);
-  await deliverHumanDecisionCard(ctx, event.companyId, config, {
-    kind: "approval",
-    entityId: approval.id,
-    fingerprint,
-    cardBody,
-    wakeEventId: event.eventId,
-  });
-}
-
 async function handleApprovalDecided(ctx, event) {
   if (!event.entityId) return;
-  await clearHumanDecisionFingerprint(ctx, event.companyId, `approval:${event.entityId}`);
+  await clearApprovalFingerprint(ctx, event.companyId, event.entityId);
   const key = companyScope(event.companyId, "pending-immediate");
   const prior = await ctx.state.get(key);
   if (!Array.isArray(prior) || prior.length === 0) return;

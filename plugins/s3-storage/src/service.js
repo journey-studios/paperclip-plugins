@@ -22,11 +22,13 @@ import {
 const SHA256 = /^[a-f0-9]{64}$/;
 const MIME = /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+(?:;[^\r\n]{0,80})?$/;
 
+/** Rejects non-record API/tool payloads before field-level validation. */
 function object(value, label = "request") {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new StorageError(`invalid_${label}`);
   return value;
 }
 
+/** Rejects unknown keys and missing required fields to keep payload contracts strict. */
 function requireOnly(value, allowed, required = []) {
   const input = object(value);
   if (Object.keys(input).some((key) => !allowed.includes(key)) || required.some((key) => !Object.hasOwn(input, key))) {
@@ -35,6 +37,7 @@ function requireOnly(value, allowed, required = []) {
   return input;
 }
 
+/** Removes path components and control characters from provider-facing filenames. */
 function normalizeFilename(value) {
   if (typeof value !== "string") throw new StorageError("invalid_filename");
   const filename = value.trim().split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, "_");
@@ -42,6 +45,7 @@ function normalizeFilename(value) {
   return filename;
 }
 
+/** Validates upload identity, MIME, size, and digest before creating an intent. */
 function normalizeUpload(value, config) {
   const input = requireOnly(value, ["idempotencyKey", "projectId", "filename", "contentType", "size", "sha256"], ["idempotencyKey", "filename", "contentType", "size", "sha256"]);
   const filename = normalizeFilename(input.filename);
@@ -51,6 +55,7 @@ function normalizeUpload(value, config) {
   return { idempotencyKey: parseUuid(input.idempotencyKey, "idempotency_key"), projectId: input.projectId, filename, contentType: input.contentType, size: input.size, sha256: input.sha256 };
 }
 
+/** Loads normalized settings only for an existing company in the request scope. */
 export async function loadConfig(ctx, companyId) {
   const id = parseUuid(companyId, "company_id");
   const company = await ctx.companies.get(id);
@@ -63,6 +68,7 @@ export async function loadConfig(ctx, companyId) {
   }
 }
 
+/** Returns safe readiness and storage identity metadata without secret material. */
 export function getStatus(config) {
   return {
     configured: config.configured,
@@ -77,10 +83,12 @@ export function getStatus(config) {
     maxUploadBytes: config.maxUploadBytes,
     urlTtlSeconds: config.urlTtlSeconds,
     allowProvisioning: config.allowProvisioning,
+    nativeAttachmentsEnabled: config.enableNativeAttachments,
     storageFingerprint: storageFingerprint(config),
   };
 }
 
+/** Verifies configured bucket access and records an activity audit event. */
 export async function testConnection(ctx, companyId, config) {
   if (!config.configured) throw new StorageError("storage_not_configured", 503);
   const result = await testBucketAccess(ctx, companyId, config);
@@ -88,6 +96,7 @@ export async function testConnection(ctx, companyId, config) {
   return result;
 }
 
+/** Creates/reuses a company-scoped intent and issues a short-lived staging URL. */
 export async function prepareUpload(ctx, companyId, config, value, actor) {
   requireConfigured(config);
   const input = normalizeUpload(value, config);
@@ -123,6 +132,7 @@ export async function prepareUpload(ctx, companyId, config, value, actor) {
   };
 }
 
+/** Verifies staged bytes before publishing and marking the catalog row ready. */
 export async function finalizeUpload(ctx, companyId, config, objectId) {
   requireConfigured(config);
   const row = await getObject(ctx, companyId, objectId);
@@ -144,6 +154,7 @@ export async function finalizeUpload(ctx, companyId, config, objectId) {
   return { object: safeObject(row), alreadyFinalized: true };
 }
 
+/** Signs a private read URL only for ready objects from unchanged storage settings. */
 export async function createReadLink(ctx, companyId, config, objectId) {
   requireConfigured(config);
   const row = await getObject(ctx, companyId, objectId);
@@ -155,6 +166,7 @@ export async function createReadLink(ctx, companyId, config, objectId) {
   return { object: safeObject(row), ...signed };
 }
 
+/** Lists safe catalog metadata within one company and optional project scope. */
 export async function listMedia(ctx, companyId, config, input = {}) {
   requireOnly(input, ["projectId", "limit"]);
   const limit = input.limit ?? 50;
@@ -164,6 +176,7 @@ export async function listMedia(ctx, companyId, config, input = {}) {
   return { objects: rows.map(safeObject), limit };
 }
 
+/** Creates a bucket only when explicit company provisioning is enabled. */
 export async function provisionBucket(ctx, companyId, config, value, actor) {
   const input = requireOnly(value, ["bucket"], ["bucket"]);
   if (!config.allowProvisioning) throw new StorageError("bucket_provisioning_disabled", 403);
@@ -176,15 +189,18 @@ export async function provisionBucket(ctx, companyId, config, value, actor) {
   return result;
 }
 
+/** Prevents old catalog rows from being read under changed provider settings. */
 function assertSameStorage(config, row) {
   if (row.storageFingerprint !== storageFingerprint(config) || row.bucket !== config.bucket ||
       row.endpoint !== config.endpoint || row.provider !== config.provider) throw new StorageError("storage_settings_changed", 409);
 }
 
+/** Fails closed when required provider settings or secret references are absent. */
 function requireConfigured(config) {
   if (!config.configured) throw new StorageError("storage_not_configured", 503);
 }
 
+/** Normalizes an authenticated actor for audit metadata without accepting callers. */
 function safeActor(actor) {
   if (!actor || !["user", "agent"].includes(actor.actorType) || typeof actor.actorId !== "string" || !actor.actorId) {
     throw new StorageError("authenticated_actor_required", 403);
@@ -192,7 +208,8 @@ function safeActor(actor) {
   return { actorType: actor.actorType, actorId: actor.actorId, runId: actor.actorType === "agent" ? actor.runId ?? null : null };
 }
 
-async function audit(ctx, companyId, message, entityType, config, metadata) {
+/** Records activity best-effort; audit failure never masks the storage result. */
+export async function audit(ctx, companyId, message, entityType, config, metadata) {
   try {
     await ctx.activity.log({
       companyId,
@@ -205,6 +222,7 @@ async function audit(ctx, companyId, message, entityType, config, metadata) {
   }
 }
 
+/** Removes verified staging data best-effort while preserving the ready object. */
 async function cleanupStaging(ctx, companyId, config, row) {
   try {
     await removeStagingObject(ctx, companyId, config, row);
