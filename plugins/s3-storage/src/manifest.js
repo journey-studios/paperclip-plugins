@@ -44,7 +44,7 @@ const route = (routeKey, method, path) => ({
 const manifest = {
   id: "journey-studios.s3-storage",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.1",
   displayName: "S3 Storage",
   description: "Private, company-scoped S3-compatible media storage for AWS S3, Cloudflare R2 and Backblaze B2.",
   author: "Journey Studios",

@@ -4,7 +4,7 @@
 
 ## Install
 
-The host must run the stock pinned Paperclip `2026.1001.0` SDK v1 API or newer. From the `v0.2.0` GitHub plugin release, download `journey-studios-paperclip-s3-storage-0.2.0.tgz` and `SHA256SUMS`, verify and install the extracted package:
+The host must run the stock pinned Paperclip `2026.1001.0` SDK v1 API or newer. From the `v0.2.1` GitHub plugin release, download `journey-studios-paperclip-s3-storage-0.2.1.tgz` and `SHA256SUMS`, verify and install the extracted package:
 
 ```sh
 sha256sum -c SHA256SUMS
@@ -13,7 +13,7 @@ tar -xzf journey-studios-paperclip-s3-storage-<version>.tgz -C paperclip-s3-stor
 paperclipai plugin install "$(pwd)/paperclip-s3-storage"
 ```
 
-After installation, open **Settings → Instance → Plugins → S3 Storage**. Configure the provider settings below for the target company and select secret references from Paperclip's secret picker for credentials. The tarball includes the compiled worker and bundled S3 SDK dependencies. Do not enter credential values into ordinary settings.
+After installation, open **Settings → Instance → Plugins → S3 Storage**. Configure the provider settings below for the target company and select secret references from Paperclip's secret picker for credentials. The tarball includes the compiled worker and bundled S3 SDK dependencies. Do not enter credential values into ordinary settings. The plugin reuses resolved credentials for up to 30 seconds after resolution to stay within the host secret resolver's rate limit. Expired entries are ignored and pruned on the next access, and cache contents are never persisted; allow up to 30 seconds for `latest` secret rotation to take effect. Changing a reference or its pinned version uses a separate cache entry immediately.
 
 ## Company settings
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { CopyObjectCommand, CreateBucketCommand, DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, ListObjectVersionsCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { StorageError } from "./catalog.js";
+import { resolveCachedSecret } from "./secret-cache.js";
 
 const MAX_NATIVE_VERSION_PAGES = 100;
 const MAX_NATIVE_KEY_VERSIONS = 10_000;
@@ -14,19 +15,10 @@ export async function withS3(ctx, companyId, config, operation) {
   let sessionToken;
   try {
     [accessKeyId, secretAccessKey, sessionToken] = await Promise.all([
-      ctx.secrets.resolve(config.accessKeyIdRef, {
-        companyId,
-        configPath: "accessKeyIdRef",
-      }),
-      ctx.secrets.resolve(config.secretAccessKeyRef, {
-        companyId,
-        configPath: "secretAccessKeyRef",
-      }),
+      resolveCachedSecret(ctx, companyId, "accessKeyIdRef", config.accessKeyIdRef),
+      resolveCachedSecret(ctx, companyId, "secretAccessKeyRef", config.secretAccessKeyRef),
       config.sessionTokenRef
-        ? ctx.secrets.resolve(config.sessionTokenRef, {
-            companyId,
-            configPath: "sessionTokenRef",
-          })
+        ? resolveCachedSecret(ctx, companyId, "sessionTokenRef", config.sessionTokenRef)
         : Promise.resolve(undefined),
     ]);
   } catch {
