@@ -196,11 +196,11 @@ test("formats /credits from native monthly spend and rolls descendants into CEO 
       "**Total reportado:** US$ 10,50",
       "",
       "**Por grupo**",
+      "• **Não atribuído** — US$ 0,50",
       "• **CMO / Marketing & Growth · CMO** — US$ 4,50",
       "• **CTO / Produto & Engenharia · CTO** — US$ 3,00",
       "• **CEO / Coordenação Geral · CEO** — US$ 2,00",
       "• **Fora da hierarquia** — US$ 0,50",
-      "• **Não atribuído** — US$ 0,50",
       "",
       "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
     ].join("\n"),
@@ -253,6 +253,32 @@ test("/credits truncates only at complete group boundaries", async () => {
   assert.match(result.text, /uso não precificado ou coberto por assinatura não entra no total\._$/);
   const boldMarkers = result.text.match(/\*\*/g) ?? [];
   assert.equal(boldMarkers.length % 2, 0, "must not cut a bold group record in half");
+});
+
+test("/credits keeps unassigned spend visible when group rows are capped", async () => {
+  const f = fixture();
+  const ceo = {
+    id: "ceo", name: "CEO", title: "CEO / Coordenação Geral", role: "ceo",
+    reportsTo: null, spentMonthlyCents: 1,
+  };
+  const leaders = Array.from({ length: 80 }, (_, index) => ({
+    id: `leader-${index}`,
+    name: `Leader ${index}`,
+    title: `Grupo ${index} ${"x".repeat(100)}`,
+    role: "general",
+    reportsTo: "ceo",
+    spentMonthlyCents: 1,
+  }));
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 181 });
+  f.ctx.agents.list = async ({ limit, offset }) => [ceo, ...leaders].slice(offset, offset + limit);
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.ok(result.text.length <= 3600);
+  assert.match(result.text, /• \*\*Não atribuído\*\* — US\$ 1,00/);
+  assert.match(result.text, /_Exibindo \d+ de 81 grupos; \d+ omitidos por limite de mensagem\._/);
 });
 
 test("limits Telegram task replies without breaking records or allowing injected line breaks", async () => {

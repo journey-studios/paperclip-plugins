@@ -185,8 +185,8 @@ async function listAllAgents(ctx, companyId) {
 /**
  * Append only whole credit-group records while reserving room for the footer.
  */
-function displayCreditRows(header, rows, footer) {
-  if (rows.length === 0) return `${header}\n_Nenhum custo reportado neste mês._${footer}`;
+function displayCreditRows(header, rows, footer, emptyMessage = "_Nenhum custo reportado neste mês._") {
+  if (rows.length === 0) return `${header}\n${emptyMessage}${footer}`;
 
   let output = header;
   let included = 0;
@@ -218,10 +218,9 @@ async function displayCredits(ctx, companyId) {
   const rows = groups
     .filter((group) => group.cents > 0)
     .map((group) => "• **" + markdownContent(group.label, 170) + "** — " + formatUsd(group.cents));
-
-  if (companyTotal > agentTotal) {
-    rows.push("• **Não atribuído** — " + formatUsd(companyTotal - agentTotal));
-  }
+  const unassignedRow = companyTotal > agentTotal
+    ? "• **Não atribuído** — " + formatUsd(companyTotal - agentTotal)
+    : null;
 
   const header = [
     "**Créditos do mês**",
@@ -229,6 +228,7 @@ async function displayCredits(ctx, companyId) {
     "**Total reportado:** " + formatUsd(companyTotal),
     "",
     "**Por grupo**",
+    ...(unassignedRow ? [unassignedRow] : []),
   ].join("\n");
   const footerLines = [
     "",
@@ -237,7 +237,10 @@ async function displayCredits(ctx, companyId) {
   if (agentTotal > companyTotal) {
     footerLines.push("_A soma por grupo ainda está convergindo com o total da empresa._");
   }
-  return displayCreditRows(header, rows, "\n" + footerLines.join("\n"));
+  const emptyMessage = unassignedRow
+    ? "_Nenhum custo atribuído a grupos neste mês._"
+    : "_Nenhum custo reportado neste mês._";
+  return displayCreditRows(header, rows, "\n" + footerLines.join("\n"), emptyMessage);
 }
 
 const commands = new Map([
