@@ -168,8 +168,117 @@ test("formats /agents and /help as multiline Telegram replies", async () => {
   assert.equal(await invoke("agents"), "**Agentes do Paperclip**\n\n• **Founder Liaison**\n  _Estado:_ Ocioso");
   const help = await invoke("help");
   assert.match(help, /^\*\*Comandos do Founder Gateway\*\*\n\n`\/agents`/);
-  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/help` — Exibir esta ajuda/);
+  assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/credits` — Ver créditos gastos no mês por grupo\n`\/help` — Exibir esta ajuda/);
   assert.match(help, /\n\n\*\*Comandos nativos do Paperclip\*\*\n\n`\/status`/);
+});
+
+test("formats /credits from native monthly spend and rolls descendants into CEO groups", async () => {
+  const f = fixture();
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 1050 });
+  f.ctx.agents.list = async () => [
+    { id: "ceo", name: "CEO", title: "CEO / Coordenação Geral", role: "ceo", reportsTo: null, spentMonthlyCents: 200 },
+    { id: "cmo", name: "CMO", title: "CMO / Marketing & Growth", role: "cmo", reportsTo: "ceo", spentMonthlyCents: 300 },
+    { id: "research", name: "Research", role: "researcher", reportsTo: "cmo", spentMonthlyCents: 150 },
+    { id: "cto", name: "CTO", title: "CTO / Produto & Engenharia", role: "cto", reportsTo: "ceo", spentMonthlyCents: 250 },
+    { id: "dev", name: "Dev", role: "engineer", reportsTo: "cto", spentMonthlyCents: 50 },
+    { id: "canary", name: "Canary", role: "general", reportsTo: null, spentMonthlyCents: 50 },
+  ];
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.deepEqual(result, {
+    handled: true,
+    text: [
+      "**Créditos do mês**",
+      "",
+      "**Total reportado:** US$ 10,50",
+      "",
+      "**Por grupo**",
+      "• **Não atribuído** — US$ 0,50",
+      "• **CMO / Marketing & Growth · CMO** — US$ 4,50",
+      "• **CTO / Produto & Engenharia · CTO** — US$ 3,00",
+      "• **CEO / Coordenação Geral · CEO** — US$ 2,00",
+      "• **Fora da hierarquia** — US$ 0,50",
+      "",
+      "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
+    ].join("\n"),
+  });
+});
+
+test("/credits paginates beyond 1,000 agents without dropping spend", async () => {
+  const f = fixture();
+  const agents = Array.from({ length: 1001 }, (_, index) => ({
+    id: `agent-${index}`,
+    name: `Agent ${index}`,
+    role: "general",
+    reportsTo: null,
+    spentMonthlyCents: 1,
+  }));
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 1001 });
+  f.ctx.agents.list = async ({ limit, offset }) => agents.slice(offset, offset + limit);
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.match(result.text, /\*\*Total reportado:\*\* US\$ 10,01/);
+  assert.match(result.text, /Fora da hierarquia\*\* — US\$ 10,01/);
+});
+
+test("/credits truncates only at complete group boundaries", async () => {
+  const f = fixture();
+  const ceo = {
+    id: "ceo", name: "CEO", title: "CEO / Coordenação Geral", role: "ceo",
+    reportsTo: null, spentMonthlyCents: 1,
+  };
+  const leaders = Array.from({ length: 80 }, (_, index) => ({
+    id: `leader-${index}`,
+    name: `Leader ${index}`,
+    title: `Grupo ${index} ${"x".repeat(100)}`,
+    role: "general",
+    reportsTo: "ceo",
+    spentMonthlyCents: 1,
+  }));
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 81 });
+  f.ctx.agents.list = async ({ limit, offset }) => [ceo, ...leaders].slice(offset, offset + limit);
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.ok(result.text.length <= 3600);
+  assert.match(result.text, /_Exibindo \d+ de 81 grupos; \d+ omitidos por limite de mensagem\._/);
+  assert.match(result.text, /uso não precificado ou coberto por assinatura não entra no total\._$/);
+  const boldMarkers = result.text.match(/\*\*/g) ?? [];
+  assert.equal(boldMarkers.length % 2, 0, "must not cut a bold group record in half");
+});
+
+test("/credits keeps unassigned spend visible when group rows are capped", async () => {
+  const f = fixture();
+  const ceo = {
+    id: "ceo", name: "CEO", title: "CEO / Coordenação Geral", role: "ceo",
+    reportsTo: null, spentMonthlyCents: 1,
+  };
+  const leaders = Array.from({ length: 80 }, (_, index) => ({
+    id: `leader-${index}`,
+    name: `Leader ${index}`,
+    title: `Grupo ${index} ${"x".repeat(100)}`,
+    role: "general",
+    reportsTo: "ceo",
+    spentMonthlyCents: 1,
+  }));
+  f.ctx.companies.get = async () => ({ id: f.companyId, spentMonthlyCents: 181 });
+  f.ctx.agents.list = async ({ limit, offset }) => [ceo, ...leaders].slice(offset, offset + limit);
+
+  const result = await executeFounderCommand(f.ctx,
+    { provider: "telegram", command: "credits", assigneeAgentId: "liaison" },
+    { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
+
+  assert.ok(result.text.length <= 3600);
+  assert.match(result.text, /• \*\*Não atribuído\*\* — US\$ 1,00/);
+  assert.match(result.text, /_Exibindo \d+ de 81 grupos; \d+ omitidos por limite de mensagem\._/);
 });
 
 test("limits Telegram task replies without breaking records or allowing injected line breaks", async () => {
