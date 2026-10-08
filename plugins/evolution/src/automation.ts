@@ -104,6 +104,7 @@ export function registerAutomation(ctx: PluginContext, deps: AutomationDependenc
         'JOIN change_sets cs ON cs.company_id = ci.company_id AND cs.id = ci.change_set_id ' +
         'WHERE cs.company_id = $1 AND cs.id = $2 AND r.status IN (\'succeeded\',\'failed\',\'timed_out\',\'cancelled\') ' +
         'AND r.started_at >= cs.applied_at AND r.started_at < LEAST(coalesce(cs.validation_ends_at, cs.applied_at + interval \'7 days\'), cs.applied_at + interval \'7 days\') ' +
+        'AND NOT EXISTS (SELECT 1 FROM change_evidence existing WHERE existing.company_id = cs.company_id AND existing.change_set_id = cs.id AND existing.evidence_type = \'run\' AND existing.reference_id = r.id::text) ' +
         'AND cs.source_context_key IS DISTINCT FROM (\'run:\' || r.id::text) ORDER BY r.started_at DESC, r.id DESC LIMIT 150',
       [companyId, changeSetId],
     );
