@@ -55,6 +55,49 @@ describe("CodeRabbit merge and observation window regressions", () => {
     ]);
   });
 
+  it("continues processing other Change Sets when one run assessment fails", async () => {
+    const appliedAt = new Date(Date.now() - 2 * 86400_000).toISOString();
+    const ids = [await createSet("One", appliedAt), await createSet("Two", appliedAt)].sort();
+    const [failingSet, healthySet] = ids;
+    const runId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    await fixture.db.query(
+      `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at)
+        VALUES ($1,$2,$3,'succeeded',now() - interval '1 day',now() - interval '23 hours')`,
+      [runId, COMPANY, AGENT],
+    );
+    await fixture.db.exec(`
+      CREATE FUNCTION public.reject_first_set_metric() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.change_set_id = '${failingSet}'::uuid THEN
+          RAISE EXCEPTION 'injected single-set metric failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reject_first_set_metric BEFORE INSERT ON ${NS}.change_metrics
+      FOR EACH ROW EXECUTE FUNCTION public.reject_first_set_metric();
+    `);
+    await expect(fixture.events.get("agent.run.finished")!({
+      eventId: "terminal-event",
+      companyId: COMPANY,
+      eventType: "agent.run.finished",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      payload: { runId },
+    })).resolves.toBeUndefined();
+
+    const evidence = (await fixture.db.query<{ change_set_id: string }>(
+      `SELECT change_set_id FROM ${NS}.change_evidence
+       WHERE company_id = $1 AND evidence_type = 'run' AND reference_id = $2 ORDER BY change_set_id`,
+      [COMPANY, runId],
+    )).rows;
+    expect(evidence.map((row) => row.change_set_id)).toEqual(ids);
+    const assessments = (await fixture.db.query<{ change_set_id: string }>(
+      `SELECT change_set_id FROM ${NS}.change_assessments WHERE company_id = $1 AND change_set_id IN ($2, $3)`,
+      [COMPANY, failingSet, healthySet],
+    )).rows;
+    expect(assessments).toEqual([{ change_set_id: healthySet }]);
+  });
+
   it("caps metrics, captured evidence and overlapping changes at seven days", async () => {
     const appliedAt = new Date(Date.now() - 10 * 86400_000).toISOString();
     const source = await createSet("Old change", appliedAt);

@@ -1381,9 +1381,14 @@ async function onRunTerminal(ctx: PluginContext, event: PluginEvent) {
     [event.companyId, runId],
   );
   for (const row of rows) {
-    await insertAutomaticRunEvidence(ctx, event.companyId, row.changeSetId, runId);
-    await recomputeMetrics(ctx, event.companyId, row.changeSetId);
-    await assessSet(ctx, event.companyId, row.changeSetId);
+    try {
+      await insertAutomaticRunEvidence(ctx, event.companyId, row.changeSetId, runId);
+      await recomputeMetrics(ctx, event.companyId, row.changeSetId);
+      await assessSet(ctx, event.companyId, row.changeSetId);
+    } catch {
+      // A failed Change Set must not leave every other eligible set stale.
+      ctx.logger.warn("Org Tracker run evidence refresh failed", { changeSetId: row.changeSetId });
+    }
   }
 }
 
