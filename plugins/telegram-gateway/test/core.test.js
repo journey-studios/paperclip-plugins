@@ -169,9 +169,10 @@ test("routes immediate events to the configured company conversation and ignores
   await processEvent(ctx, event);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.comments[0].issueId, "chat-a");
-  assert.equal(ctx.inspect.wakes.length, 1);
-  assert.equal(ctx.inspect.wakes[0].companyId, "companyA");
-  assert.match(ctx.inspect.comments[0].body, /human_decision\.approval/);
+  assert.equal(ctx.inspect.wakes.length, 0);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.equal(ctx.inspect.publications[0].companyId, "companyA");
+  assert.match(ctx.inspect.comments[0].body, /kind=approval/);
   assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
 });
 
@@ -212,7 +213,8 @@ test("reconciles pending approvals and interactions without duplicate cards", as
   await reconcileHumanDecisions(ctx, "companyA", config);
   await reconcileHumanDecisions(ctx, "companyA", config);
   assert.equal(ctx.inspect.comments.length, 2);
-  assert.equal(ctx.inspect.wakes.length, 2);
+  assert.equal(ctx.inspect.wakes.length, 0);
+  assert.equal(ctx.inspect.publications.length, 2);
   assert.match(ctx.inspect.comments[0].body, /approval-a/);
   assert.match(ctx.inspect.comments[1].body, /interaction-1/);
   assert.doesNotMatch(ctx.inspect.comments[1].body, /BEGIN PRIVATE/);
@@ -525,30 +527,29 @@ test("marked plugin comments are ignored to prevent event loops", async () => {
   assert.deepEqual(ctx.inspect.wakes, []);
 });
 
-const approvalEvent = { eventId: "retry-event", eventType: "approval.created", entityId: "approval-a", companyId: "companyA" };
-const approvalConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
-const approvalIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
-const approvalRecords = () => ({ "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget" } });
+const founderCommsEvent = { eventId: "retry-event", eventType: "budget.incident.opened", entityId: "incident-a", companyId: "companyA" };
+const founderCommsConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
+const founderCommsIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
 
 test("replaying a founder event after wakeup failure keeps one input comment", async () => {
   let attempts = 0;
-  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, founderCommsIssues(), {}, {
     requestWakeup: async () => { if (++attempts === 1) throw new Error("wakeup unavailable"); },
   });
-  await assert.rejects(processEvent(ctx, approvalEvent), /wakeup unavailable/);
+  await assert.rejects(processEvent(ctx, founderCommsEvent), /wakeup unavailable/);
   assert.equal(ctx.inspect.comments.length, 1);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.wakes.length, 1);
   assert.equal(attempts, 2);
   assert.match(ctx.inspect.comments[0].body, /^\[FOUNDER_COMMS_EVENT\]\ndelivery=[0-9a-f]{64}\n/);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
 });
 
 test("replaying a crash between comment creation and marker storage finds the existing comment", async () => {
   let lostOnce = true;
-  const ctx = makeContext(approvalConfig, approvalIssues(), approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, founderCommsIssues(), {}, {
     stateSet: async (key) => {
       if (lostOnce && key.stateKey.startsWith("comment-created:")) {
         lostOnce = false;
@@ -556,9 +557,9 @@ test("replaying a crash between comment creation and marker storage finds the ex
       }
     },
   });
-  await assert.rejects(processEvent(ctx, approvalEvent), /simulated crash/);
+  await assert.rejects(processEvent(ctx, founderCommsEvent), /simulated crash/);
   assert.equal(ctx.inspect.comments.length, 1);
-  await processEvent(ctx, approvalEvent);
+  await processEvent(ctx, founderCommsEvent);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.wakes.length, 1);
 });
@@ -566,12 +567,12 @@ test("replaying a crash between comment creation and marker storage finds the ex
 test("pending flush retries without a duplicate system comment or losing queued items", async () => {
   const issues = {};
   let failWakeOnce = true;
-  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, issues, {}, {
     requestWakeup: async () => {
       if (failWakeOnce) { failWakeOnce = false; throw new Error("flush wakeup unavailable"); }
     },
   });
-  await processEvent(ctx, approvalEvent); // conversation absent -> pending
+  await processEvent(ctx, founderCommsEvent); // conversation absent -> pending
   assert.equal(ctx.inspect.comments.length, 0);
   issues["companyA:chat-a"] = chat("chat-a", "source:telegram:room-a");
   const config = await companyConfig(ctx, "companyA");
@@ -613,7 +614,7 @@ test("digest retry after wakeup failure reuses a single comment", async () => {
 test("a pending flush preserves items arriving while its wakeup is in flight", async () => {
   let injectOnce = true;
   const issues = { "companyA:chat-a": chat("chat-a", "source:telegram:room-a") };
-  const ctx = makeContext(approvalConfig, issues, approvalRecords(), {
+  const ctx = makeContext(founderCommsConfig, issues, {}, {
     requestWakeup: async () => {
       if (!injectOnce) return;
       injectOnce = false;

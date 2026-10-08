@@ -62,7 +62,10 @@ function fixture(publisher = async () => ({ state: "published" })) {
 }
 async function startAlert(f) {
   await processEvent(f.ctx, {
-    companyId: f.companyId, eventId: "created", eventType: "approval.created", entityId: "approval",
+    companyId: f.companyId,
+    eventId: "created",
+    eventType: "budget.incident.opened",
+    entityId: "incident-1",
   });
   assert.deepEqual(f.wakes, ["run-1"]);
 }
@@ -364,8 +367,10 @@ test("one failed publication cannot block later pending runs", async () => {
   });
   await startAlert(f);
   await processEvent(f.ctx, {
-    companyId: f.companyId, eventId: "created-again",
-    eventType: "approval.created", entityId: "approval-2",
+    companyId: f.companyId,
+    eventId: "created-again",
+    eventType: "budget.incident.opened",
+    entityId: "incident-2",
   });
   finalComment(f, { id: "comment-broken", runId: "run-1" });
   finalComment(f, { id: "comment-healthy", runId: "run-2" });
