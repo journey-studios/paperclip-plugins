@@ -1,4 +1,5 @@
 export const MCP_PROTOCOL_VERSION: "2025-11-25";
+export class PluginMcpToolError extends Error { constructor(code: "invalid_cursor"); }
 export type PluginMcpTool = {
   name: string;
   title: string;
