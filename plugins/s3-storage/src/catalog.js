@@ -112,12 +112,12 @@ export async function listObjects(ctx, companyId, projectId, limit) {
 }
 
 export async function markReady(ctx, companyId, objectId, stagingVersionId = null) {
-  await ctx.db.execute(
+  const result = await ctx.db.execute(
     `UPDATE ${table(ctx)} SET status = 'ready', staging_version_id = $3, ready_at = COALESCE(ready_at, now())
      WHERE company_id = $1 AND object_id = $2 AND status = 'pending'`,
     [companyId, objectId, stagingVersionId],
   );
-  return getObject(ctx, companyId, objectId);
+  return { row: await getObject(ctx, companyId, objectId), transitioned: result.rowCount === 1 };
 }
 
 export function safeObject(row) {

@@ -35,7 +35,29 @@ function etag(bytes) {
   return `"${createHash("md5").update(bytes).digest("hex")}"`;
 }
 
-async function startS3Fixture(t) {
+function createBarrier(parties = 2) {
+  let arrivals = 0;
+  let open;
+  let fail;
+  let timeout;
+  const waiting = new Promise((resolve, reject) => {
+    open = resolve;
+    fail = reject;
+  });
+  return async () => {
+    if (arrivals === 0) {
+      timeout = setTimeout(() => fail(new Error(`provider barrier did not receive ${parties} requests`)), 5_000);
+    }
+    arrivals += 1;
+    if (arrivals === parties) {
+      clearTimeout(timeout);
+      open();
+    }
+    await waiting;
+  };
+}
+
+async function startS3Fixture(t, { raceFinalize = false } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-s3-test-"));
   const keyPath = path.join(dir, "key.pem");
   const certPath = path.join(dir, "cert.pem");
@@ -46,6 +68,9 @@ async function startS3Fixture(t) {
   const cert = await readFile(certPath);
   const objects = new Map();
   const requests = [];
+  const headBarrier = raceFinalize ? createBarrier() : null;
+  const getBarrier = raceFinalize ? createBarrier() : null;
+  const copyBarrier = raceFinalize ? createBarrier() : null;
   const server = https.createServer({ key, cert }, async (req, res) => {
     const url = new URL(req.url, "https://127.0.0.1");
     const [, bucket, ...segments] = url.pathname.split("/");
@@ -77,6 +102,7 @@ async function startS3Fixture(t) {
         res.writeHead(412).end("<Error><Code>PreconditionFailed</Code></Error>");
         return;
       }
+      await copyBarrier?.();
       const published = {
         bytes: Buffer.from(stored.bytes),
         etag: etag(stored.bytes),
@@ -107,6 +133,7 @@ async function startS3Fixture(t) {
         res.writeHead(404).end();
         return;
       }
+      if (objectKey.includes("/_staging/")) await headBarrier?.();
       res.writeHead(200, {
         "content-length": stored.bytes.length,
         etag: stored.etag,
@@ -130,6 +157,7 @@ async function startS3Fixture(t) {
         res.writeHead(404).end("<Error><Code>NoSuchVersion</Code></Error>");
         return;
       }
+      if (objectKey.includes("/_staging/")) await getBarrier?.();
       res.writeHead(200, { "content-length": stored.bytes.length, etag: stored.etag }).end(stored.bytes);
       return;
     }
@@ -320,7 +348,7 @@ test("published worker bundle completes prepare, signed PUT, finalize, and signe
     if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
     else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
   });
-  const fixture = await startS3Fixture(t);
+  const fixture = await startS3Fixture(t, { raceFinalize: true });
   const schema = `plugin_${manifest.database.namespaceSlug}_${createHash("sha256").update(manifest.id).digest("hex").slice(0, 10)}`;
   const db = new PGlite();
   await db.exec(`CREATE TABLE public.companies (id uuid PRIMARY KEY); CREATE SCHEMA ${schema};`);
@@ -341,6 +369,7 @@ test("published worker bundle completes prepare, signed PUT, finalize, and signe
     secretAccessKeyRef: { type: "secret_ref", secretId: SECRET_ID },
   };
   const registeredTools = new Map();
+  const activityEntries = [];
   const ctx = {
     db: {
       namespace: schema,
@@ -356,7 +385,7 @@ test("published worker bundle completes prepare, signed PUT, finalize, and signe
     } },
     tools: { register: (name, declaration, handler) => registeredTools.set(name, { declaration, handler }) },
     data: { register() {} },
-    activity: { log: async () => {} },
+    activity: { log: async (entry) => activityEntries.push(entry) },
     logger: { warn() {} },
   };
   await bundledPlugin.definition.setup(ctx);
@@ -392,10 +421,15 @@ test("published worker bundle completes prepare, signed PUT, finalize, and signe
   });
   assert.equal(stagedPut.status, 200);
 
-  const finalized = await request("upload-finalize", { params: { objectId: prepared.body.objectId } });
-  assert.equal(finalized.status, 200);
-  assert.equal(finalized.body.object.status, "ready");
-  assert.equal(finalized.body.object.projectId, PROJECT);
+  const finalizedResponses = await Promise.all([
+    request("upload-finalize", { params: { objectId: prepared.body.objectId } }),
+    request("upload-finalize", { params: { objectId: prepared.body.objectId } }),
+  ]);
+  assert.ok(finalizedResponses.every((response) => response.status === 200));
+  assert.deepEqual(finalizedResponses.map((response) => response.body.alreadyFinalized).sort(), [false, true]);
+  assert.ok(finalizedResponses.every((response) => response.body.object.status === "ready"));
+  assert.ok(finalizedResponses.every((response) => response.body.object.projectId === PROJECT));
+  assert.equal(activityEntries.filter((entry) => entry.entityType === "storage.upload_finalized").length, 1);
   const readyObject = fixture.objects.get(prepared.body.objectKey);
   assert.deepEqual(readyObject.bytes, bytes);
   assert.equal(readyObject.metadata.sha256, createHash("sha256").update(bytes).digest("hex"));

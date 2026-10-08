@@ -133,10 +133,12 @@ export async function finalizeUpload(ctx, companyId, config, objectId) {
   }
   if (row.status !== "ready") {
     const verified = await verifyAndPublish(ctx, companyId, config, row);
-    const ready = await markReady(ctx, companyId, row.objectId, verified.stagingVersionId);
-    await audit(ctx, companyId, "Finalized an S3-compatible media upload", "storage.upload_finalized", config, { objectId: row.objectId, projectId: row.projectId, size: row.size, sha256: row.sha256 });
-    await cleanupStaging(ctx, companyId, config, ready);
-    return { object: safeObject(ready), alreadyFinalized: false };
+    const result = await markReady(ctx, companyId, row.objectId, verified.stagingVersionId);
+    if (result.transitioned) {
+      await audit(ctx, companyId, "Finalized an S3-compatible media upload", "storage.upload_finalized", config, { objectId: row.objectId, projectId: row.projectId, size: row.size, sha256: row.sha256 });
+    }
+    await cleanupStaging(ctx, companyId, config, result.row);
+    return { object: safeObject(result.row), alreadyFinalized: !result.transitioned };
   }
   await cleanupStaging(ctx, companyId, config, row);
   return { object: safeObject(row), alreadyFinalized: true };

@@ -14,7 +14,7 @@ The plugin's `onApiRequest` handles MCP JSON-RPC requests using its existing dom
 
 The endpoint supports a **stateless subset** of MCP Streamable HTTP (protocol `2025-11-25`): `initialize`, `ping`, `notifications/initialized`, `tools/list`, and `tools/call` using JSON-RPC POST. The plugin route cannot send SSE streams or arbitrary MCP response headers because the current Paperclip plugin API is JSON-only with an HTTP response-header allowlist. `GET` returns 405. Tools use safe, bounded JSON results. This is not complete transport compatibility across all MCP clients.
 
-## Tools (nine, all read-only)
+## Tools
 
 | Plugin | MCP tools | Notes |
 |---|---|---|

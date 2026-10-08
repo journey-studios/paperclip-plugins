@@ -192,7 +192,9 @@ test("service applies the company default project and list exposes ready metadat
   assert.equal(persisted.status, "pending");
   assert.equal(persisted.stagingVersionId, null);
   assert.equal(Object.keys(persisted).some((key) => /signed|secret|url/i.test(key)), false);
-  await markReady(ctx, COMPANY, prepared.objectId, "provider-version-1");
+  const ready = await markReady(ctx, COMPANY, prepared.objectId, "provider-version-1");
+  assert.equal(ready.transitioned, true);
+  assert.equal(ready.row.status, "ready");
   const readyList = await listMedia(ctx, COMPANY, providerConfig, {});
   assert.equal(readyList.objects.length, 1);
   assert.equal(readyList.objects[0].id, prepared.objectId);
@@ -200,4 +202,22 @@ test("service applies the company default project and list exposes ready metadat
   const storedColumns = (await db.query(`SELECT * FROM ${SCHEMA}.objects WHERE object_id = $1`, [prepared.objectId])).rows[0];
   assert.equal(storedColumns.staging_version_id, "provider-version-1");
   assert.equal(Object.keys(storedColumns).some((key) => /signed|secret|url/i.test(key)), false);
+});
+
+test("markReady uses a PostgreSQL compare-and-set and grants transition ownership once", async (t) => {
+  const { ctx, db } = await makeDatabase(t);
+  const pending = await createOrFindIntent(ctx, makeIntent({
+    objectId: "66666666-6666-4666-8666-666666666666",
+    idempotencyKey: "77777777-7777-4777-8777-777777777777",
+  }));
+
+  const outcomes = await Promise.all([
+    markReady(ctx, COMPANY, pending.objectId, "staging-version-a"),
+    markReady(ctx, COMPANY, pending.objectId, "staging-version-b"),
+  ]);
+  assert.deepEqual(outcomes.map((result) => result.transitioned).sort(), [false, true]);
+  assert.ok(outcomes.every((result) => result.row.status === "ready"));
+  const stored = (await db.query(`SELECT status, staging_version_id FROM ${SCHEMA}.objects WHERE object_id = $1`, [pending.objectId])).rows[0];
+  assert.equal(stored.status, "ready");
+  assert.ok(["staging-version-a", "staging-version-b"].includes(stored.staging_version_id));
 });
