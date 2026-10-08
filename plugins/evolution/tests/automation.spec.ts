@@ -107,4 +107,40 @@ describe("Org Tracker automated evidence and native tools", () => {
     expect((await fixture.db.query(`SELECT count(*)::int AS n FROM ${NS}.change_assessments WHERE change_set_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc'`)).rows[0])
       .toMatchObject({ n: 0 });
   });
+  it("reconciles older uncaptured runs past the 150 already-evidenced recent runs", async () => {
+    const set = await setWithAgent();
+    const runs = Array.from({ length: 151 }, (_, index) => ({
+      id: `dddddddd-dddd-4ddd-8ddd-${(index + 1).toString(16).padStart(12, "0")}`,
+      startedAt: new Date(Date.now() - (index + 1) * 1_000).toISOString(),
+    }));
+    const runValues = runs.map((entry, index) => `($${index * 2 + 3}::uuid, $${index * 2 + 4}::timestamptz)`).join(",");
+    await fixture.db.query(
+      `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at) ` +
+        `SELECT fixture.id, $1, $2, 'succeeded', fixture.started_at, fixture.started_at + interval '5 minutes' ` +
+        `FROM (VALUES ${runValues}) AS fixture(id, started_at)`,
+      [COMPANY, AGENT, ...runs.flatMap((entry) => [entry.id, entry.startedAt])],
+    );
+    const capturedRuns = runs.slice(0, 150);
+    const evidenceValues = capturedRuns.map((_, index) => `($${index * 2 + 3}::uuid, $${index * 2 + 4}::timestamptz)`).join(",");
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_evidence (id, company_id, change_set_id, evidence_type, reference_id, label, verdict, notes, metadata, observed_at) ` +
+        `SELECT gen_random_uuid(), $1, $2, 'run', fixture.id::text, 'Existing automatic run', 'neutral', 'Previously captured', ` +
+        `'{"capture":"automatic","status":"succeeded"}'::jsonb, fixture.started_at FROM (VALUES ${evidenceValues}) AS fixture(id, started_at)`,
+      [COMPANY, set, ...capturedRuns.flatMap((entry) => [entry.id, entry.startedAt])],
+    );
+
+    const first = await fixture.action<{ capturedRuns: number }>("refresh-assessment", { changeSetId: set });
+    expect(first.capturedRuns).toBe(1);
+    expect((await fixture.db.query(
+      `SELECT metadata->>'capture' AS capture FROM ${NS}.change_evidence WHERE company_id=$1 AND change_set_id=$2 AND reference_id=$3`,
+      [COMPANY, set, runs[150].id],
+    )).rows).toEqual([{ capture: "automatic" }]);
+
+    const second = await fixture.action<{ capturedRuns: number }>("refresh-assessment", { changeSetId: set });
+    expect(second.capturedRuns).toBe(0);
+    expect((await fixture.db.query(
+      `SELECT count(*)::int AS total FROM ${NS}.change_evidence WHERE company_id=$1 AND change_set_id=$2 AND evidence_type='run'`,
+      [COMPANY, set],
+    )).rows).toEqual([{ total: 151 }]);
+  });
 });

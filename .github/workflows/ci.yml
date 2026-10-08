@@ -43,3 +43,14 @@ jobs:
       - name: Build native S3 bridge image
         run: docker build -f services/s3-storage-bridge/Dockerfile -t paperclip-s3-storage-bridge:ci .
       - uses: ./.github/actions/secret-scan
+
+  storage-collector-node22:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.0
+      - run: node --check services/storage-collector/src/lib.mjs
+      - run: node --check services/storage-collector/src/collect.mjs
+      - run: node --test services/storage-collector/test/*.test.mjs

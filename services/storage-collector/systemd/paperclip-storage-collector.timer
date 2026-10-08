@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Paperclip storage metrics every ten minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=10min
+Persistent=true
+Unit=paperclip-storage-collector.service
+
+[Install]
+WantedBy=timers.target
