@@ -27,6 +27,14 @@ function evictOldestResolved(secretCache) {
   return false;
 }
 
+/** Reject missing or malformed provider credentials before they can reach the SDK. */
+function resolveValidatedSecret(secrets, ref, companyId, configPath) {
+  return Promise.resolve(secrets.resolve(ref, { companyId, configPath })).then((value) => {
+    if (typeof value !== "string" || value.length === 0) throw new Error("secret value unavailable");
+    return value;
+  });
+}
+
 /** Resolve one company-scoped secret reference with short-lived, bounded deduplication. */
 export async function resolveCachedSecret(ctx, companyId, configPath, ref) {
   const secrets = ctx?.secrets;
@@ -50,14 +58,13 @@ export async function resolveCachedSecret(ctx, companyId, configPath, ref) {
   // are already resolving, resolve this request without retaining its result.
   while (secretCache.size >= SECRET_CACHE_MAX_ENTRIES && evictOldestResolved(secretCache)) {}
   if (secretCache.size >= SECRET_CACHE_MAX_ENTRIES) {
-    return secrets.resolve(ref, { companyId, configPath });
+    return resolveValidatedSecret(secrets, ref, companyId, configPath);
   }
 
   const entry = { expiresAt: null, promise: null };
   entry.promise = Promise.resolve()
-    .then(() => secrets.resolve(ref, { companyId, configPath }))
+    .then(() => resolveValidatedSecret(secrets, ref, companyId, configPath))
     .then((value) => {
-      if (typeof value !== "string" || value.length === 0) throw new Error("secret value unavailable");
       entry.expiresAt = performance.now() + SECRET_CACHE_TTL_MS;
       return value;
     })

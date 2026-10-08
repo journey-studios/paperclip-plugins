@@ -151,6 +151,51 @@ test("cache stays bounded and evicts least recently used resolved references", a
   assert.equal(await resolveCachedSecret(ctx, "bounded-0", "accessKeyIdRef", firstRef), "bounded-0-130");
 });
 
+test("saturated in-flight cache validates overflow secrets without retaining them", async () => {
+  const pending = [];
+  const overflowResults = new Map([
+    ["overflow-empty", ""],
+    ["overflow-object", { accessKeyId: "invalid" }],
+    ["overflow-valid", "valid-overflow-secret"],
+  ]);
+  const overflowCalls = new Map();
+  const ctx = { secrets: {
+    resolve: (secretRef) => {
+      if (overflowResults.has(secretRef.secretId)) {
+        overflowCalls.set(secretRef.secretId, (overflowCalls.get(secretRef.secretId) ?? 0) + 1);
+        return overflowResults.get(secretRef.secretId);
+      }
+      return new Promise((resolve) => pending.push(resolve));
+    },
+  } };
+  const inFlight = Array.from({ length: 128 }, () =>
+    resolveCachedSecret(ctx, "company-saturated", "accessKeyIdRef", ref()),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pending.length, 128);
+
+  await assert.rejects(
+    resolveCachedSecret(ctx, "company-saturated", "sessionTokenRef", ref("overflow-empty")),
+    /secret value unavailable/,
+  );
+  await assert.rejects(
+    resolveCachedSecret(ctx, "company-saturated", "sessionTokenRef", ref("overflow-object")),
+    /secret value unavailable/,
+  );
+  assert.equal(
+    await resolveCachedSecret(ctx, "company-saturated", "sessionTokenRef", ref("overflow-valid")),
+    "valid-overflow-secret",
+  );
+  assert.equal(
+    await resolveCachedSecret(ctx, "company-saturated", "sessionTokenRef", ref("overflow-valid")),
+    "valid-overflow-secret",
+  );
+  assert.equal(overflowCalls.get("overflow-valid"), 2);
+
+  for (const resolve of pending) resolve("valid-base-secret");
+  await Promise.all(inFlight);
+});
+
 test("concurrent secret-store failures deduplicate only in flight and permit a retry", async () => {
   let calls = 0;
   const secretRef = ref();
