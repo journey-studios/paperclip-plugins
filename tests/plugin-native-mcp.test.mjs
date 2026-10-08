@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPluginMcpEndpoint } from "../shared/mcp/index.js";
+import { createPluginMcpEndpoint, PluginMcpToolError } from "../shared/mcp/index.js";
 
 const companyId = "36a19923-c66d-4341-bf06-bb7e83bc5890";
 const request = (method, params = {}, id = 1, overrides = {}) => ({
@@ -57,4 +57,45 @@ test("errors and oversized tool results do not leak data", async () => {
     assert.doesNotMatch(JSON.stringify(response), /SECRET-DO-NOT-LEAK|xxxxxxxxxxxxxxxxxxx/);
   }
   assert.throws(() => createPluginMcpEndpoint({ name: "a", version: "1", tools: [{ name: "write", execute: async () => {}, inputSchema: { type: "object" } }] }));
+});
+
+test("rejects unsupported array and object schema types instead of passing unvalidated data", async () => {
+  let executions = 0;
+  const schema = createPluginMcpEndpoint({
+    name: "type-safety", version: "1",
+    tools: ["array", "object"].map((type) => ({
+      name: type, title: type, description: "Unsupported schema type",
+      readOnly: true, inputSchema: { type: "object", additionalProperties: false, properties: {
+        payload: { type },
+      }, required: ["payload"] },
+      execute: async () => { executions++; return { accepted: true }; },
+    })),
+  });
+  for (const [name, value] of [["array", []], ["object", { unexpected: "value" }]]) {
+    const res = await schema(request("tools/call", { name, arguments: { payload: value } }));
+    assert.equal(res.body.error.code, -32602);
+  }
+  assert.equal(executions, 0);
+});
+
+test("surfaces only allowlisted cursor errors while redacting arbitrary backend errors", async () => {
+  const schema = createPluginMcpEndpoint({
+    name: "safe-error", version: "1",
+    tools: [
+      { name: "expired", title: "Cursor", description: "Cursor", readOnly: true,
+        inputSchema: { type: "object", additionalProperties: false },
+        execute: async () => { throw new PluginMcpToolError("invalid_cursor"); } },
+      { name: "secret", title: "Internal", description: "Internal", readOnly: true,
+        inputSchema: { type: "object", additionalProperties: false },
+        execute: async () => { throw new Error("secret-token-should-not-leak"); } },
+    ],
+  });
+  const cursor = await schema(request("tools/call", { name: "expired", arguments: {} }));
+  assert.equal(cursor.body.result.isError, true);
+  assert.match(cursor.body.result.content[0].text, /Invalid or expired cursor/);
+  assert.match(cursor.body.result.content[0].text, /without a cursor/);
+  const failure = await schema(request("tools/call", { name: "secret", arguments: {} }));
+  assert.equal(failure.body.result.isError, true);
+  assert.equal(failure.body.result.content[0].text, "Tool execution failed or result unavailable");
+  assert.doesNotMatch(JSON.stringify(failure), /secret-token-should-not-leak/);
 });
