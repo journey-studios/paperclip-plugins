@@ -405,6 +405,7 @@ async function publishToConversation(ctx, companyId, config, item) {
   await ensureSystemInputComment(ctx, companyId, conversation.id, `event:${item.id}`, body);
   const wake = await ctx.issues.requestWakeup(conversation.id, companyId, {
     reason: "founder_comms_event",
+    // Keep the persisted wake source stable through package/UI renames.
     contextSource: "plugin.founder-comms-router",
     idempotencyKey: `founder-comms:${item.id}`,
   });

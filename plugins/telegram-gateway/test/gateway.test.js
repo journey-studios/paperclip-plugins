@@ -167,7 +167,7 @@ test("formats /agents and /help as multiline Telegram replies", async () => {
 
   assert.equal(await invoke("agents"), "**Agentes do Paperclip**\n\n• **Founder Liaison**\n  _Estado:_ Ocioso");
   const help = await invoke("help");
-  assert.match(help, /^\*\*Comandos do Founder Gateway\*\*\n\n`\/agents`/);
+  assert.match(help, /^\*\*Comandos do Telegram Gateway\*\*\n\n`\/agents`/);
   assert.match(help, /`\/tasks` — Listar tarefas abertas\n`\/credits` — Ver créditos gastos no mês por grupo\n`\/help` — Exibir esta ajuda/);
   assert.match(help, /\n\n\*\*Comandos nativos do Paperclip\*\*\n\n`\/status`/);
 });

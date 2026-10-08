@@ -1,8 +1,8 @@
-# Founder Gateway
+# Telegram Gateway
 
 An event-driven Paperclip plugin that preserves founder notifications and digests, adds direct read-only Telegram commands without an agent run, and natively publishes the Liaison response from a plugin-triggered wake.
 
-**Compatibility:** the installed manifest ID `journey-studios.founder-comms-router`, package name and bundle directory stay unchanged. This is an in-place evolution, not a second installation. Paperclip remains the authority over authentication, chat transport, issues, approvals and publications.
+**Compatibility:** the product name, npm package (`@journey-studios/telegram-gateway`), and source directory are renamed, but the manifest **`id` intentionally stays `journey-studios.founder-comms-router`**. That literal pluginKey is looked up by the currently installed Paperclip host and is the actor ID on existing plugin events. State keys, event types, action keys, and legacy idempotency/source markers stay unchanged. Install this as an in-place **0.3.1 update of the existing plugin**, not as a second identity, preserving its registry UUID, configuration, and stored state. Paperclip remains the authority over authentication, chat transport, issues, approvals and publications.
 
 ## Configuration
 
@@ -12,9 +12,9 @@ Settings are read per company. Configure the liaison agent ID and founder user I
 
 Digest settings use a validated IANA timezone, local 24-hour times, and ISO weekdays (Monday is 1). The host checks the configured slots each minute, then sends only when the company has queued updates and a matching conversation. Public defaults use UTC, weekdays, and 09:00 and 17:00. For an existing 0.1.0 installation that should retain its former schedule, set the company timezone to `America/Sao_Paulo` and keep the 09:00 and 17:00 times before upgrading.
 
-## Founder Gateway — direct Telegram commands
+## Telegram Gateway — direct Telegram commands
 
-The custom Paperclip runtime (Founder Gateway integration) handles `/agents`, `/tasks`, `/credits` and `/help` through the existing, provider-verified inbound delivery and task-control publication paths. The host passes its linked Paperclip principal to the `telegram-command` plugin action. The worker rechecks that the host-authenticated user is the configured `founderUserId`, that the endpoint has the expected Liaison assigned, and that the company is allowed. The plugin performs read-only company-scoped SDK calls; **no LLM or agent run is started**. Native `/status`, `/new`, `/close`, and `/task` are deliberately unchanged.
+The custom Paperclip runtime (legacy Founder Gateway integration) forwards `/agents`, `/tasks` and `/help` through its existing provider-verified inbound delivery and task-control publication paths. `/credits` is also supported by the plugin action, but the current native Telegram parser does not yet forward it. The host passes its linked Paperclip principal to the `telegram-command` plugin action. The worker rechecks that the host-authenticated user is the configured `founderUserId`, that the endpoint has the expected Liaison assigned, and that the company is allowed. The plugin performs read-only company-scoped SDK calls; **no LLM or agent run is started**. Native `/status`, `/new`, `/close`, and `/task` are deliberately unchanged.
 
 `/credits` reads Paperclip's native monthly spend fields only: the company total comes from `Company.spentMonthlyCents`, while the breakdown sums each agent's `spentMonthlyCents` into the organizational tree defined by `reportsTo`. The CEO is its own leadership bucket, each direct CEO report owns its descendant subtree, and agents outside the CEO tree are grouped as `Fora da hierarquia`. This does not infer prices for unpriced/subscription usage.
 
@@ -48,11 +48,11 @@ Paperclip's native `explicit:<commentId>:<endpointId>` key prevents duplicate lo
 
 ## Development
 
-Run `pnpm --filter @journey-studios/founder-comms-router build`, `test`, or `typecheck` from the repository root. Node.js 24.11 or newer is required.
+Run `pnpm --filter @journey-studios/telegram-gateway build`, `test`, or `typecheck` from the repository root. Node.js 24.11 or newer is required.
 
 ### Native Telegram formatting
 
-Founder Gateway renders `/agents`, `/tasks`, `/credits` and `/help` as CommonMark with
+Telegram Gateway renders `/agents`, `/tasks`, `/credits` and `/help` as CommonMark with
 bold section headings, structured multiline records and visible status labels.
 Paperclip's existing native chat publisher converts the Markdown to Telegram
 MarkdownV2; there is no direct Telegram API client, added webhook or LLM
@@ -64,4 +64,14 @@ before rendering. Long responses only include complete records.
 
 The Gateway accepts authorized read-only commands contributed by other installed plugins through the host-namespaced plugin event bus. Providers are allowlisted per company with `commandProviderIds` (default: `journey-studios.agent-observatory`), declare their names, and answer through correlated, bounded events. Command registration does not grant permission to bypass the linked-Founder check, mutate Paperclip state, or impersonate a different provider.
 
-**Ingress status:** the existing Telegram channel currently recognizes only `/agents`, `/tasks` and `/help`. The internal `telegram-command` plugin action can dispatch `custos`, but sending `/custos` to the current bot **is not yet handled by the native parser**. This PR intentionally does not change the core. Full rollout requires a separately verified plugin-only inbound adapter; see [Telegram Command API v1](../../docs/telegram-command-api-v1.md).
+**Ingress status:** the existing Telegram channel currently recognizes only `/agents`, `/tasks` and `/help`. Renaming the plugin does not change this parser. The internal `telegram-command` plugin action can dispatch `custos`, but sending `/custos` to the current bot **is not yet handled by the native parser**. This PR intentionally does not change the core. Full rollout requires a separately verified plugin-only inbound adapter; see [Telegram Command API v1](../../docs/telegram-command-api-v1.md).
+
+## Rename rollout (no Paperclip core changes)
+
+- **Current version:** `@journey-studios/telegram-gateway@0.3.1`, manifest `id=journey-studios.founder-comms-router`. `displayName` is `Telegram Gateway`.
+- **Preflight:** snapshot PostgreSQL, the current plugin package, registry UUID, company configuration and plugin state; verify that the host binds the legacy ID and the `telegram-command` action.
+- **Update:** use authenticated Paperclip plugin management. For a local package-path replacement, soft-uninstall **without purge** and reinstall this package from a persistent mount path. Never install a second plugin under a different ID or write directly to the registry tables.
+- **Validation:** verify the **same UUID**, `ready` health, same configuration and state, and authorized `/help`, `/agents`, `/tasks`, `/credits`, and Observatory-contributed `/custos` through the internal action. Confirm zero new agent runs for read-only commands; the existing bot and webhook must be untouched.
+- **Rollback:** soft-uninstall without purge and reinstall the archived `0.3.0` package with the same manifest ID, restoring the previous label and package while retaining configuration/state. Roll back if health, command authorization or publications regress.
+
+Renaming **does not** make `/custos` reachable through the Telegram bot: the host ingress limitation tracked in JOU-86 remains. No Caddy, webhook, bot, Paperclip core, or custom runtime image changes belong in this PR.

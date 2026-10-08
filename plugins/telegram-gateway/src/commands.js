@@ -245,7 +245,7 @@ async function displayCredits(ctx, companyId) {
 
 const commands = new Map([
   ["help", async () => [
-    "**Comandos do Founder Gateway**",
+    "**Comandos do Telegram Gateway**",
     "",
     "`/agents` — Listar agentes",
     "`/tasks` — Listar tarefas abertas",
@@ -272,10 +272,10 @@ const commands = new Map([
 
 // Internal extensibility point: only trusted modules inside this installed
 // plugin can register handlers. Remote plugins never inject executable code.
-export function registerFounderCommand(command, handler) {
+export function registerTelegramCommand(command, handler) {
   if (typeof command !== "string" || !/^[a-z][a-z0-9_]{1,31}$/.test(command) ||
       typeof handler !== "function" || commands.has(command)) {
-    throw new Error("Invalid or duplicate Founder Gateway command");
+    throw new Error("Invalid or duplicate Telegram Gateway command");
   }
   commands.set(command, handler);
 }

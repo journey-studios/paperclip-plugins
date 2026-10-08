@@ -1,12 +1,14 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import manifest from "../src/manifest.js";
 import assert from "node:assert/strict";
 import { createTelegramCommandRegistry } from "../src/command-registry.js";
 import { executeFounderCommand } from "../src/commands.js";
 import {
-  DISCOVER_EVENT, EXECUTE_EVENT, contributeTelegramCommands,
+  GATEWAY_ID, DISCOVER_EVENT, EXECUTE_EVENT, contributeTelegramCommands,
 } from "../../../shared/telegram-command-api.js";
 
-const gatewayId = "journey-studios.founder-comms-router";
+const gatewayId = GATEWAY_ID;
 const observatoryId = "journey-studios.agent-observatory";
 const founder = "founder";
 const companyId = "company-a";
@@ -42,6 +44,19 @@ function harness() {
   }
   return { actor, messages };
 }
+
+test("Telegram Gateway rename preserves runtime ID and event namespace", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.name, "@journey-studios/telegram-gateway");
+  assert.equal(pkg.version, "0.3.1");
+  assert.equal(manifest.version, pkg.version);
+  assert.equal(manifest.displayName, "Telegram Gateway");
+  assert.equal(manifest.id, "journey-studios.founder-comms-router");
+  assert.equal(manifest.id, GATEWAY_ID);
+  assert.equal(DISCOVER_EVENT, `plugin.${GATEWAY_ID}.telegram-command-discover-v1`);
+  assert.equal(EXECUTE_EVENT, `plugin.${GATEWAY_ID}.telegram-command-execute-v1`);
+  assert.ok(manifest.instanceConfigSchema.properties.commandProviderIds);
+});
 
 test("plugin registers itself and Gateway dispatches a cost command without an LLM", async () => {
   const h = harness();
