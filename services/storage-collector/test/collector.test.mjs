@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collect, DIRECTORIES, makeHistory, parseAlertPolicy, parseDf, parseDocker, parseDu, parseHumanBytes } from "../src/lib.mjs";
+import { collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDocker, parseDu, parseHumanBytes } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -47,6 +47,41 @@ test("bounded read-only command list, missing dirs, and partial coverage", async
   assert.deepEqual(calls.map((call) => call.cmd), ["df", "docker", "du", "du"]);
   assert.deepEqual(calls[2].args, ["-x", "-s", "-B1", "--", "/var/lib/containerd"]);
 });
+test("distinguishes missing directories from inaccessible directories without leaking errors", async () => {
+  const accessError = (code) => Object.assign(new Error("sensitive host diagnostic"), { code });
+  for (const code of ["ENOENT", "ENOTDIR"]) {
+    assert.equal(await inspectDirectory("/path", async () => { throw accessError(code); }), false);
+  }
+  for (const code of ["EACCES", "EPERM", "EIO"]) {
+    await assert.rejects(inspectDirectory("/path", async () => { throw accessError(code); }),
+      (error) => error.code === code);
+  }
+  assert.equal(await inspectDirectory("/path", async () => {}), true);
+
+  const snapshot = await collect({
+    now: () => date,
+    directories: [
+      { id: "denied", label: "Denied", path: "/denied" },
+      { id: "broken", label: "Broken", path: "/broken" },
+      { id: "absent", label: "Absent", path: "/absent" },
+    ],
+    inspect: (path) => inspectDirectory(path, async () => {
+      if (path === "/denied") throw accessError("EACCES");
+      if (path === "/broken") throw accessError("EIO");
+      throw accessError("ENOENT");
+    }),
+    run: async (command) => command === "df" ? df : docker,
+  });
+  assert.deepEqual(snapshot.directories.map((row) => row.status),
+    ["unavailable", "unavailable", "missing"]);
+  assert.deepEqual(snapshot.coverage.issues, [
+    { source: "denied", code: "inspection_failed" },
+    { source: "broken", code: "inspection_failed" },
+  ]);
+  assert.equal(snapshot.coverage.partial, true);
+  assert.ok(!JSON.stringify(snapshot).includes("sensitive host diagnostic"));
+});
+
 test("directory scanning respects a total deadline and marks unvisited sources unavailable", async () => {
   let elapsed = 0;
   const duTimeouts = [];

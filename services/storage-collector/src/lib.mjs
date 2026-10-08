@@ -99,6 +99,16 @@ export function parseAlertPolicy(env) {
   }
   return { warnFreeBytes, criticalFreeBytes };
 }
+// Only absence is a missing directory; permissions and IO failures are unknown coverage.
+export async function inspectDirectory(path, accessFn) {
+  try {
+    await accessFn(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
 export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {} }) {
   const generatedAt = now().toISOString();
   const filesystem = parseDf(await run("df", ["-B1", "--output=size,used,avail,pcent", "--", "/"], 15000));
@@ -119,7 +129,11 @@ export async function collect({ run, inspect = async () => true, now = () => new
     }
     let present = false;
     try { present = await inspect(dir.path); }
-    catch { issue(dir.id, "inspection_failed"); }
+    catch {
+      readings.push({ id: dir.id, label: dir.label, status: "unavailable", bytes: null });
+      issue(dir.id, "inspection_failed");
+      continue;
+    }
     if (!present) { readings.push({ id: dir.id, label: dir.label, status: "missing", bytes: null }); continue; }
     // Also limit the last du invocation to the remaining budget: simply
     // checking the deadline before a 30s call can overrun TimeoutStartSec.
