@@ -77,6 +77,7 @@ export function getStatus(config) {
     maxUploadBytes: config.maxUploadBytes,
     urlTtlSeconds: config.urlTtlSeconds,
     allowProvisioning: config.allowProvisioning,
+    nativeAttachmentsEnabled: config.enableNativeAttachments,
     storageFingerprint: storageFingerprint(config),
   };
 }
@@ -192,7 +193,7 @@ function safeActor(actor) {
   return { actorType: actor.actorType, actorId: actor.actorId, runId: actor.actorType === "agent" ? actor.runId ?? null : null };
 }
 
-async function audit(ctx, companyId, message, entityType, config, metadata) {
+export async function audit(ctx, companyId, message, entityType, config, metadata) {
   try {
     await ctx.activity.log({
       companyId,

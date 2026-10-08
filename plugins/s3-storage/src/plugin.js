@@ -4,6 +4,12 @@ import manifest from "./manifest.js";
 import { validateConfig } from "./config.js";
 import { StorageError, parseUuid } from "./catalog.js";
 import {
+  deleteNativeAttachment,
+  finalizeNativeAttachment,
+  prepareNativeAttachment,
+  readNativeAttachment,
+} from "./native-service.js";
+import {
   createReadLink,
   finalizeUpload,
   getStatus,
@@ -212,6 +218,10 @@ const plugin = definePlugin({
       if (input.routeKey === "upload-finalize") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_finalize_upload"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "object-download") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_read_link"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "bucket-create") return { status: 201, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_create_bucket"), input.body, actor) };
+      if (input.routeKey === "native-prepare") return { status: 200, headers: { "cache-control": "no-store" }, body: await prepareNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-finalize") return { status: 200, headers: { "cache-control": "no-store" }, body: await finalizeNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-read") return { status: 200, headers: { "cache-control": "no-store" }, body: await readNativeAttachment(ctx, companyId, config, input.body) };
+      if (input.routeKey === "native-delete") return { status: 200, headers: { "cache-control": "no-store" }, body: await deleteNativeAttachment(ctx, companyId, config, input.body) };
       return { status: 404, body: { error: "unknown_route" } };
     } catch (error) {
       return apiError(error);

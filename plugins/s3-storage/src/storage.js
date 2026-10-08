@@ -45,7 +45,8 @@ export async function withS3(ctx, companyId, config, operation) {
   } catch (error) {
     if (error instanceof StorageError) throw error;
     const status = Number(error?.$metadata?.httpStatusCode);
-    if (status === 404 || error?.name === "NotFound" || error?.name === "NoSuchBucket") throw new StorageError("storage_object_unavailable", 404);
+    if (status === 404 || error?.name === "NotFound" || error?.name === "NoSuchKey" ||
+      error?.name === "NoSuchVersion" || error?.name === "NoSuchBucket") throw new StorageError("storage_object_unavailable", 404);
     if (status === 403 || error?.name === "AccessDenied" || error?.name === "InvalidAccessKeyId" || error?.name === "SignatureDoesNotMatch") {
       throw new StorageError("storage_access_denied", 502);
     }
@@ -116,7 +117,7 @@ export async function verifyAndPublish(ctx, companyId, config, row) {
     // streaming verification; If-Match closes the overwrite race between the
     // GET/hash and server-side copy. Late PUTs cannot mutate the ready object.
     const source = encodeCopySource(row.bucket, row.stagingKey, head.VersionId);
-    await client.send(new CopyObjectCommand({
+    const copied = await client.send(new CopyObjectCommand({
       Bucket: row.bucket,
       Key: row.objectKey,
       CopySource: source,
@@ -125,11 +126,42 @@ export async function verifyAndPublish(ctx, companyId, config, row) {
       ContentType: row.contentType,
       Metadata: { sha256: actual, objectid: row.objectId },
     }));
-    const published = await client.send(new HeadObjectCommand({ Bucket: row.bucket, Key: row.objectKey }));
-    if (Number(published.ContentLength) !== Number(row.size) || published.Metadata?.sha256 !== row.sha256) {
-      throw new StorageError("published_object_verification_failed", 502);
+    const physicalVersionId = copied.VersionId ?? null;
+    const published = await headAndVerifyPublished(client, row, physicalVersionId);
+    return {
+      etag: published.ETag ?? null,
+      lastModified: published.LastModified ?? new Date(),
+      stagingVersionId: head.VersionId ?? null,
+      physicalVersionId: physicalVersionId ?? published.VersionId ?? null,
+    };
+  });
+}
+
+export async function verifyPublishedNativeObject(ctx, companyId, config, row) {
+  return withS3(ctx, companyId, config, async (client) =>
+    headAndVerifyPublished(client, {
+      bucket: row.bucket,
+      objectKey: row.physicalKey,
+      size: row.size,
+      sha256: row.sha256,
+      etag: row.etag,
+    }, row.physicalVersionId));
+}
+
+export async function removeNativeObject(ctx, companyId, config, row) {
+  return withS3(ctx, companyId, config, async (client) => {
+    await client.send(new DeleteObjectCommand({
+      Bucket: row.bucket,
+      Key: row.physicalKey,
+      ...(row.physicalVersionId ? { VersionId: row.physicalVersionId } : {}),
+    }));
+    if (row.stagingKey) {
+      await client.send(new DeleteObjectCommand({
+        Bucket: row.bucket,
+        Key: row.stagingKey,
+        ...(row.stagingVersionId ? { VersionId: row.stagingVersionId } : {}),
+      }));
     }
-    return { etag: published.ETag ?? null, stagingVersionId: head.VersionId ?? null };
   });
 }
 
@@ -138,6 +170,7 @@ export async function signDownload(ctx, companyId, config, row) {
     const downloadUrl = await getSignedUrl(client, new GetObjectCommand({
       Bucket: row.bucket,
       Key: row.objectKey,
+      ...(row.physicalVersionId ? { VersionId: row.physicalVersionId } : {}),
       ResponseContentType: row.contentType,
       ResponseContentDisposition: contentDisposition(row.filename),
     }), { expiresIn: config.urlTtlSeconds });
@@ -165,6 +198,19 @@ export async function createBucket(ctx, companyId, config, bucket) {
     await client.send(command);
     return { ok: true, provider: config.provider, bucket, savedToSettings: config.bucket === bucket };
   });
+}
+
+async function headAndVerifyPublished(client, row, physicalVersionId) {
+  const published = await client.send(new HeadObjectCommand({
+    Bucket: row.bucket,
+    Key: row.objectKey,
+    ...(physicalVersionId ? { VersionId: physicalVersionId } : {}),
+  }));
+  if (Number(published.ContentLength) !== Number(row.size) || published.Metadata?.sha256 !== row.sha256 ||
+    (row.etag && published.ETag && published.ETag !== row.etag)) {
+    throw new StorageError("published_object_verification_failed", 502);
+  }
+  return published;
 }
 
 function encodeCopySource(bucket, key, versionId) {

@@ -57,7 +57,7 @@ function createBarrier(parties = 2) {
   };
 }
 
-async function startS3Fixture(t, { raceFinalize = false } = {}) {
+async function startS3Fixture(t, { raceFinalize = false, blockCopy = false } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-s3-test-"));
   const keyPath = path.join(dir, "key.pem");
   const certPath = path.join(dir, "cert.pem");
@@ -67,10 +67,20 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
   const key = await readFile(keyPath);
   const cert = await readFile(certPath);
   const objects = new Map();
+  const versions = new Map();
+  let nextVersion = 0;
+  const storeVersion = (objectKey, object) => {
+    const objectVersions = versions.get(objectKey) ?? [];
+    objectVersions.push(object);
+    versions.set(objectKey, objectVersions);
+    objects.set(objectKey, object);
+  };
   const requests = [];
   const headBarrier = raceFinalize ? createBarrier() : null;
   const getBarrier = raceFinalize ? createBarrier() : null;
   const copyBarrier = raceFinalize ? createBarrier() : null;
+  let releaseCopy;
+  const copyGate = blockCopy ? { wait: () => new Promise((resolve) => { releaseCopy = resolve; }) } : null;
   const server = https.createServer({ key, cert }, async (req, res) => {
     const url = new URL(req.url, "https://127.0.0.1");
     const [, bucket, ...segments] = url.pathname.split("/");
@@ -79,6 +89,7 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
     for await (const chunk of req) body.push(chunk);
     const bytes = Buffer.concat(body);
     requests.push({ method: req.method, path: url.pathname, search: url.search, headers: req.headers, bytes });
+    const requestRecord = requests.at(-1);
     if (bucket !== config.bucket) {
       res.writeHead(404).end();
       return;
@@ -89,7 +100,10 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
       const [sourcePath, sourceQuery] = source.split("?", 2);
       const slash = sourcePath.indexOf("/");
       const sourceKey = sourcePath.slice(slash + 1);
-      const stored = objects.get(sourceKey);
+      const requestedSourceVersion = sourceQuery ? new URLSearchParams(sourceQuery).get("versionId") : null;
+      const stored = requestedSourceVersion
+        ? (versions.get(sourceKey) ?? []).find((version) => version.versionId === requestedSourceVersion)
+        : objects.get(sourceKey);
       if (!stored) {
         res.writeHead(404).end("<Error><Code>NoSuchKey</Code></Error>");
         return;
@@ -98,36 +112,37 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
         res.writeHead(412).end("<Error><Code>PreconditionFailed</Code></Error>");
         return;
       }
-      if (sourceQuery && new URLSearchParams(sourceQuery).get("versionId") !== stored.versionId) {
-        res.writeHead(412).end("<Error><Code>PreconditionFailed</Code></Error>");
-        return;
-      }
       await copyBarrier?.();
+      await copyGate?.wait();
       const published = {
         bytes: Buffer.from(stored.bytes),
         etag: etag(stored.bytes),
-        versionId: `fixture-version-${requests.length}`,
+        versionId: `fixture-version-${++nextVersion}`,
         metadata: { sha256: req.headers["x-amz-meta-sha256"], objectid: req.headers["x-amz-meta-objectid"] },
         contentType: req.headers["content-type"],
       };
-      objects.set(objectKey, published);
-      res.writeHead(200, { "content-type": "application/xml" })
+      requestRecord.createdVersionId = published.versionId;
+      storeVersion(objectKey, published);
+      res.writeHead(200, { "content-type": "application/xml", "x-amz-version-id": published.versionId })
         .end(`<CopyObjectResult><ETag>${published.etag}</ETag></CopyObjectResult>`);
       return;
     }
 
     if (req.method === "PUT") {
-      objects.set(objectKey, {
+      storeVersion(objectKey, {
         bytes,
         etag: etag(bytes),
-        versionId: `fixture-version-${requests.length}`,
+        versionId: `fixture-version-${++nextVersion}`,
         metadata: {},
         contentType: req.headers["content-type"],
       });
       res.writeHead(200, { etag: etag(bytes) }).end();
       return;
     }
-    const stored = objects.get(objectKey);
+    const requestedVersionId = url.searchParams.get("versionId");
+    const stored = requestedVersionId
+      ? (versions.get(objectKey) ?? []).find((version) => version.versionId === requestedVersionId)
+      : objects.get(objectKey);
     if (req.method === "HEAD") {
       if (!stored) {
         res.writeHead(404).end();
@@ -163,7 +178,18 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
     }
     if (req.method === "DELETE") {
       requests.at(-1).versionId = url.searchParams.get("versionId");
-      objects.delete(objectKey);
+      const versionId = url.searchParams.get("versionId");
+      if (versionId) {
+        const remaining = (versions.get(objectKey) ?? []).filter((version) => version.versionId !== versionId);
+        versions.set(objectKey, remaining);
+        if (objects.get(objectKey)?.versionId === versionId) {
+          if (remaining.length) objects.set(objectKey, remaining.at(-1));
+          else objects.delete(objectKey);
+        }
+      } else {
+        versions.delete(objectKey);
+        objects.delete(objectKey);
+      }
       res.writeHead(204).end();
       return;
     }
@@ -178,7 +204,7 @@ async function startS3Fixture(t, { raceFinalize = false } = {}) {
     await new Promise((resolve) => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
   });
-  return { objects, requests, endpoint: `https://127.0.0.1:${port}` };
+  return { objects, versions, requests, endpoint: `https://127.0.0.1:${port}`, releaseCopy: () => releaseCopy?.() };
 }
 
 function context(fixture) {
@@ -207,6 +233,14 @@ async function fetchSigned(url, options) {
     if (options.body) request.write(options.body);
     request.end();
   });
+}
+
+async function waitFor(predicate, message) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(message);
 }
 
 test("AWS SDK signed upload, verified publish, and download use real HTTPS S3 requests", async (t) => {
@@ -458,4 +492,190 @@ test("published worker bundle completes prepare, signed PUT, finalize, and signe
   assert.equal(Object.keys(stored).some((key) => /signed|secret|url/i.test(key)), false);
   assert.equal(JSON.stringify(stored).includes(ACTUAL_SECRET), false);
   assert.equal(registeredTools.size, manifest.tools.length);
+});
+
+test("native attachment routes clean a losing concurrent copy and support verified read/delete retries", async (t) => {
+  assert.equal(typeof bundledPlugin.definition?.onApiRequest, "function");
+  const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  t.after(() => {
+    if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
+  });
+  const fixture = await startS3Fixture(t, { raceFinalize: true });
+  const schema = `plugin_${manifest.database.namespaceSlug}_${createHash("sha256").update(manifest.id).digest("hex").slice(0, 10)}`;
+  const db = new PGlite();
+  await db.exec(`CREATE TABLE public.companies (id uuid PRIMARY KEY); CREATE SCHEMA ${schema};`);
+  for (const name of ["001_s3_storage.sql", "002_native_attachments.sql"]) {
+    await db.exec(await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  }
+  await db.query("INSERT INTO public.companies (id) VALUES ($1)", [COMPANY]);
+  t.after(() => db.close());
+  const rawConfig = {
+    provider: "s3", endpoint: fixture.endpoint, region: "us-east-1", bucket: config.bucket,
+    prefix: "paperclip", forcePathStyle: true, maxUploadBytes: 1024 * 1024, urlTtlSeconds: 90,
+    enableNativeAttachments: true,
+    accessKeyIdRef: { type: "secret_ref", secretId: KEY_ID },
+    secretAccessKeyRef: { type: "secret_ref", secretId: SECRET_ID },
+  };
+  const activityEntries = [];
+  const ctx = {
+    db: {
+      namespace: schema,
+      query: async (sql, params = []) => (await db.query(sql, params)).rows,
+      execute: async (sql, params = []) => ({ rowCount: (await db.query(sql, params)).affectedRows ?? 0 }),
+    },
+    companies: { get: async (id) => id === COMPANY ? { id } : null },
+    config: { get: async (id) => id === COMPANY ? rawConfig : {} },
+    secrets: { resolve: async (ref, { companyId }) => {
+      assert.equal(companyId, COMPANY);
+      return ref.secretId === KEY_ID ? ACTUAL_KEY : ACTUAL_SECRET;
+    } },
+    tools: { register() {} }, data: { register() {} }, activity: { log: async (entry) => activityEntries.push(entry) }, logger: { warn() {} },
+  };
+  await bundledPlugin.definition.setup(ctx);
+  const request = (routeKey, body = {}) => bundledPlugin.definition.onApiRequest({
+    routeKey, method: "POST", path: `/native/${routeKey}`, params: {}, query: { companyId: COMPANY }, body,
+    actor: { actorType: "user", actorId: "bridge" }, companyId: COMPANY, headers: {},
+  });
+
+  const bytes = Buffer.from("native attachment data\n");
+  const objectKey = `${COMPANY}/attachments/${randomUUID()}`;
+  const requestBody = {
+    objectKey, filename: "native.png", contentType: "image/png", size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  const [prepared, retried] = await Promise.all([
+    request("native-prepare", requestBody), request("native-prepare", requestBody),
+  ]);
+  assert.equal(prepared.status, 200);
+  assert.equal(retried.status, 200);
+  assert.equal(prepared.body.object.objectKey, objectKey);
+  assert.equal(prepared.body.uploadMethod, "PUT");
+  assert.deepEqual(prepared.body.object, retried.body.object);
+
+  assert.equal((await fetchSigned(prepared.body.uploadUrl, {
+    method: "PUT", headers: prepared.body.uploadHeaders, body: bytes,
+  })).status, 200);
+  const finalizedResponses = await Promise.all([
+    request("native-finalize", { objectKey }), request("native-finalize", { objectKey }),
+  ]);
+  assert.ok(finalizedResponses.every((response) => response.status === 200));
+  assert.deepEqual(finalizedResponses[0].body.object, finalizedResponses[1].body.object);
+  assert.equal(activityEntries.filter((entry) => entry.entityType === "storage.native_attachment_finalized").length, 1);
+  const finalized = finalizedResponses[0];
+  assert.equal(finalized.body.object.sha256, requestBody.sha256);
+  assert.match(finalized.body.object.etag, /^"[^"]+"$/);
+  assert.equal(finalized.body.object.size, bytes.length);
+  assert.ok(finalized.body.object.lastModified);
+  const finalKey = `paperclip/native/${COMPANY}/${fixture.requests.find((entry) => entry.headers["x-amz-meta-objectid"])?.headers["x-amz-meta-objectid"]}`;
+  assert.ok(fixture.objects.has(finalKey));
+  const nativeRow = (await db.query(`SELECT physical_version_id FROM ${schema}.native_objects WHERE company_id = $1 AND native_key = $2`, [COMPANY, objectKey])).rows[0];
+  const copyVersions = fixture.requests.filter((entry) => entry.headers["x-amz-copy-source"]).map((entry) => entry.createdVersionId);
+  assert.equal(copyVersions.length, 2);
+  assert.equal((fixture.versions.get(finalKey) ?? []).length, 1, JSON.stringify({
+    row: nativeRow,
+    versions: fixture.versions.get(finalKey),
+    deletes: fixture.requests.filter((entry) => entry.method === "DELETE").map(({ path, versionId }) => ({ path, versionId })),
+  }));
+  assert.equal(fixture.versions.get(finalKey)[0].versionId, nativeRow.physical_version_id);
+  const losingCopyDelete = fixture.requests.find((entry) => entry.method === "DELETE" && entry.path.endsWith(finalKey));
+  assert.ok(copyVersions.includes(losingCopyDelete?.versionId));
+  assert.notEqual(losingCopyDelete.versionId, nativeRow.physical_version_id);
+  assert.equal(fixture.objects.has(`paperclip/companies/${COMPANY}/company/sha256/${requestBody.sha256.slice(0, 2)}/${requestBody.sha256}`), false);
+
+  const storedPhysicalObject = fixture.objects.get(finalKey);
+  const storedPhysicalVersions = fixture.versions.get(finalKey);
+  fixture.objects.delete(finalKey);
+  fixture.versions.delete(finalKey);
+  const missingRead = await request("native-read", { objectKey });
+  assert.equal(missingRead.status, 404);
+  assert.equal(missingRead.body.error, "storage_object_unavailable");
+  fixture.objects.set(finalKey, storedPhysicalObject);
+  fixture.versions.set(finalKey, storedPhysicalVersions);
+
+  const linked = await request("native-read", { objectKey });
+  assert.equal(linked.status, 200);
+  assert.equal(new URL(linked.body.downloadUrl).searchParams.get("versionId"), fixture.objects.get(finalKey).versionId);
+  assert.deepEqual((await fetchSigned(linked.body.downloadUrl, { method: "GET" })).body, bytes);
+  assert.deepEqual((await request("native-finalize", { objectKey })).body.object, finalized.body.object);
+  assert.deepEqual((await request("native-delete", { objectKey })).body, { deleted: true });
+  assert.deepEqual((await request("native-delete", { objectKey })).body, { deleted: true });
+  assert.equal(fixture.objects.has(finalKey), false);
+  const row = (await db.query(`SELECT status, physical_key, physical_version_id, staging_key, staging_version_id FROM ${schema}.native_objects WHERE company_id = $1 AND native_key = $2`, [COMPANY, objectKey])).rows[0];
+  const physicalDelete = fixture.requests.find((entry) => entry.method === "DELETE" && entry.path.endsWith(finalKey) &&
+    entry.versionId === row.physical_version_id);
+  assert.equal(physicalDelete.versionId, row.physical_version_id);
+  assert.equal(row.status, "deleted");
+  assert.equal(row.physical_key, finalKey);
+  assert.equal(Object.keys(row).some((key) => /signed|secret|url/i.test(key)), false);
+});
+
+test("native DELETE tombstone wins against an in-flight verified copy without resurrecting the object", async (t) => {
+  const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  t.after(() => {
+    if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
+  });
+  const fixture = await startS3Fixture(t, { blockCopy: true });
+  const schema = `plugin_${manifest.database.namespaceSlug}_${createHash("sha256").update(manifest.id).digest("hex").slice(0, 10)}`;
+  const db = new PGlite();
+  await db.exec(`CREATE TABLE public.companies (id uuid PRIMARY KEY); CREATE SCHEMA ${schema};`);
+  for (const name of ["001_s3_storage.sql", "002_native_attachments.sql"]) {
+    await db.exec(await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
+  }
+  await db.query("INSERT INTO public.companies (id) VALUES ($1)", [COMPANY]);
+  t.after(() => db.close());
+  const rawConfig = {
+    provider: "s3", endpoint: fixture.endpoint, region: "us-east-1", bucket: config.bucket,
+    prefix: "paperclip", forcePathStyle: true, maxUploadBytes: 1024 * 1024, urlTtlSeconds: 90,
+    enableNativeAttachments: true,
+    accessKeyIdRef: { type: "secret_ref", secretId: KEY_ID },
+    secretAccessKeyRef: { type: "secret_ref", secretId: SECRET_ID },
+  };
+  const ctx = {
+    db: {
+      namespace: schema,
+      query: async (sql, params = []) => (await db.query(sql, params)).rows,
+      execute: async (sql, params = []) => ({ rowCount: (await db.query(sql, params)).affectedRows ?? 0 }),
+    },
+    companies: { get: async (id) => id === COMPANY ? { id } : null },
+    config: { get: async (id) => id === COMPANY ? rawConfig : {} },
+    secrets: { resolve: async (ref, { companyId }) => {
+      assert.equal(companyId, COMPANY);
+      return ref.secretId === KEY_ID ? ACTUAL_KEY : ACTUAL_SECRET;
+    } },
+    tools: { register() {} }, data: { register() {} }, activity: { log: async () => {} }, logger: { warn() {} },
+  };
+  await bundledPlugin.definition.setup(ctx);
+  const request = (routeKey, body = {}) => bundledPlugin.definition.onApiRequest({
+    routeKey, method: "POST", path: `/native/${routeKey}`, params: {}, query: { companyId: COMPANY }, body,
+    actor: { actorType: "user", actorId: "bridge" }, companyId: COMPANY, headers: {},
+  });
+  const bytes = Buffer.from("native race bytes");
+  const objectKey = `${COMPANY}/attachments/${randomUUID()}`;
+  const prepared = await request("native-prepare", {
+    objectKey, filename: "race.png", contentType: "image/png", size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+  assert.equal(prepared.status, 200);
+  assert.equal((await fetchSigned(prepared.body.uploadUrl, { method: "PUT", headers: prepared.body.uploadHeaders, body: bytes })).status, 200);
+
+  const finalizing = request("native-finalize", { objectKey });
+  await waitFor(() => fixture.requests.some((entry) => entry.headers["x-amz-copy-source"]), "finalize did not reach its verified copy");
+  assert.deepEqual((await request("native-delete", { objectKey })).body, { deleted: true });
+  fixture.releaseCopy();
+  const finalizeResponse = await finalizing;
+  assert.equal(finalizeResponse.status, 404);
+  assert.equal(finalizeResponse.body.error, "native_object_not_found");
+
+  const row = (await db.query(`SELECT status, physical_key, physical_version_id FROM ${schema}.native_objects WHERE company_id = $1 AND native_key = $2`, [COMPANY, objectKey])).rows[0];
+  assert.equal(row.status, "deleted");
+  assert.equal(fixture.objects.has(row.physical_key), false);
+  const copied = fixture.requests.find((entry) => entry.headers["x-amz-copy-source"]);
+  const deleted = fixture.requests.find((entry) => entry.method === "DELETE" && entry.path.endsWith(row.physical_key) &&
+    entry.versionId === copied.createdVersionId);
+  assert.ok(copied?.createdVersionId);
+  assert.equal(deleted.versionId, copied.createdVersionId);
 });

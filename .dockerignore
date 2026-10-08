@@ -1,0 +1,16 @@
+.git
+.paperclip
+.package-output
+node_modules
+**/node_modules
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.credentials
+**/secrets/**
+**/credentials/**
+**/data/**
+**/coverage/**
+**/.cache/**

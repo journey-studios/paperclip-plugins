@@ -1,0 +1,99 @@
+import { readFile } from "node:fs/promises";
+import { createBridgeServer } from "./bridge.js";
+
+async function readSecretFile(path, name, { allowMultiline = false } = {}) {
+	if (!path) throw new Error(`${name} file path is required`);
+	const value = (await readFile(path, "utf8")).trim();
+	if (
+		!value ||
+		(!allowMultiline && /[\r\n]/.test(value)) ||
+		value.includes("\0")
+	)
+		throw new Error(`${name} file is empty or malformed`);
+	return value;
+}
+
+function parseDefaultCredentials(contents) {
+	if (contents.length > 16 * 1024 || contents.includes("\0"))
+		throw new Error("credentials file is malformed");
+	const values = new Map();
+	let inDefault = false;
+	let sawDefault = false;
+	for (const rawLine of contents.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+		const section = /^\[([^\]]+)\]$/.exec(line);
+		if (section) {
+			inDefault = section[1].trim() === "default";
+			if (inDefault) {
+				if (sawDefault) throw new Error("credentials file is malformed");
+				sawDefault = true;
+			}
+			continue;
+		}
+		if (!inDefault) continue;
+		const entry = /^([a-zA-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+		if (!entry) throw new Error("credentials file is malformed");
+		const name = entry[1].toLowerCase();
+		if (
+			!["aws_access_key_id", "aws_secret_access_key"].includes(name) ||
+			values.has(name) ||
+			!entry[2]
+		) {
+			throw new Error("credentials file uses an unsupported profile feature");
+		}
+		values.set(name, entry[2]);
+	}
+	const accessKeyId = values.get("aws_access_key_id");
+	const secretAccessKey = values.get("aws_secret_access_key");
+	if (!sawDefault || !accessKeyId || !secretAccessKey)
+		throw new Error("default AWS credentials are missing");
+	return {
+		accessKeyId,
+		secretAccessKey,
+	};
+}
+
+async function main() {
+	const [credentialsContents, apiKey] = await Promise.all([
+		readSecretFile(
+			process.env.AWS_SHARED_CREDENTIALS_FILE,
+			"AWS shared credentials",
+			{ allowMultiline: true },
+		),
+		readSecretFile(
+			process.env.PAPERCLIP_BOARD_API_KEY_FILE,
+			"Paperclip board API key",
+		),
+	]);
+	const credentials = parseDefaultCredentials(credentialsContents);
+	const port = Number(process.env.PAPERCLIP_BRIDGE_PORT ?? "9000");
+	if (!Number.isInteger(port) || port < 1 || port > 65535)
+		throw new Error("bridge port is invalid");
+	const server = createBridgeServer({
+		pluginBaseUrl: process.env.PAPERCLIP_PLUGIN_BASE_URL,
+		apiKey,
+		...credentials,
+		bucket: process.env.PAPERCLIP_BRIDGE_BUCKET ?? "paperclip-native",
+		region: process.env.PAPERCLIP_BRIDGE_REGION ?? "us-east-1",
+		maxUploadBytes: process.env.PAPERCLIP_BRIDGE_MAX_UPLOAD_BYTES
+			? Number(process.env.PAPERCLIP_BRIDGE_MAX_UPLOAD_BYTES)
+			: undefined,
+		maxConcurrentRequests: process.env.PAPERCLIP_BRIDGE_MAX_CONCURRENT_REQUESTS
+			? Number(process.env.PAPERCLIP_BRIDGE_MAX_CONCURRENT_REQUESTS)
+			: undefined,
+	});
+	server.listen(port, "0.0.0.0", () => {
+		process.stdout.write(`S3 storage bridge listening on ${port}\n`);
+	});
+	const shutdown = () => server.close(() => process.exit(0));
+	process.once("SIGINT", shutdown);
+	process.once("SIGTERM", shutdown);
+}
+
+main().catch(() => {
+	process.stderr.write(
+		"S3 storage bridge startup failed; check configuration and mounted secret files.\n",
+	);
+	process.exitCode = 1;
+});
