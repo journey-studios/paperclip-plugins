@@ -1,1 +1,1 @@
-file:///home/daytona/paperclip-plugins/plugins/telegram-gateway/test/core.test.js
+PLACEHOLDER_CORE_FULL
