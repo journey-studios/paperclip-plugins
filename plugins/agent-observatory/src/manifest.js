@@ -8,7 +8,7 @@ const apiRoute = (routeKey, path) => ({
 });
 
 const mcpApiRoute = (method) => ({
-  routeKey: "mcp",
+  routeKey: method === "POST" ? "mcp" : "mcp-get",
   method,
   path: "/mcp",
   auth: "board",

@@ -42,7 +42,7 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   apiRoutes: [
     ...(["POST", "GET"] as const).map((method) => ({
-      routeKey: "mcp",
+      routeKey: method === "POST" ? "mcp" : "mcp-get",
       method,
       path: "/mcp",
       auth: "board" as const,
