@@ -1,4 +1,4 @@
-import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
+import { createPluginMcpEndpoint, PluginMcpToolError } from "../../../shared/mcp/index.js";
 import {
   definePlugin,
   runWorker,
@@ -68,7 +68,20 @@ const mcpHandler = createPluginMcpEndpoint({
       },
       execute: async (args, { companyId }) => {
         const filters = Object.fromEntries(["q", "kind", "starred"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
-        const result = await listLibrary(mcpCtx, { companyId, filters, limit: args.limit ?? 30, cursor: args.cursor });
+        let result: Awaited<ReturnType<typeof listLibrary>>;
+        try {
+          result = await listLibrary(mcpCtx, { companyId, filters, limit: args.limit ?? 30, cursor: args.cursor });
+        } catch (error) {
+          // Surface only recognized cursor failures, never arbitrary backend messages.
+          const cursorErrors = new Set([
+            "Invalid library cursor; restart this search",
+            "Artifact pagination did not advance",
+          ]);
+          if (args.cursor !== undefined && error instanceof Error && cursorErrors.has(error.message)) {
+            throw new PluginMcpToolError("invalid_cursor");
+          }
+          throw error;
+        }
         return {
           companyId,
           artifacts: result.artifacts.map((artifact) => ({

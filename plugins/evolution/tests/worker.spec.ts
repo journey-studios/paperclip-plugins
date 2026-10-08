@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { PluginApiRequestInput, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import plugin from "../src/worker.js";
 import { createWorkerFixture, COMPANY, OTHER_COMPANY, AGENT, NS } from "./worker-fixture.js";
 
 let fixture: Awaited<ReturnType<typeof createWorkerFixture>>;
@@ -8,6 +9,39 @@ afterEach(async () => fixture.close());
 
 async function createSet(title: string, companyId = COMPANY, context = fixture.actorContext) {
   return fixture.action<{ ok: true; id: string }>("create-change-set", { companyId, title }, context);
+}
+
+/** Call an MCP route with the host-supplied company and board actor. */
+async function callMcpSummary(changeSetId: string) {
+  const input: PluginApiRequestInput = {
+    routeKey: "mcp",
+    method: "POST",
+    path: "/mcp",
+    params: {},
+    query: { companyId: COMPANY },
+    body: { jsonrpc: "2.0", id: 7, method: "tools/call", params: {
+      name: "orgTrackerChangeSummary", arguments: { changeSetId },
+    } },
+    actor: { actorType: "user", actorId: "test-user" },
+    companyId: COMPANY,
+    headers: {},
+  };
+  const response = await plugin.definition.onApiRequest!(input);
+  return response.body as { result: {
+    isError: boolean;
+    content: { type: string; text: string }[];
+    structuredContent?: {
+      companyId: string;
+      changeSet: Record<string, unknown>;
+      items: Record<string, unknown>[];
+      metrics: Record<string, unknown>[];
+      conclusions: Record<string, unknown>[];
+      coverage: {
+        itemCount: number; metricCount: number; conclusionCount: number;
+        itemsTruncated: boolean; metricsTruncated: boolean; conclusionsTruncated: boolean;
+      };
+    };
+  } };
 }
 
 describe("Evolution data integrity and actions", () => {
@@ -186,5 +220,67 @@ describe("Evolution data integrity and actions", () => {
     await createSet("Namespace scoped");
     expect(fixture.logs.some((sql) => sql.includes(`${NS}.change_sets`))).toBe(true);
     expect(fixture.logs.some((sql) => /\b(?:FROM|INTO|UPDATE)\s+(?:public\.)?change_sets\b/i.test(sql))).toBe(false);
+  });
+});
+
+describe("Evolution MCP bounded and tenant-safe change summary", () => {
+  it("returns only projected rows within 50/50/20 caps, with exact source counts and no snapshots", async () => {
+    const created = await createSet("Change-set MCP summary");
+    // Attach a sensitive snapshot to prove the MCP read never joins it.
+    const snapshot = await fixture.db.query<{ id: string }>(
+      `INSERT INTO ${NS}.change_snapshots
+       (id, company_id, entity_type, entity_id, snapshot_hash, source_type, snapshot)
+       VALUES (gen_random_uuid(), $1, 'agent', 'agent-1', 'secret-hash', 'test', '{"private":"RAW_SNAPSHOT_SECRET"}')
+       RETURNING id`, [COMPANY],
+    );
+    const snapshotId = snapshot.rows[0]!.id;
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_items
+       (id, company_id, change_set_id, entity_type, entity_id, entity_name, change_kind, source_type, before_snapshot_id)
+       SELECT gen_random_uuid(), $1, $2, 'agent', 'agent-1', 'Name', 'updated', 'test', $3
+       FROM generate_series(1,55) AS x(n)`, [COMPANY, created.id, snapshotId],
+    );
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_metrics (id, company_id, change_set_id, metric_key)
+       SELECT gen_random_uuid(), $1, $2, 'metric_' || n::text
+       FROM generate_series(1,52) AS x(n)`, [COMPANY, created.id],
+    );
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_conclusions (id, company_id, change_set_id, outcome, summary)
+       SELECT gen_random_uuid(), $1, $2, 'proven', 'Summary ' || n::text
+       FROM generate_series(1,23) AS x(n)`, [COMPANY, created.id],
+    );
+
+    fixture.logs.length = 0;
+    const response = await callMcpSummary(created.id);
+    expect(response.result.isError).toBe(false);
+    const data = response.result.structuredContent!;
+    expect(data.companyId).toBe(COMPANY);
+    expect(data.changeSet.title).toBe("Change-set MCP summary");
+    expect(data.items).toHaveLength(50);
+    expect(data.metrics).toHaveLength(50);
+    expect(data.conclusions).toHaveLength(20);
+    expect(data.coverage).toEqual({
+      itemCount: 55, metricCount: 52, conclusionCount: 23,
+      itemsTruncated: true, metricsTruncated: true, conclusionsTruncated: true,
+    });
+    const queries = fixture.logs.join("\n");
+    expect(queries).not.toMatch(/change_snapshots|heartbeat_runs|suggestedRuns|beforeSnapshot|afterSnapshot/i);
+    expect(queries).toMatch(/LIMIT 51/);
+    expect(queries).toMatch(/LIMIT 21/);
+    expect(fixture.logs.every((sql) => sql.includes("company_id = $1"))).toBe(true);
+    expect(JSON.stringify(response)).not.toContain("RAW_SNAPSHOT_SECRET");
+  });
+
+  it("does not leak another company's change set", async () => {
+    const otherActor: PluginPerformActionContext = {
+      actor: { type: "user", userId: "other-user", agentId: null, runId: null, companyId: OTHER_COMPANY },
+      companyId: OTHER_COMPANY,
+    };
+    const foreign = await createSet("Foreign secret", OTHER_COMPANY, otherActor);
+    const response = await callMcpSummary(foreign.id);
+    expect(response.result.isError).toBe(true);
+    expect(response.result.content[0]?.text).toBe("Tool execution failed or result unavailable");
+    expect(JSON.stringify(response)).not.toContain("Foreign secret");
   });
 });

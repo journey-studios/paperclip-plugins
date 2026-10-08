@@ -1340,6 +1340,74 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
   return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns };
 }
 
+/**
+ * Minimal MCP projection, separate from the board's full change detail.
+ * Bounded SELECTs prevent copying raw snapshots, metadata and suggested runs
+ * into worker memory; exact counts preserve coverage/truncation semantics.
+ */
+async function mcpChangeSummary(ctx: PluginContext, companyId: string, changeSetId: string) {
+  const [changeSet] = await ctx.db.query<Record<string, unknown>>(
+    'SELECT id, title, status, hypothesis, causality_level AS "causalityLevel", ' +
+      'applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt" ' +
+      'FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
+    [companyId, changeSetId],
+  );
+  if (!changeSet) throw new Error("Change Set not found");
+
+  const params = [companyId, changeSetId];
+  const [items, metrics, conclusions, itemTotals, metricTotals, conclusionTotals] = await Promise.all([
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT entity_type AS "entityType", entity_name AS "entityName", ' +
+        'change_kind AS "changeKind", occurred_at AS "occurredAt" ' +
+        'FROM change_items WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY occurred_at ASC, id ASC LIMIT 51',
+      params,
+    ),
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT metric_key AS "metricKey", baseline_value::float AS "baselineValue", ' +
+        'current_value::float AS "currentValue", delta_value::float AS "deltaValue", ' +
+        'unit, baseline_sample_size AS "baselineSampleSize", current_sample_size AS "currentSampleSize" ' +
+        'FROM change_metrics WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY metric_key ASC LIMIT 51',
+      params,
+    ),
+    ctx.db.query<Record<string, unknown>>(
+      'SELECT outcome, confidence, summary ' +
+        'FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2 ' +
+        'ORDER BY created_at DESC, id DESC LIMIT 21',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_items WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+    ctx.db.query<{ count: number | string }>(
+      'SELECT count(*)::int AS count FROM change_conclusions WHERE company_id = $1 AND change_set_id = $2',
+      params,
+    ),
+  ]);
+  const itemCount = Number(itemTotals[0]?.count ?? 0);
+  const metricCount = Number(metricTotals[0]?.count ?? 0);
+  const conclusionCount = Number(conclusionTotals[0]?.count ?? 0);
+  return {
+    companyId,
+    changeSet,
+    items: items.slice(0, 50),
+    metrics: metrics.slice(0, 50),
+    conclusions: conclusions.slice(0, 20),
+    coverage: {
+      itemCount, metricCount, conclusionCount,
+      itemsTruncated: itemCount > 50,
+      metricsTruncated: metricCount > 50,
+      conclusionsTruncated: conclusionCount > 20,
+    },
+  };
+}
+
 async function assertChangeSet(ctx: PluginContext, companyId: string, changeSetId: string) {
   const rows = await ctx.db.query<{ id: string }>(
     'SELECT id FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
@@ -1701,21 +1769,7 @@ const mcpHandler = createPluginMcpEndpoint({
         properties: { changeSetId: { type: "string", format: "uuid" } },
         required: ["changeSetId"], additionalProperties: false,
       },
-      execute: async (args, { companyId }) => {
-        const raw = await detail(mcpCtx, companyId, args.changeSetId as string);
-        const { id, title, status, hypothesis, causalityLevel, appliedAt, validationEndsAt } = raw.changeSet;
-        return {
-          companyId,
-          changeSet: { id, title, status, hypothesis, causalityLevel, appliedAt, validationEndsAt },
-          items: raw.items.slice(0, 50).map(({ entityType, entityName, changeKind, occurredAt }) => ({ entityType, entityName, changeKind, occurredAt })),
-          metrics: raw.metrics.slice(0, 50).map(({ metricKey, baselineValue, currentValue, deltaValue, unit, baselineSampleSize, currentSampleSize }) => ({ metricKey, baselineValue, currentValue, deltaValue, unit, baselineSampleSize, currentSampleSize })),
-          conclusions: raw.conclusions.slice(0, 20).map(({ outcome, confidence, summary }) => ({ outcome, confidence, summary })),
-          coverage: {
-            itemCount: raw.items.length, metricCount: raw.metrics.length, conclusionCount: raw.conclusions.length,
-            itemsTruncated: raw.items.length > 50, metricsTruncated: raw.metrics.length > 50, conclusionsTruncated: raw.conclusions.length > 20,
-          },
-        };
-      },
+      execute: (args, { companyId }) => mcpChangeSummary(mcpCtx, companyId, args.changeSetId as string),
     },
   ],
 });
