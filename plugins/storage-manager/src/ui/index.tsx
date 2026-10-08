@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   useHostNavigation,
   usePluginData,
@@ -102,6 +102,36 @@ export function StoragePage({ context }: PluginPageProps) {
 }
 function StorageDashboard({ companyId }: { companyId: string }) {
   const query = usePluginData<StorageSnapshot>("overview", { companyId });
+  const refreshPending = useRef(false);
+  const loading = useRef(query.loading);
+  const refresh = useRef(query.refresh);
+  const lastSettledResult = useRef({ data: query.data, error: query.error });
+  loading.current = query.loading;
+  refresh.current = query.refresh;
+  useEffect(() => {
+    if (query.loading) return;
+    const changed = lastSettledResult.current.data !== query.data || lastSettledResult.current.error !== query.error;
+    lastSettledResult.current = { data: query.data, error: query.error };
+    // The SDK refresh() is void, and React may batch a fast request's loading
+    // true/false updates away; a new settled data/error result ends the guard.
+    if (changed) refreshPending.current = false;
+  }, [query.loading, query.data, query.error]);
+  const refreshWhenVisible = useCallback(() => {
+    if (document.visibilityState !== "visible" || loading.current || refreshPending.current) return;
+    refreshPending.current = true;
+    refresh.current();
+  }, []);
+  useEffect(() => {
+    const refreshOnReturn = () => refreshWhenVisible();
+    const interval = window.setInterval(refreshOnReturn, 60_000);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    window.addEventListener("focus", refreshOnReturn);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+      window.removeEventListener("focus", refreshOnReturn);
+    };
+  }, [refreshWhenVisible]);
   const snapshot = query.data?.companyId === companyId ? query.data : null;
   const dirs = useMemo(() => (snapshot?.directories ?? [])
     .filter((row): row is SizeRow & { bytes: number } => row.status === "ok" && row.bytes != null)
@@ -112,7 +142,7 @@ function StorageDashboard({ companyId }: { companyId: string }) {
   return <main className="jsm">
     <style>{styles}</style>
     <header className="header"><div><h1>Storage Manager</h1><p className="sub">Disco da VPS, camadas Docker e evolução do armazenamento · somente leitura.</p></div>
-      <button type="button" onClick={() => query.refresh()} disabled={query.loading}>Atualizar métricas</button>
+      <button type="button" onClick={refreshWhenVisible} disabled={query.loading}>Atualizar métricas</button>
     </header>
     {query.error && <div className="notice warn" role="alert">Falha na consulta do plugin. Confira as configurações e tente novamente.</div>}
     {query.loading && !snapshot && <p className="notice" role="status">Consultando snapshot de armazenamento…</p>}

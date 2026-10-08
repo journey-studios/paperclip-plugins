@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-storage-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Read-only storage observability for Paperclip",

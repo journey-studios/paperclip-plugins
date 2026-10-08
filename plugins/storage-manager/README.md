@@ -8,6 +8,7 @@ Paperclip Plugin SDK v1 plugin for **read-only** disk observability. It uses the
 - Native agent tools: `storage_overview` and `storage_hotspots`.
 - Authenticated, company-resolved GET plugin API routes: `/overview`, `/hotspots`, `/tools`. The host owns the API prefix and board authentication.
 - Shows **stale**, **unconfigured**, **unavailable**, **invalid**, and **partial** coverage explicitly.
+- Refreshes displayed metrics every 60 seconds while the page is visible and on return to the tab; host collection remains on its independent ten-minute cadence.
 - No host CLI execution, docker.sock, filesystem writes, cleanup actions, or synthetic savings estimates.
 
 The agent tools are available through the Paperclip plugin runtime. They are **not** automatically registered as tools on the official Paperclip MCP server; a future gateway adapter may forward the plugin's authenticated API routes if needed.

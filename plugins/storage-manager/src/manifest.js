@@ -10,7 +10,7 @@ const apiRoute = (routeKey, path) => ({
 const manifest = {
   id: "journey-studios.storage-manager",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.1",
   displayName: "Storage Manager",
   description: "Read-only host storage metrics from operator-provided snapshots; no Docker socket or cleanup access.",
   author: "Journey Studios",
