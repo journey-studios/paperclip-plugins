@@ -85,12 +85,171 @@ function displayTasks(issues) {
   return displayList("Tarefas abertas", rows, "Nenhuma tarefa aberta encontrada.");
 }
 
+/**
+ * Normalize Paperclip's monthly spend values to non-negative integer cents.
+ */
+function cents(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : 0;
+}
+
+/**
+ * Render integer cents as a stable pt-BR USD amount for Telegram.
+ */
+function formatUsd(value) {
+  return "US$ " + new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents(value) / 100);
+}
+
+/**
+ * Build a human-readable but identity-preserving label for an org group owner.
+ */
+function creditGroupLabel(agent) {
+  const title = compact(agent?.title, 90);
+  const identity = compact(agent?.name ?? agent?.id, 70);
+  if (title && identity && title.toLocaleLowerCase("pt-BR") !== identity.toLocaleLowerCase("pt-BR")) {
+    return `${title} · ${identity}`;
+  }
+  return title || identity || "Grupo sem nome";
+}
+
+/**
+ * Aggregate each agent's native monthly spend into the CEO reporting hierarchy.
+ */
+function monthlyCreditGroups(agents) {
+  const byId = new Map(agents.filter((agent) => agent?.id).map((agent) => [agent.id, agent]));
+  const ceoIds = new Set(agents
+    .filter((agent) => String(agent?.role ?? "").toLowerCase() === "ceo")
+    .map((agent) => agent.id));
+  const groups = new Map();
+
+  const resolveGroup = (agent) => {
+    if (ceoIds.has(agent.id)) {
+      return { key: "ceo:" + agent.id, label: creditGroupLabel(agent) };
+    }
+
+    let current = agent;
+    const seen = new Set([agent.id]);
+    while (current?.reportsTo) {
+      const parent = byId.get(current.reportsTo);
+      if (!parent || seen.has(parent.id)) break;
+      if (ceoIds.has(parent.id)) {
+        return { key: "leader:" + current.id, label: creditGroupLabel(current) };
+      }
+      seen.add(parent.id);
+      current = parent;
+    }
+
+    return { key: "outside-hierarchy", label: "Fora da hierarquia" };
+  };
+
+  for (const agent of agents) {
+    if (!agent?.id) continue;
+    const group = resolveGroup(agent);
+    const existing = groups.get(group.key) ?? { ...group, cents: 0 };
+    existing.cents += cents(agent.spentMonthlyCents);
+    groups.set(group.key, existing);
+  }
+
+  return [...groups.values()].sort((left, right) =>
+    right.cents - left.cents || left.label.localeCompare(right.label, "pt-BR"));
+}
+
+/**
+ * Read every company agent through the native paginated Plugin SDK.
+ * A repeated full page fails closed instead of silently returning a partial total.
+ */
+async function listAllAgents(ctx, companyId) {
+  const agents = [];
+  const seenIds = new Set();
+  const pageSize = 100;
+  let offset = 0;
+
+  while (true) {
+    const page = await ctx.agents.list({ companyId, limit: pageSize, offset });
+    let added = 0;
+    for (const agent of page) {
+      if (!agent?.id || seenIds.has(agent.id)) continue;
+      seenIds.add(agent.id);
+      agents.push(agent);
+      added++;
+    }
+    if (page.length < pageSize) return agents;
+    if (added === 0) throw new Error("Agent pagination stalled while calculating monthly credits");
+    offset += page.length;
+  }
+}
+
+/**
+ * Append only whole credit-group records while reserving room for the footer.
+ */
+function displayCreditRows(header, rows, footer, emptyMessage = "_Nenhum custo reportado neste mês._") {
+  if (rows.length === 0) return `${header}\n${emptyMessage}${footer}`;
+
+  let output = header;
+  let included = 0;
+  for (const row of rows) {
+    const next = `${output}\n${row}`;
+    const remaining = rows.length - included - 1;
+    const omitted = remaining > 0 ? `\n_Exibindo ${included + 1} de ${rows.length} grupos; ${remaining} omitidos por limite de mensagem._` : "";
+    if (next.length + omitted.length + footer.length > MAX_TEXT) break;
+    output = next;
+    included++;
+  }
+
+  const omitted = rows.length - included;
+  if (omitted > 0) output += `\n_Exibindo ${included} de ${rows.length} grupos; ${omitted} omitidos por limite de mensagem._`;
+  return output + footer;
+}
+
+/**
+ * Produce the Founder-facing monthly total and organizational spend breakdown.
+ */
+async function displayCredits(ctx, companyId) {
+  const [company, agents] = await Promise.all([
+    ctx.companies.get({ companyId }),
+    listAllAgents(ctx, companyId),
+  ]);
+  const groups = monthlyCreditGroups(agents);
+  const agentTotal = groups.reduce((sum, group) => sum + group.cents, 0);
+  const companyTotal = company ? cents(company.spentMonthlyCents) : agentTotal;
+  const rows = groups
+    .filter((group) => group.cents > 0)
+    .map((group) => "• **" + markdownContent(group.label, 170) + "** — " + formatUsd(group.cents));
+  const unassignedRow = companyTotal > agentTotal
+    ? "• **Não atribuído** — " + formatUsd(companyTotal - agentTotal)
+    : null;
+
+  const header = [
+    "**Créditos do mês**",
+    "",
+    "**Total reportado:** " + formatUsd(companyTotal),
+    "",
+    "**Por grupo**",
+    ...(unassignedRow ? [unassignedRow] : []),
+  ].join("\n");
+  const footerLines = [
+    "",
+    "_Valores usam o gasto mensal reportado pelo Paperclip; uso não precificado ou coberto por assinatura não entra no total._",
+  ];
+  if (agentTotal > companyTotal) {
+    footerLines.push("_A soma por grupo ainda está convergindo com o total da empresa._");
+  }
+  const emptyMessage = unassignedRow
+    ? "_Nenhum custo atribuído a grupos neste mês._"
+    : "_Nenhum custo reportado neste mês._";
+  return displayCreditRows(header, rows, "\n" + footerLines.join("\n"), emptyMessage);
+}
+
 const commands = new Map([
   ["help", async () => [
     "**Comandos do Founder Gateway**",
     "",
     "`/agents` — Listar agentes",
     "`/tasks` — Listar tarefas abertas",
+    "`/credits` — Ver créditos gastos no mês por grupo",
     "`/help` — Exibir esta ajuda",
     "",
     "**Comandos nativos do Paperclip**",
@@ -108,6 +267,7 @@ const commands = new Map([
   ["tasks", async (ctx, companyId) => displayTasks(
     await ctx.issues.list({ companyId, limit: 100, includePluginOperations: false }),
   )],
+  ["credits", async (ctx, companyId) => displayCredits(ctx, companyId)],
 ]);
 
 // Internal extensibility point: only trusted modules inside this installed

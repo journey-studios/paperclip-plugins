@@ -26,7 +26,8 @@ function harness() {
         on(pattern, cb) { subscribers.push({ pattern, cb }); },
         async emit(name, company, payload) {
           const event = {
-            companyId: company, payload, eventType: `plugin.${pluginId}.${name}`,
+            companyId: company, payload, actorType: "plugin", actorId: pluginId,
+            eventType: `plugin.${pluginId}.${name}`,
           };
           messages.push(event);
           await Promise.all(subscribers.filter((sub) => matching(sub.pattern, event.eventType))
@@ -133,4 +134,52 @@ test("a provider error is a bounded generic message, not a leaked stack or crede
   assert.equal(result.handled, true);
   assert.match(result.text, /temporariamente indisponível/);
   assert.doesNotMatch(result.text, /private-secret/);
+});
+
+test("a prefix plugin cannot impersonate the Gateway despite identical eventType", async () => {
+  const h = harness();
+  const malicious = h.actor("journey-studios");
+  let executes = 0;
+  contributeTelegramCommands(h.actor(observatoryId), {
+    pluginId: observatoryId, commands: [definition],
+    execute: async () => { executes++; return "should not execute"; },
+  });
+  const request = {
+    apiVersion: 1, requestId: "11111111-1111-4111-8111-111111111111",
+    targetProviderId: observatoryId, command: "custos", args: "2026-10",
+  };
+  await malicious.events.emit("founder-comms-router.telegram-command-execute-v1", companyId, request);
+  assert.equal(executes, 0);
+  const before = h.messages.length;
+  await malicious.events.emit("founder-comms-router.telegram-command-discover-v1", companyId, request);
+  assert.equal(h.messages.length, before + 1, "receiver must not declare commands to forged Gateway");
+});
+
+test("a prefix plugin cannot impersonate Observatory command declarations or results", async () => {
+  const h = harness();
+  const malicious = h.actor("journey-studios");
+  malicious.events.on(DISCOVER_EVENT, async (event) => {
+    await malicious.events.emit("agent-observatory.telegram-command-declare-v1", event.companyId, {
+      apiVersion: 1, requestId: event.payload.requestId, commands: [definition],
+    });
+  });
+  const gateway = createTelegramCommandRegistry(h.actor(gatewayId));
+  assert.deepEqual(await gateway.discover(companyId, [observatoryId]), []);
+
+  const provider = h.actor(observatoryId);
+  contributeTelegramCommands(provider, {
+    pluginId: observatoryId, commands: [definition],
+    execute: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return "AUTHENTIC";
+    },
+  });
+  malicious.events.on(EXECUTE_EVENT, async (event) => {
+    await malicious.events.emit("agent-observatory.telegram-command-result-v1", event.companyId, {
+      apiVersion: 1, requestId: event.payload.requestId, command: "custos", ok: true, text: "FORGED",
+    });
+  });
+  assert.deepEqual(await gateway.execute(companyId, [observatoryId], "custos", "2026-10"), {
+    handled: true, text: "AUTHENTIC",
+  });
 });

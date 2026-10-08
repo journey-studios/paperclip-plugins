@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getMonthlyCosts, formatMonthlyCosts, parseCostPeriod } from "../src/monthly-costs.js";
+import { getMonthlyCosts, formatMonthlyCosts, parseCostPeriod, renderTelegramMonthlyCosts } from "../src/monthly-costs.js";
 import manifest from "../src/manifest.js";
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -97,7 +97,18 @@ test("manifest MCP GET/POST routes have unique keys compatible with the installe
   const keys = manifest.apiRoutes.map((route) => route.routeKey);
   assert.equal(new Set(keys).size, keys.length);
   assert.equal(manifest.apiRoutes.find((route) => route.routeKey === "mcp-get").method, "GET");
-  assert.equal(manifest.apiRoutes.find((route) => route.routeKey === "mcp-post").method, "POST");
+  assert.equal(manifest.apiRoutes.find((route) => route.routeKey === "mcp").method, "POST");
   assert.equal(manifest.apiRoutes.find((route) => route.routeKey === "monthly-costs").auth, "board");
   assert.ok(manifest.capabilities.includes("events.emit"));
+});
+
+test("invalid /custos period returns usage text without calling storage; DB errors still propagate", async () => {
+  let calls = 0;
+  const invalidCtx = { db: { query: async () => { calls++; return []; } } };
+  const usage = await renderTelegramMonthlyCosts(invalidCtx, companyId, "2026-13");
+  assert.match(usage, /Uso:.*custos.*AAAA-MM/);
+  assert.equal(calls, 0);
+
+  const downCtx = { db: { query: async () => { throw new Error("database unavailable"); } } };
+  await assert.rejects(renderTelegramMonthlyCosts(downCtx, companyId, "2026-09"), /database unavailable/);
 });

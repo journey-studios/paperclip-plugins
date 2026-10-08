@@ -173,3 +173,14 @@ export function formatMonthlyCosts(data) {
   }
   return body + "\n" + footer.join("\n");
 }
+
+/** Invalid arguments are user errors, not database or provider failures. */
+export async function renderTelegramMonthlyCosts(ctx, companyId, args = "") {
+  let month;
+  try {
+    month = parseCostPeriod(args);
+  } catch {
+    return "Uso: `/custos` para o mês atual ou `/custos AAAA-MM` (ex.: `/custos 2026-09`).";
+  }
+  return formatMonthlyCosts(await getMonthlyCosts(ctx, companyId, month));
+}

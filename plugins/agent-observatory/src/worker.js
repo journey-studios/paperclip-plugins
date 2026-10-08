@@ -1,6 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { contributeTelegramCommands } from "../../../shared/telegram-command-api.js";
-import { formatMonthlyCosts, getMonthlyCosts } from "./monthly-costs.js";
+import { formatMonthlyCosts, getMonthlyCosts, renderTelegramMonthlyCosts } from "./monthly-costs.js";
 import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   getAgent,
@@ -107,7 +107,7 @@ const plugin = definePlugin({
   async onApiRequest(input) {
     try {
       const companyId = input.companyId;
-      if (input.routeKey === "mcp" || input.routeKey === "mcp-get" || input.routeKey === "mcp-post") return mcpHandler(input);
+      if (input.routeKey === "mcp" || input.routeKey === "mcp-get") return mcpHandler(input);
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
       switch (input.routeKey) {
         case "overview":
@@ -146,7 +146,7 @@ const plugin = definePlugin({
         name: "custos", description: "Custos mensais por API e por equipe",
         usage: "/custos [AAAA-MM]", readOnly: true, audience: "founder",
       }],
-      execute: async ({ companyId, args }) => formatMonthlyCosts(await getMonthlyCosts(ctx, companyId, args)),
+      execute: async ({ companyId, args }) => renderTelegramMonthlyCosts(ctx, companyId, args),
     });
     ctx.data.register("overview", (params) => {
       const options = objectParams(params);

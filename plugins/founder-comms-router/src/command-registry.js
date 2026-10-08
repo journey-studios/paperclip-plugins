@@ -30,7 +30,7 @@ function pendingResult(map, id, metadata, timeoutMs) {
 
 /**
  * The gateway knows no provider-specific business logic. Sender authenticity
- * follows from Paperclip's plugin event namespaces, then a company allowlist.
+ * uses Paperclip's host-attested event actorId AND namespace, then a company allowlist.
  */
 export function createTelegramCommandRegistry(ctx) {
   const pending = new Map();
@@ -41,7 +41,8 @@ export function createTelegramCommandRegistry(ctx) {
     const from = declaredBy ?? resultBy;
     const data = event?.payload;
     const request = pending.get(data?.requestId);
-    if (!from || !request || request.providerId !== from ||
+    if (!from || event.actorType !== "plugin" || event.actorId !== from ||
+      !request || request.providerId !== from ||
       request.companyId !== event.companyId || data.apiVersion !== API_VERSION) return;
 
     if (declaredBy && request.kind === "discover") {

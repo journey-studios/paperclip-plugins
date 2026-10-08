@@ -41,7 +41,8 @@ export function contributeTelegramCommands(ctx, { pluginId, commands, execute })
 
   ctx.events.on(DISCOVER_EVENT, async (event) => {
     const request = event?.payload;
-    if (!event.companyId || request?.apiVersion !== API_VERSION || !isRequestId(request.requestId) ||
+    if (event.actorType !== "plugin" || event.actorId !== GATEWAY_ID || !event.companyId ||
+      request?.apiVersion !== API_VERSION || !isRequestId(request.requestId) ||
       request.targetProviderId !== pluginId) return;
     await ctx.events.emit("telegram-command-declare-v1", event.companyId, {
       apiVersion: API_VERSION, requestId: request.requestId, commands: declared,
@@ -49,7 +50,8 @@ export function contributeTelegramCommands(ctx, { pluginId, commands, execute })
   });
   ctx.events.on(EXECUTE_EVENT, async (event) => {
     const request = event?.payload;
-    if (!event.companyId || request?.apiVersion !== API_VERSION || !isRequestId(request.requestId) ||
+    if (event.actorType !== "plugin" || event.actorId !== GATEWAY_ID || !event.companyId ||
+      request?.apiVersion !== API_VERSION || !isRequestId(request.requestId) ||
       request.targetProviderId !== pluginId || !declared.some((item) => item.name === request.command) ||
       typeof request.args !== "string" || request.args.length > 60) return;
     let result;
