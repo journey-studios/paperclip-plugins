@@ -48,7 +48,7 @@ function harness() {
 test("Telegram Gateway rename preserves runtime ID and event namespace", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.name, "@journey-studios/telegram-gateway");
-  assert.equal(pkg.version, "0.3.1");
+  assert.equal(pkg.version, "0.3.2");
   assert.equal(manifest.version, pkg.version);
   assert.equal(manifest.displayName, "Telegram Gateway");
   assert.equal(manifest.id, "journey-studios.founder-comms-router");
@@ -56,6 +56,7 @@ test("Telegram Gateway rename preserves runtime ID and event namespace", () => {
   assert.equal(DISCOVER_EVENT, `plugin.${GATEWAY_ID}.telegram-command-discover-v1`);
   assert.equal(EXECUTE_EVENT, `plugin.${GATEWAY_ID}.telegram-command-execute-v1`);
   assert.ok(manifest.instanceConfigSchema.properties.commandProviderIds);
+  assert.ok(manifest.capabilities.includes("issue.interactions.read"));
 });
 
 test("plugin registers itself and Gateway dispatches a cost command without an LLM", async () => {
