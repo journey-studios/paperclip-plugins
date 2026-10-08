@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { promisify } from "node:util";
 import {
 	DeleteObjectCommand,
 	GetObjectCommand,
@@ -20,6 +25,7 @@ const credentials = {
 };
 const apiKey = "paperclip-board-api-key-for-tests";
 const servers = new Set();
+const runFile = promisify(execFile);
 
 /** Test-only Smithy adapter for genuine Node SHA-256 and HMAC signatures. */
 class TestSha256 {
@@ -76,7 +82,43 @@ async function startBridge(fetchImpl, extra = {}) {
 	server.listen(0, "127.0.0.1");
 	await once(server, "listening");
 	const { port } = server.address();
-	return { server, endpoint: `http://127.0.0.1:${port}` };
+	const protocol = extra.tls ? "https" : "http";
+	return { server, endpoint: `${protocol}://127.0.0.1:${port}` };
+}
+
+/** Generates a short-lived localhost CA certificate for normal TLS validation. */
+function createTlsMaterial() {
+	const directory = mkdtempSync(join(tmpdir(), "native-bridge-tls-"));
+	const certPath = join(directory, "cert.pem");
+	const keyPath = join(directory, "key.pem");
+	execFileSync(
+		"openssl",
+		[
+			"req",
+			"-x509",
+			"-newkey",
+			"rsa:2048",
+			"-nodes",
+			"-keyout",
+			keyPath,
+			"-out",
+			certPath,
+			"-days",
+			"1",
+			"-subj",
+			"/CN=localhost",
+			"-addext",
+			"subjectAltName=DNS:localhost,IP:127.0.0.1",
+			"-addext",
+			"basicConstraints=critical,CA:TRUE",
+		],
+		{ stdio: "ignore" },
+	);
+	return {
+		directory,
+		cert: readFileSync(certPath),
+		key: readFileSync(keyPath),
+	};
 }
 
 /** Matches the safe metadata shape returned by the storage plugin catalog. */
@@ -236,6 +278,71 @@ test("accepts the stock AWS SDK default Buffer PutObject wire request", async ()
 		client.destroy();
 	}
 	assert.deepEqual(errors, []);
+});
+
+test("accepts stock AWS SDK requests over HTTPS with explicitly trusted certificate authority", async () => {
+	const tls = createTlsMaterial();
+	try {
+		const bytes = Buffer.from("HTTPS protected native S3 attachment");
+		const objectKey = `${companyId}/attachments/https-wire.bin`;
+		const prepared = [];
+		const { fetchImpl } = pluginFetch({
+			onPrepare: async (input) => {
+				prepared.push(input);
+				return {
+					alreadyPresent: true,
+					object: storedObject(input.objectKey, bytes, input.contentType),
+				};
+			},
+		});
+		const { endpoint } = await startBridge(fetchImpl, {
+			tls: { cert: tls.cert, key: tls.key },
+		});
+		const script = `
+			import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+			const client = new S3Client({
+				endpoint: process.env.BRIDGE_ENDPOINT,
+				region: "us-east-1",
+				forcePathStyle: true,
+				credentials: {
+					accessKeyId: "${credentials.accessKeyId}",
+					secretAccessKey: "${credentials.secretAccessKey}",
+				},
+			});
+			try {
+				await client.send(new PutObjectCommand({
+					Bucket: "paperclip-native",
+					Key: "${objectKey}",
+					Body: Buffer.from(${JSON.stringify(bytes.toString("utf8"))}),
+					ContentLength: ${bytes.length},
+					ContentType: "application/octet-stream",
+				}));
+			} finally {
+				client.destroy();
+			}
+		`;
+		const childEnv = {
+			...process.env,
+			BRIDGE_ENDPOINT: endpoint,
+			NODE_EXTRA_CA_CERTS: join(tls.directory, "cert.pem"),
+		};
+		delete childEnv.NODE_TLS_REJECT_UNAUTHORIZED;
+		await runFile(process.execPath, ["--input-type=module", "-e", script], {
+			cwd: new URL("..", import.meta.url),
+			env: childEnv,
+		});
+		assert.deepEqual(prepared, [
+			{
+				objectKey,
+				filename: "https-wire.bin",
+				contentType: "application/octet-stream",
+				size: bytes.length,
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+			},
+		]);
+	} finally {
+		rmSync(tls.directory, { recursive: true, force: true });
+	}
 });
 
 test("rejects altered payload, altered path, expired signatures, and missing auth before plugin calls", async () => {

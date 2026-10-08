@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,11 +31,38 @@ test("startup diagnostics name malformed numeric settings without echoing their 
 	assert.match(empty.stderr, /S3 storage bridge startup failed/);
 });
 
-test("startup rejects non-boolean internal HTTP opt-in without echoing the supplied value", () => {
-	const invalid = "enabled-private-marker";
-	const result = startWith({ PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP: invalid });
-	assert.equal(result.status, 1);
-	assert.match(result.stderr, /PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP/);
-	assert.match(result.stderr, /must be either true or false/);
-	assert.equal(result.stderr.includes(invalid), false);
+test("startup requires mounted TLS certificate and key before opening a listener", () => {
+	const directory = mkdtempSync(join(tmpdir(), "native-bridge-cli-"));
+	try {
+		const credentialsPath = join(directory, "credentials");
+		const apiKeyPath = join(directory, "board-key");
+		writeFileSync(
+			credentialsPath,
+			"[default]\naws_access_key_id=LOCALBRIDGEACCESSKEY\naws_secret_access_key=local-bridge-secret-key-for-tests\n",
+		);
+		writeFileSync(apiKeyPath, "board-key-private-marker");
+		const result = startWith({
+			AWS_SHARED_CREDENTIALS_FILE: credentialsPath,
+			PAPERCLIP_BOARD_API_KEY_FILE: apiKeyPath,
+			PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP: "true",
+		});
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /PAPERCLIP_BRIDGE_TLS_CERT_FILE file path is required/);
+		assert.doesNotMatch(result.stderr, /listening on/);
+		assert.doesNotMatch(result.stderr, /board-key-private-marker/);
+
+		const certPath = join(directory, "bridge-cert");
+		writeFileSync(certPath, "certificate-private-marker");
+		const missingKey = startWith({
+			AWS_SHARED_CREDENTIALS_FILE: credentialsPath,
+			PAPERCLIP_BOARD_API_KEY_FILE: apiKeyPath,
+			PAPERCLIP_BRIDGE_TLS_CERT_FILE: certPath,
+			PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP: "true",
+		});
+		assert.equal(missingKey.status, 1);
+		assert.match(missingKey.stderr, /PAPERCLIP_BRIDGE_TLS_KEY_FILE file path is required/);
+		assert.doesNotMatch(missingKey.stderr, /certificate-private-marker/);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });

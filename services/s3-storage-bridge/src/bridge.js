@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { basename } from "node:path";
 import { BridgeError } from "./errors.js";
 import { createPluginClient } from "./plugin-client.js";
@@ -177,7 +178,7 @@ function createSemaphore(limit) {
 export function createBridgeServer(options) {
 	const config = normalizeOptions(options);
 	const semaphore = createSemaphore(config.maxConcurrentRequests);
-	const server = createServer(async (req, res) => {
+	const handler = async (req, res) => {
 		const requestId = randomUUID().replaceAll("-", "");
 		if (req.method === "GET" && req.url === "/healthz") {
 			const body = JSON.stringify({ ok: true });
@@ -242,7 +243,10 @@ export function createBridgeServer(options) {
 		} finally {
 			release?.();
 		}
-	});
+	};
+	const server = config.tls
+		? createHttpsServer(config.tls, handler)
+		: createHttpServer(handler);
 	server.on("clientError", (error, socket) => {
 		config.onRequestError?.({
 			requestId: "",
@@ -282,9 +286,23 @@ function normalizeOptions(options) {
 	) {
 		throw new TypeError("Paperclip board API key is required");
 	}
-	const allowInternalHttp = options.allowInternalHttp ?? false;
-	if (typeof allowInternalHttp !== "boolean")
-		throw new TypeError("allowInternalHttp must be boolean");
+	const configuredTls = options.tls;
+	if (
+		configuredTls !== undefined &&
+		(!configuredTls ||
+			typeof configuredTls !== "object" ||
+			!configuredTls.cert ||
+			!configuredTls.key)
+	)
+		throw new TypeError("bridge TLS certificate and key are required");
+	if (
+		configuredTls &&
+		(!Buffer.isBuffer(configuredTls.cert) || !Buffer.isBuffer(configuredTls.key))
+	)
+		throw new TypeError("bridge TLS certificate and key must be buffers");
+	const tls = configuredTls
+		? { cert: configuredTls.cert, key: configuredTls.key }
+		: undefined;
 	const bucket = options.bucket ?? "paperclip-native";
 	if (bucket !== "paperclip-native")
 		throw new TypeError("native bridge bucket must be paperclip-native");
@@ -310,7 +328,6 @@ function normalizeOptions(options) {
 	const pluginClient = createPluginClient({
 		pluginBaseUrl,
 		apiKey: options.apiKey,
-		allowInternalHttp,
 		apiTimeoutMs: options.apiTimeoutMs ?? 30_000,
 		providerTimeoutMs: options.providerTimeoutMs ?? 120_000,
 		fetchImpl: options.fetchImpl ?? fetch,
@@ -322,6 +339,7 @@ function normalizeOptions(options) {
 		bucket,
 		region,
 		pluginBaseUrl,
+		tls,
 		pluginClient,
 		maxUploadBytes,
 		maxConcurrentRequests,

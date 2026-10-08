@@ -7,6 +7,7 @@ import { createServer as createHttpServer } from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 import test from "node:test";
 import {
 	DeleteObjectCommand,
@@ -43,6 +44,35 @@ function etag(bytes) {
 	return `"${createHash("md5").update(bytes).digest("hex")}"`;
 }
 
+/** Create a local IP-SAN pair so the test can pin the bridge client's trust explicitly. */
+async function createLocalTlsPair(directory, name) {
+	const keyPath = path.join(directory, `${name}-key.pem`);
+	const certPath = path.join(directory, `${name}-cert.pem`);
+	execFileSync(
+		"openssl",
+		[
+			"req",
+			"-x509",
+			"-newkey",
+			"rsa:2048",
+			"-nodes",
+			"-sha256",
+			"-days",
+			"1",
+			"-subj",
+			`/CN=${name}`,
+			"-addext",
+			"subjectAltName=IP:127.0.0.1,DNS:localhost",
+			"-keyout",
+			keyPath,
+			"-out",
+			certPath,
+		],
+		{ stdio: "ignore" },
+	);
+	return { key: await readFile(keyPath), cert: await readFile(certPath) };
+}
+
 /** Escape provider-controlled keys and ETags when composing S3 XML. */
 function xmlEscape(value) {
 	return String(value).replace(/[&<>"']/g, (character) => {
@@ -77,30 +107,8 @@ function pluginConfig(endpoint, enabled = true) {
 /** Serve a versioned S3-compatible provider over ephemeral local HTTPS. */
 async function startProviderFixture(t, { endpointCompany = COMPANY } = {}) {
 	const directory = await mkdtemp(path.join(os.tmpdir(), "native-s3-e2e-"));
-	const keyPath = path.join(directory, "key.pem");
-	const certPath = path.join(directory, "cert.pem");
-	execFileSync(
-		"openssl",
-		[
-			"req",
-			"-x509",
-			"-newkey",
-			"rsa:2048",
-			"-nodes",
-			"-sha256",
-			"-days",
-			"1",
-			"-subj",
-			"/CN=localhost",
-			"-addext",
-			"subjectAltName=IP:127.0.0.1,DNS:localhost",
-			"-keyout",
-			keyPath,
-			"-out",
-			certPath,
-		],
-		{ stdio: "ignore" },
-	);
+	const tls = await createLocalTlsPair(directory, "localhost");
+	const untrustedCa = await createLocalTlsPair(directory, "untrusted");
 	const objects = new Map();
 	const versionsByKey = new Map();
 	const requests = [];
@@ -141,7 +149,7 @@ async function startProviderFixture(t, { endpointCompany = COMPANY } = {}) {
 		versionsByKey.delete(objectKey);
 	}
 	const server = https.createServer(
-		{ key: await readFile(keyPath), cert: await readFile(certPath) },
+		tls,
 		async (req, res) => {
 			const url = new URL(req.url, "https://127.0.0.1");
 			const [, bucket, ...parts] = url.pathname.split("/");
@@ -369,6 +377,10 @@ async function startProviderFixture(t, { endpointCompany = COMPANY } = {}) {
 	});
 	return {
 		endpoint: `https://127.0.0.1:${port}`,
+		tls,
+		untrustedCa: untrustedCa.cert,
+		certificate: tls.cert,
+		privateKey: tls.key,
 		objects,
 		versionsByKey,
 		requests,
@@ -381,6 +393,7 @@ async function startProviderFixture(t, { endpointCompany = COMPANY } = {}) {
 /** Run the actual plugin API and PGlite migrations behind a board-auth fixture. */
 async function startPaperclipFixture(t, providerEndpoint) {
 	const db = new PGlite();
+	const apiRequests = [];
 	await db.exec(
 		`CREATE TABLE public.companies (id uuid PRIMARY KEY); CREATE TABLE public.projects (id uuid PRIMARY KEY, company_id uuid NOT NULL); CREATE SCHEMA ${SCHEMA};`,
 	);
@@ -436,6 +449,7 @@ async function startPaperclipFixture(t, providerEndpoint) {
 			res.writeHead(401).end();
 			return;
 		}
+		apiRequests.push({ method: req.method, url: req.url });
 		const match =
 			/^\/api\/plugins\/journey-studios\.s3-storage\/api\/native\/(prepare|finalize|read|delete)$/.exec(
 				url.pathname,
@@ -480,18 +494,17 @@ async function startPaperclipFixture(t, providerEndpoint) {
 		await new Promise((resolve) => server.close(resolve));
 		await db.close();
 	});
-	return { baseUrl: `http://127.0.0.1:${port}`, db };
+	return { baseUrl: `http://127.0.0.1:${port}`, db, apiRequests };
 }
 
 test("the published AWS S3 client flow reaches the real plugin catalog and HTTPS provider", async (t) => {
-	const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-	t.after(() => {
-		if (previousTls === undefined)
-			delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-		else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
-	});
 	const provider = await startProviderFixture(t);
+	const trustedCertificates = tls.getCACertificates();
+	tls.setDefaultCACertificates([
+		...trustedCertificates,
+		provider.certificate.toString("utf8"),
+	]);
+	t.after(() => tls.setDefaultCACertificates(trustedCertificates));
 	const paperclip = await startPaperclipFixture(t, provider.endpoint);
 	const bridge = createBridgeServer({
 		pluginBaseUrl: paperclip.baseUrl,
@@ -500,19 +513,58 @@ test("the published AWS S3 client flow reaches the real plugin catalog and HTTPS
 		bucket: "paperclip-native",
 		region: "us-east-1",
 		maxUploadBytes: 1024 * 1024,
+		tls: { cert: provider.certificate, key: provider.privateKey },
 	});
 	bridge.listen(0, "127.0.0.1");
 	await once(bridge, "listening");
 	t.after(() => new Promise((resolve) => bridge.close(resolve)));
-	const bridgeEndpoint = `http://127.0.0.1:${bridge.address().port}`;
+	const bridgeEndpoint = `https://127.0.0.1:${bridge.address().port}`;
+	const trustedBridgeAgent = new https.Agent({
+		ca: provider.certificate,
+		rejectUnauthorized: true,
+	});
 	const client = new S3Client({
 		endpoint: bridgeEndpoint,
 		region: "us-east-1",
 		forcePathStyle: true,
 		credentials: BRIDGE_CREDENTIALS,
 		requestChecksumCalculation: "WHEN_REQUIRED",
+		requestHandler: { httpsAgent: trustedBridgeAgent },
 	});
-	t.after(() => client.destroy());
+	t.after(() => {
+		client.destroy();
+		trustedBridgeAgent.destroy();
+	});
+	const rejectedAgent = new https.Agent({
+		ca: provider.untrustedCa,
+		rejectUnauthorized: true,
+	});
+	const rejectedClient = new S3Client({
+		endpoint: bridgeEndpoint,
+		region: "us-east-1",
+		forcePathStyle: true,
+		credentials: BRIDGE_CREDENTIALS,
+		requestHandler: { httpsAgent: rejectedAgent },
+	});
+	t.after(() => {
+		rejectedClient.destroy();
+		rejectedAgent.destroy();
+	});
+	const requestsBeforeRejectedTls = paperclip.apiRequests.length;
+	await assert.rejects(
+		rejectedClient.send(
+			new HeadObjectCommand({
+				Bucket: "paperclip-native",
+				Key: `${COMPANY}/attachments/${randomUUID()}`,
+			}),
+		),
+		(error) => error.code === "ERR_TLS_CERT_ALTNAME_INVALID" || error.code === "DEPTH_ZERO_SELF_SIGNED_CERT",
+	);
+	assert.equal(
+		paperclip.apiRequests.length,
+		requestsBeforeRejectedTls,
+		"an untrusted bridge certificate is rejected before the plugin API is called",
+	);
 
 	const objectKey = `${COMPANY}/attachments/${randomUUID()}`;
 	const bytes = Buffer.from(
@@ -663,14 +715,13 @@ test("the published AWS S3 client flow reaches the real plugin catalog and HTTPS
  * the only published bytes must belong to the winner's catalog SHA.
  */
 test("concurrent writes of different bytes to one native key cannot overwrite the winner", async (t) => {
-	const previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-	t.after(() => {
-		if (previousTls === undefined)
-			delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-		else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
-	});
 	const provider = await startProviderFixture(t);
+	const trustedCertificates = tls.getCACertificates();
+	tls.setDefaultCACertificates([
+		...trustedCertificates,
+		provider.certificate.toString("utf8"),
+	]);
+	t.after(() => tls.setDefaultCACertificates(trustedCertificates));
 	const paperclip = await startPaperclipFixture(t, provider.endpoint);
 	const bridge = createBridgeServer({
 		pluginBaseUrl: paperclip.baseUrl,
@@ -679,19 +730,28 @@ test("concurrent writes of different bytes to one native key cannot overwrite th
 		bucket: "paperclip-native",
 		region: "us-east-1",
 		maxUploadBytes: 1024 * 1024,
+		tls: { cert: provider.certificate, key: provider.privateKey },
 	});
 	bridge.listen(0, "127.0.0.1");
 	await once(bridge, "listening");
 	t.after(() => new Promise((resolve) => bridge.close(resolve)));
-	const bridgeEndpoint = `http://127.0.0.1:${bridge.address().port}`;
+	const bridgeEndpoint = `https://127.0.0.1:${bridge.address().port}`;
+	const trustedBridgeAgent = new https.Agent({
+		ca: provider.certificate,
+		rejectUnauthorized: true,
+	});
 	const client = new S3Client({
 		endpoint: bridgeEndpoint,
 		region: "us-east-1",
 		forcePathStyle: true,
 		credentials: BRIDGE_CREDENTIALS,
 		requestChecksumCalculation: "WHEN_REQUIRED",
+		requestHandler: { httpsAgent: trustedBridgeAgent },
 	});
-	t.after(() => client.destroy());
+	t.after(() => {
+		client.destroy();
+		trustedBridgeAgent.destroy();
+	});
 
 	const preservedKey = `${COMPANY}/attachments/${randomUUID()}`;
 	const preservedBytes = Buffer.from(

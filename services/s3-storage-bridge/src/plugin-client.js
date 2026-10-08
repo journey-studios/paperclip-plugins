@@ -5,8 +5,8 @@ const PLUGIN_ID = "journey-studios.s3-storage";
 const API_PATH = `/api/plugins/${PLUGIN_ID}/api/native`;
 const MAX_JSON_BYTES = 300 * 1024;
 
-/** Accept the operator-configured Paperclip origin; non-loopback HTTP is an explicit opt-in. */
-function configuredUrl(value, allowInternalHttp) {
+/** Require encrypted transport for remote board calls carrying the API bearer key. */
+function configuredUrl(value) {
 	let url;
 	try {
 		url = new URL(value);
@@ -20,19 +20,12 @@ function configuredUrl(value, allowInternalHttp) {
 	) {
 		throw new TypeError("Paperclip plugin API URL is invalid");
 	}
-	if (
-		url.protocol === "http:" &&
-		!isLoopback(url.hostname) &&
-		!allowInternalHttp
-	) {
-		throw new TypeError(
-			"Paperclip plugin API URL requires HTTPS unless internal HTTP is explicitly enabled",
-		);
-	}
+	if (url.protocol === "http:" && !isLoopback(url.hostname))
+		throw new TypeError("Paperclip plugin API URL requires HTTPS");
 	return url.origin;
 }
 
-/** Signed object URLs always use HTTPS, even when the board API is on an internal HTTP network. */
+/** Accept only HTTPS provider URLs before sending signed object requests. */
 function signedUrl(value) {
 	let url;
 	try {
@@ -45,7 +38,7 @@ function signedUrl(value) {
 	return url;
 }
 
-/** Identify standard loopback host forms that do not need the internal-network opt-in. */
+/** Identify standard loopback host forms reserved for local testing. */
 function isLoopback(hostname) {
 	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
 	return (
@@ -118,14 +111,11 @@ function pluginError(status) {
 export function createPluginClient({
 	pluginBaseUrl,
 	apiKey,
-	allowInternalHttp = false,
 	apiTimeoutMs,
 	providerTimeoutMs,
 	fetchImpl = fetch,
 }) {
-	if (typeof allowInternalHttp !== "boolean")
-		throw new TypeError("allowInternalHttp must be boolean");
-	const origin = configuredUrl(pluginBaseUrl, allowInternalHttp);
+	const origin = configuredUrl(pluginBaseUrl);
 	return {
 		assertDownloadUrl: signedUrl,
 		async call(operation, target, body, outerSignal) {

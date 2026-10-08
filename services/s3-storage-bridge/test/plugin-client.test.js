@@ -57,17 +57,23 @@ test("cancels non-OK and oversized Paperclip API response bodies without reading
 	assert.equal(oversized.wasCancelled(), true);
 });
 
-test("requires HTTPS for remote board APIs unless internal HTTP is explicitly enabled", async () => {
-	assert.throws(
-		() =>
-			createPluginClient({
-				pluginBaseUrl: "http://paperclip.internal:3100",
-				apiKey: "board-secret",
-				apiTimeoutMs: 100,
-				providerTimeoutMs: 100,
-			}),
-		/requires HTTPS/,
-	);
+test("requires HTTPS for remote board APIs even with the retired HTTP opt-in", async () => {
+	for (const options of [
+		{},
+		{ allowInternalHttp: true },
+	]) {
+		assert.throws(
+			() =>
+				createPluginClient({
+					pluginBaseUrl: "http://paperclip.internal:3100",
+					apiKey: "board-secret",
+					apiTimeoutMs: 100,
+					providerTimeoutMs: 100,
+					...options,
+				}),
+			/requires HTTPS/,
+		);
+	}
 
 	for (const pluginBaseUrl of [
 		"http://localhost:3100",
@@ -87,37 +93,13 @@ test("requires HTTPS for remote board APIs unless internal HTTP is explicitly en
 		assert.deepEqual(await client.call("status", target, {}), { ok: true });
 	}
 
-	const internalClient = createPluginClient({
-		pluginBaseUrl: "http://paperclip:3100",
-		apiKey: "board-secret",
-		allowInternalHttp: true,
-		apiTimeoutMs: 100,
-		providerTimeoutMs: 100,
-		fetchImpl: async (url) => {
-			assert.equal(new URL(url).protocol, "http:");
-			return Response.json({ ok: true });
-		},
-	});
-	assert.deepEqual(await internalClient.call("status", target, {}), {
-		ok: true,
-	});
-	assert.throws(
-		() =>
-			createPluginClient({
-				pluginBaseUrl: "http://paperclip:3100",
-				apiKey: "board-secret",
-				allowInternalHttp: "true",
-			}),
-		/allowInternalHttp must be boolean/,
-	);
 });
 
-test("never permits HTTP for provider-signed object URLs, including with internal board HTTP enabled", async () => {
+test("never permits HTTP for provider-signed object URLs", async () => {
 	let fetched = false;
 	const client = createPluginClient({
-		pluginBaseUrl: "http://paperclip:3100",
+		pluginBaseUrl: "https://paperclip.test",
 		apiKey: "board-secret",
-		allowInternalHttp: true,
 		apiTimeoutMs: 100,
 		providerTimeoutMs: 100,
 		fetchImpl: async () => {

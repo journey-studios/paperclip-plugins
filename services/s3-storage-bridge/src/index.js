@@ -5,14 +5,20 @@ class StartupConfigError extends Error {}
 
 /** Load mounted secret material without including either the path or contents in diagnostics. */
 async function readSecretFile(path, name, { allowMultiline = false } = {}) {
-	if (!path) throw new Error(`${name} file path is required`);
-	const value = (await readFile(path, "utf8")).trim();
+	if (!path) throw new StartupConfigError(`${name} file path is required`);
+	let contents;
+	try {
+		contents = await readFile(path, "utf8");
+	} catch {
+		throw new StartupConfigError(`${name} file cannot be read`);
+	}
+	const value = contents.trim();
 	if (
 		!value ||
 		(!allowMultiline && /[\r\n]/.test(value)) ||
 		value.includes("\0")
 	)
-		throw new Error(`${name} file is empty or malformed`);
+		throw new StartupConfigError(`${name} file is empty or malformed`);
 	return value;
 }
 
@@ -72,15 +78,6 @@ function integerEnv(name, fallback, min, max) {
 	return parsed;
 }
 
-/** Parse an explicit true/false opt-in; an empty configured value is an error. */
-function booleanEnv(name, fallback) {
-	const configured = process.env[name];
-	if (configured === undefined) return fallback;
-	if (configured === "true") return true;
-	if (configured === "false") return false;
-	throw new StartupConfigError(`${name} must be either true or false`);
-}
-
 /** Read credentials and validate every non-secret setting before opening the listener. */
 async function main() {
 	const port = integerEnv("PAPERCLIP_BRIDGE_PORT", 9000, 1, 65535);
@@ -96,11 +93,7 @@ async function main() {
 		1,
 		16,
 	);
-	const allowInternalHttp = booleanEnv(
-		"PAPERCLIP_BRIDGE_ALLOW_INTERNAL_HTTP",
-		false,
-	);
-	const [credentialsContents, apiKey] = await Promise.all([
+	const [credentialsContents, apiKey, tlsCert, tlsKey] = await Promise.all([
 		readSecretFile(
 			process.env.AWS_SHARED_CREDENTIALS_FILE,
 			"AWS shared credentials",
@@ -110,12 +103,22 @@ async function main() {
 			process.env.PAPERCLIP_BOARD_API_KEY_FILE,
 			"Paperclip board API key",
 		),
+		readSecretFile(
+			process.env.PAPERCLIP_BRIDGE_TLS_CERT_FILE,
+			"PAPERCLIP_BRIDGE_TLS_CERT_FILE",
+			{ allowMultiline: true },
+		),
+		readSecretFile(
+			process.env.PAPERCLIP_BRIDGE_TLS_KEY_FILE,
+			"PAPERCLIP_BRIDGE_TLS_KEY_FILE",
+			{ allowMultiline: true },
+		),
 	]);
 	const credentials = parseDefaultCredentials(credentialsContents);
 	const server = createBridgeServer({
 		pluginBaseUrl: process.env.PAPERCLIP_PLUGIN_BASE_URL,
 		apiKey,
-		allowInternalHttp,
+		tls: { cert: Buffer.from(tlsCert), key: Buffer.from(tlsKey) },
 		...credentials,
 		bucket: process.env.PAPERCLIP_BRIDGE_BUCKET ?? "paperclip-native",
 		region: process.env.PAPERCLIP_BRIDGE_REGION ?? "us-east-1",
