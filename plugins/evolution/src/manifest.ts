@@ -5,18 +5,60 @@ export const PLUGIN_ID = "journeystudios.evolution";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Org Tracker",
   description: "Track operational changes, diffs, evidence, runs, metrics, and conclusions across Paperclip agents and skills.",
   author: "Journey Studios",
   categories: ["automation", "ui"],
   capabilities: [
     "events.subscribe",
+    "jobs.schedule",
+    "agent.tools.register",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
     "ui.sidebar.register",
     "ui.page.register"
+  ],
+  jobs: [{
+    jobKey: "refresh-assessments",
+    displayName: "Refresh Org Tracker evaluations",
+    description: "Reconcile bounded run evidence and observational assessments hourly.",
+    schedule: "11 * * * *"
+  }],
+  tools: [
+    {
+      name: "org_tracker_list_changes",
+      displayName: "Org Tracker Changes",
+      description: "List a bounded selection of Change Sets and their observational assessments in the invoking agent's company.",
+      parametersSchema: {
+        type: "object",
+        properties: { limit: { type: "integer", minimum: 1, maximum: 50 } },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "org_tracker_change_summary",
+      displayName: "Org Tracker Change Summary",
+      description: "Read a company-scoped Change Set, affected entities, metrics, evidence counts, and its latest assessment without exposing configuration snapshots.",
+      parametersSchema: {
+        type: "object",
+        properties: { changeSetId: { type: "string", format: "uuid" } },
+        required: ["changeSetId"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "org_tracker_evaluate_change",
+      displayName: "Org Tracker Evaluate Change",
+      description: "Refresh observational metrics, auto-associated run evidence, and an assessment for a Change Set in the invoking agent's company. Does not mark a change as proven.",
+      parametersSchema: {
+        type: "object",
+        properties: { changeSetId: { type: "string", format: "uuid" } },
+        required: ["changeSetId"],
+        additionalProperties: false
+      }
+    }
   ],
   entrypoints: {
     worker: "./dist/worker.js",
