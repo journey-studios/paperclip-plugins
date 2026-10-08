@@ -193,14 +193,14 @@ function displayCreditRows(header, rows, footer) {
   for (const row of rows) {
     const next = `${output}\n${row}`;
     const remaining = rows.length - included - 1;
-    const omitted = remaining > 0 ? `\n_${remaining} grupos omitidos por limite de mensagem._` : "";
+    const omitted = remaining > 0 ? `\n_Exibindo ${included + 1} de ${rows.length} grupos; ${remaining} omitidos por limite de mensagem._` : "";
     if (next.length + omitted.length + footer.length > MAX_TEXT) break;
     output = next;
     included++;
   }
 
   const omitted = rows.length - included;
-  if (omitted > 0) output += `\n_${omitted} grupos omitidos por limite de mensagem._`;
+  if (omitted > 0) output += `\n_Exibindo ${included} de ${rows.length} grupos; ${omitted} omitidos por limite de mensagem._`;
   return output + footer;
 }
 

@@ -249,7 +249,7 @@ test("/credits truncates only at complete group boundaries", async () => {
     { companyId: f.companyId, actor: { type: "user", companyId: f.companyId, userId: "founder" } });
 
   assert.ok(result.text.length <= 3600);
-  assert.match(result.text, /_\d+ grupos omitidos por limite de mensagem\._/);
+  assert.match(result.text, /_Exibindo \d+ de 81 grupos; \d+ omitidos por limite de mensagem\._/);
   assert.match(result.text, /uso não precificado ou coberto por assinatura não entra no total\._$/);
   const boldMarkers = result.text.match(/\*\*/g) ?? [];
   assert.equal(boldMarkers.length % 2, 0, "must not cut a bold group record in half");
