@@ -4,7 +4,7 @@ A standalone VPS-side collector for [Storage Manager](../../plugins/storage-mana
 
 ## Install (operator runbook; NOT performed by CI)
 
-1. Inspect `df -h /`, `docker ps`, `docker system df`, filesystem mount layout, rollback images and current backup. Make sure Node.js >=24 is installed and `/usr/bin/node` resolves to it (adjust service path if not).
+1. Inspect `df -h /`, `docker ps`, `docker system df`, filesystem mount layout, rollback images and current backup. The collector supports Node.js >=22.14; check that `/usr/bin/node` resolves to the required binary. Plugin package builds in the monorepo still require Node 24.
 2. Copy **only this collector's `src/`** to the root-owned directory `/opt/paperclip-storage-collector/src/`. Keep this outside the Paperclip container/image so it survives Paperclip updates. Never overwrite the custom `paperclip:agy` runtime to install this service.
 3. Create `/var/lib/paperclip-storage-manager` as root-owned mode 0755. The collector atomically writes `snapshot.json` mode 0644. Do not place credentials, logs, backups, or arbitrary files in this folder.
 4. Copy `systemd/paperclip-storage-collector.{service,timer}` to `/etc/systemd/system/`. If you need alerts, create optional root-owned `/etc/paperclip-storage-manager.env` with `STORAGE_WARN_FREE_BYTES=<integer>` and `STORAGE_CRITICAL_FREE_BYTES=<integer>`. **Neither threshold defaults to an assumed value.**
