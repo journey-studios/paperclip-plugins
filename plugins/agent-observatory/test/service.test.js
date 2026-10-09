@@ -14,6 +14,15 @@ function fakeContext(overrides = {}) {
   const calls = [];
   const query = async (sql, params = []) => {
     calls.push({ sql, params });
+    if (sql.includes("FROM public.delivery_evaluations e JOIN public.delivery_revisions")) {
+      return (overrides.qualityRows ?? []).filter((row) => params[4] == null || row.agentId === params[4]);
+    }
+    if (sql.includes("FROM public.delivery_revisions r JOIN public.run_execution_profiles")) {
+      return (overrides.trackedQualityRows ?? []).filter((row) => params[4] == null || row.agentId === params[4]);
+    }
+    if (sql.includes("FROM public.delivery_evaluations e WHERE e.company_id")) {
+      return (overrides.assessedQualityRows ?? []).filter((row) => params[4] == null || row.agentId === params[4]);
+    }
     if (sql.includes("FROM public.companies")) return [{ id: companyId }];
     if (sql.includes("SELECT a.id, a.name, a.status FROM public.agents") && sql.includes("LIMIT $2 OFFSET $3")) {
       return overrides.agentRows ?? [{ id: agentId, name: "Test Agent", status: "idle" }];
@@ -182,4 +191,29 @@ test("only allowlisted machine error codes can be displayed", () => {
   assert.equal(safeError("provider_timeout"), "provider_timeout");
   assert.equal(safeError("Bearer token-value"), null);
   assert.equal(safeError("database password=secret"), null);
+});
+
+test("agent quality detail uses agent-scoped cohorts and full aggregate counts beyond the global sample cap", async () => {
+  const otherAgentId = "77777777-7777-4777-8777-777777777777";
+  const qualityRows = Array.from({ length: 70 }, (_, index) => ({
+    id: "target-evaluation-" + index, companyId, issueId, revisionId: "target-revision-" + index, workProductId: "target-work-" + index,
+    agentId, contributionRole: "author", rubric: "research-v1", score: 80, deliveredAt: timestamp,
+    reviewerType: "human", reviewerId: "reviewer-1", executionProfile: { role: "analyst", skills: [] }, controlledTestRef: null, hypotheses: [],
+  })).concat(Array.from({ length: 70 }, (_, index) => ({
+    id: "other-evaluation-" + index, companyId, issueId, revisionId: "other-revision-" + index, workProductId: "other-work-" + index,
+    agentId: otherAgentId, contributionRole: "author", rubric: "research-v1", score: 20, deliveredAt: timestamp,
+    reviewerType: "human", reviewerId: "reviewer-2", executionProfile: { role: "analyst", skills: [] }, controlledTestRef: null, hypotheses: [],
+  })));
+  const { ctx, calls } = fakeContext({
+    qualityRows,
+    trackedQualityRows: [{ agentId, count: 100 }, { agentId: otherAgentId, count: 100 }],
+    assessedQualityRows: [{ agentId, count: 70 }, { agentId: otherAgentId, count: 70 }],
+  });
+  const result = await getAgent(ctx, companyId, agentId);
+  assert.equal(result.agent.quality.assessedDeliveries, 70);
+  assert.equal(result.agent.quality.trackedExactRevisions, 100);
+  assert.equal(result.agent.quality.samples.length, 50);
+  assert.ok(result.agent.quality.samples.every((sample) => sample.agentId === agentId));
+  assert.ok(result.agent.quality.samples.every((sample) => sample.feedbackHref.includes("evaluationId=" + sample.id)));
+  assert.ok(calls.some(({ sql, params }) => sql.includes("FROM public.delivery_evaluations e JOIN public.delivery_revisions") && params[4] === agentId));
 });

@@ -21,7 +21,12 @@ type AgentRow = {
   lastError?: string | null;
   errorCode?: string | null;
   lastRunId?: string | null;
+  quality?: { assessedDeliveries: number; trackedExactRevisions: number; cohorts: QualityCohort[] };
 };
+type QualityCohort = { agentId: string; rubric: string; contributionRole: string; reviewerType?: string; role?: string | null; model?: string | null; score: number | null; assessedDeliveries: number | null; reviewCount: number | null; reviewerCount: number | null; instructionCoverage: string; skillsContentCoverage: string; skills: Array<{ key: string; versionId?: string | null; versionBasis?: string; exposure?: string; usage?: string }> };
+type QualitySample = { id: string; revisionId: string; agentId: string; rubric: string; score: number; deliveredAt: string; feedbackHref: string };
+type ControlledPair = { agentId: string; rubric: string; skillKey: string; baselineSkillVersionId: string; currentSkillVersionId: string; baselineExpectedSkillVersionId?: string; currentExpectedSkillVersionId?: string; baselineActualSkillVersionIds?: Array<string | null>; currentActualSkillVersionIds?: Array<string | null>; inputDigest: string; templateDigest: string; agentProfileDigest: string; baselineScore?: number; currentScore?: number; delta?: number; outcome: string; reason?: string; generalizesToProduction: false; baselineTestRunId?: string | null; currentTestRunId?: string | null; baselineSamples: Array<{ evaluationId: string; score: number; feedbackHref: string; expectedSkillVersionId?: string; actualSkillVersionId?: string | null }>; currentSamples: Array<{ evaluationId: string; score: number; feedbackHref: string; expectedSkillVersionId?: string; actualSkillVersionId?: string | null }> };
+type QualityData = { companyId: string; environment: string; cohorts: QualityCohort[]; samples: QualitySample[]; controlledPairs?: ControlledPair[]; coverage: { truncated: boolean; eligibleByAgent: Array<{ agentId: string; trackedExactRevisions: number; assessedDeliveries: number }>; notes: string[] }; notes: string[] };
 type Failure = {
   id?: string;
   agentId?: string | null;
@@ -85,9 +90,10 @@ type TraceData = {
   coverage?: Overview["coverage"];
 };
 
-type Tab = "overview" | "failures" | "anomalies" | "trace" | "costs";
+type Tab = "overview" | "quality" | "failures" | "anomalies" | "trace" | "costs";
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Visão geral" },
+  { id: "quality", label: "Qualidade de entregas" },
   { id: "failures", label: "Falhas" },
   { id: "anomalies", label: "Anomalias" },
   { id: "trace", label: "Trace" },
@@ -216,6 +222,7 @@ function ObservatoryDashboard({ companyId }: { companyId: string }) {
         {agentId && <AgentDetails companyId={companyId} agentId={agentId} windowHours={windowHours} onClose={() => setAgentId(null)} onRun={setRunId} />}
         {runId && <TracePanel companyId={companyId} runId={runId} onClose={() => setRunId(null)} />}
       </>}
+      {tab === "quality" && <QualityPanel companyId={companyId} agents={agents} />}
       {tab === "failures" && <Records title="Falhas observadas" entries={data.failures ?? []} onAgent={onSelectAgent} onRun={setRunId} empty="Nenhuma falha registrada nesta janela." />}
       {tab === "anomalies" && <AnomalyList entries={data.anomalies ?? []} onAgent={onSelectAgent} onRun={setRunId} />}
       {tab === "trace" && <TracePicker agents={agents} onRun={setRunId} runId={runId} companyId={companyId} />}
@@ -223,6 +230,28 @@ function ObservatoryDashboard({ companyId }: { companyId: string }) {
       {tab !== "overview" && runId && tab !== "trace" && <TracePanel companyId={companyId} runId={runId} onClose={() => setRunId(null)} />}
     </> : !query.error ? <div className="empty">Nenhum dado disponível para esta janela.</div> : null}
   </main>;
+}
+
+export function QualityPanel({ companyId, agents }: { companyId: string; agents: AgentRow[] }) {
+  const [agentId, setAgentId] = useState("");
+  const [environment, setEnvironment] = useState<"production" | "skill_test">("production");
+  const query = usePluginData<QualityData>("quality", { companyId, days: 30, environment, ...(agentId ? { agentId } : {}) });
+  const data = query.data?.companyId === companyId ? query.data : null;
+  const cohorts = data?.cohorts ?? [];
+  const samples = data?.samples ?? [];
+  return <>
+    <section className="section"><div className="section-head"><div><h2>Qualidade das entregas</h2><p className="small muted">Avaliações finais elegíveis por critério e contexto de execução. Confiabilidade e custo permanecem medidas separadas.</p></div>
+      <label className="small muted">Ambiente <select aria-label="Ambiente das avaliações" value={environment} onChange={event => setEnvironment(event.target.value as "production" | "skill_test")}><option value="production">Produção</option><option value="skill_test">Skills Studio · teste isolado</option></select></label>
+      <label className="small muted">Agente <select aria-label="Filtrar qualidade por agente" value={agentId} onChange={event => setAgentId(event.target.value)}><option value="">Todos</option>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+    </div>
+      {query.error ? <div className="empty">As avaliações de entrega estão indisponíveis. Confirme se o host e o plugin têm o schema de qualidade instalado.</div> : query.loading && !data ? <div className="loading" role="status">Carregando avaliações…</div> : cohorts.length === 0 ? <div className="empty">Sem avaliações elegíveis neste período.</div> : <div className="scroll" role="region" aria-label="Grupos de qualidade por critério" tabIndex={0}><table><thead><tr><th>Agente</th><th>Critério</th><th>Contribuição / revisor</th><th>Modelo / papel</th><th>Nota</th><th>Entregas avaliadas</th><th>Skills selecionadas</th><th>Cobertura de instruções / skills</th></tr></thead><tbody>{cohorts.map((cohort, index) => <tr key={`${cohort.agentId}:${cohort.rubric}:${cohort.contributionRole}:${index}`}><td>{agents.find(agent => agent.id === cohort.agentId)?.name ?? cohort.agentId}</td><td>{cohort.rubric}</td><td>{cohort.contributionRole} · {cohort.reviewerType ?? "revisor desconhecido"}</td><td>{cohort.model ?? "modelo desconhecido"}{cohort.role ? ` · ${cohort.role}` : ""}</td><td>{cohort.score == null ? "Indisponível" : cohort.score.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}</td><td>{count(cohort.assessedDeliveries)} entregas · {count(cohort.reviewCount)} avaliações · {count(cohort.reviewerCount)} revisores</td><td>{cohort.skills.length ? cohort.skills.map(skill => `${skill.key}@${skill.versionId ?? "versão desconhecida"} (${skill.versionBasis ?? "base desconhecida"}; ${skill.exposure ?? "exposição desconhecida"}; ${skill.usage ?? "uso desconhecido"})`).join(", ") : "Nenhuma selecionada"}</td><td>{cohort.instructionCoverage} · skills {cohort.skillsContentCoverage}</td></tr>)}</tbody></table></div>}
+    </section>
+    {environment === "skill_test" && data && <section className="section"><div className="section-head"><div><h2>Comparações pareadas do Skills Studio</h2><p className="small muted">Mesmo input, template, rubrica e digest de perfil; a versão da skill varia. Cada par vale somente para este input.</p></div><span className="pill">{count(data.controlledPairs?.length)} pares</span></div>{data.controlledPairs?.length ? <div className="scroll"><table><thead><tr><th>Agente</th><th>Skill</th><th>Rubrica</th><th>Notas</th><th>Delta</th><th>Digest de entrada</th><th>Test runs e avaliações</th></tr></thead><tbody>{data.controlledPairs.map((pair, index) => <tr key={`${pair.agentId}:${pair.inputDigest}:${pair.baselineSkillVersionId}:${pair.currentSkillVersionId}:${index}`}><td>{agents.find(agent => agent.id === pair.agentId)?.name ?? pair.agentId}</td><td>{pair.skillKey}: expected {pair.baselineSkillVersionId} → {pair.currentSkillVersionId}<br />run actual {(pair.baselineActualSkillVersionIds ?? []).join(", ") || "unknown"} → {(pair.currentActualSkillVersionIds ?? []).join(", ") || "unknown"}</td><td>{pair.rubric}</td><td>{pair.baselineScore ?? "—"} → {pair.currentScore ?? "—"}</td><td>{pair.delta == null ? pair.reason ?? pair.outcome : `${pair.delta > 0 ? "+" : ""}${pair.delta}`}</td><td title={pair.inputDigest}>{pair.inputDigest.slice(0, 12)}…</td><td>Before {pair.baselineTestRunId ?? "—"} {pair.baselineSamples.map(sample => <a key={sample.evaluationId} href={sample.feedbackHref} target="_blank" rel="noreferrer"> #{sample.score}</a>)}<br />After {pair.currentTestRunId ?? "—"} {pair.currentSamples.map(sample => <a key={sample.evaluationId} href={sample.feedbackHref} target="_blank" rel="noreferrer"> #{sample.score}</a>)}</td></tr>)}</tbody></table></div> : <div className="empty">Sem pares controlados para o mesmo input, template, perfil e critério. Notas de teste não entram em produção.</div>}</section>}
+    {environment === "skill_test" && <p className="notice">As notas isoladas medem estas entradas e não generalizam para entregas de produção.</p>}
+    {data && <section className="section"><div className="section-head"><div><h2>Amostras de feedback</h2><p className="small muted">Cada link preserva a revisão e a avaliação que geraram a amostra.</p></div><span className="pill">{count(samples.length)} amostras</span></div>{samples.length ? <div className="list">{samples.map(sample => <div className="row" key={sample.id}><div>{agents.find(agent => agent.id === sample.agentId)?.name ?? sample.agentId}<p className="small muted">{date(sample.deliveredAt)}</p></div><p>{sample.rubric} · nota {sample.score}</p><p className="small muted">Revisão {sample.revisionId}</p><a className="link-button" href={sample.feedbackHref} target="_blank" rel="noreferrer">Abrir avaliação</a></div>)}</div> : <div className="empty">Sem avaliações elegíveis para exibir.</div>}
+      {data.coverage.eligibleByAgent.map(row => <p className="notice" key={row.agentId}>{agents.find(agent => agent.id === row.agentId)?.name ?? row.agentId}: {count(row.assessedDeliveries)} entregas avaliadas · {count(row.trackedExactRevisions)} revisões exatas ligadas a perfil capturado (denominador parcial).</p>)}{data.coverage.notes.map(note => <p className="notice" key={note}>{note}</p>)}{data.coverage.truncated && <p className="notice">A consulta atingiu o limite; a nota agregada fica indisponível para os grupos afetados.</p>}{data.notes.map(note => <p className="notice" key={note}>{note}</p>)}
+    </section>}
+  </>;
 }
 
 function CoverageNotice({ coverage, generatedAt }: { coverage?: Overview["coverage"]; generatedAt?: string }) {

@@ -5,7 +5,7 @@ export const PLUGIN_ID = "journeystudios.evolution";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "Org Tracker",
   description: "Track operational changes, diffs, evidence, runs, metrics, and conclusions across Paperclip agents and skills.",
   author: "Journey Studios",
@@ -50,6 +50,17 @@ const manifest: PaperclipPluginManifestV1 = {
       }
     },
     {
+      name: "org_tracker_delivery_quality",
+      displayName: "Org Tracker Delivery Quality",
+      description: "Compare eligible human-reviewed delivery quality before and after a change, by agent and execution cohort. Results are observational associations.",
+      parametersSchema: {
+        type: "object",
+        properties: { changeSetId: { type: "string", format: "uuid" } },
+        required: ["changeSetId"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "org_tracker_evaluate_change",
       displayName: "Org Tracker Evaluate Change",
       description: "Refresh observational metrics, auto-associated run evidence, and an assessment for a Change Set in the invoking agent's company. Does not mark a change as proven.",
@@ -79,7 +90,10 @@ const manifest: PaperclipPluginManifestV1 = {
       "activity_log",
       "agent_config_revisions",
       "company_skills",
-      "company_skill_versions"
+      "company_skill_versions",
+      "delivery_revisions",
+      "delivery_evaluations",
+      "run_execution_profiles"
     ] as unknown as NonNullable<PaperclipPluginManifestV1["database"]>["coreReadTables"]
   },
   apiRoutes: [

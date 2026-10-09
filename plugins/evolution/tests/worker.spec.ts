@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PluginApiRequestInput, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import plugin from "../src/worker.js";
-import { createWorkerFixture, COMPANY, OTHER_COMPANY, AGENT, NS } from "./worker-fixture.js";
+import { createWorkerFixture, COMPANY, OTHER_COMPANY, AGENT, SKILL, NS } from "./worker-fixture.js";
 
 let fixture: Awaited<ReturnType<typeof createWorkerFixture>>;
 beforeEach(async () => { fixture = await createWorkerFixture(); });
@@ -40,8 +40,18 @@ async function callMcpSummary(changeSetId: string) {
         itemCount: number; metricCount: number; conclusionCount: number;
         itemsTruncated: boolean; metricsTruncated: boolean; conclusionsTruncated: boolean;
       };
+      quality?: { agentIds: string[]; skillKeys: string[]; reason: string };
     };
   } };
+}
+
+async function callMcpDeliveryQuality(changeSetId: string) {
+  const input: PluginApiRequestInput = {
+    routeKey: "mcp", method: "POST", path: "/mcp", params: {}, query: { companyId: COMPANY },
+    body: { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "orgTrackerDeliveryQuality", arguments: { changeSetId } } },
+    actor: { actorType: "user", actorId: "test-user" }, companyId: COMPANY, headers: {},
+  };
+  return (await plugin.definition.onApiRequest!(input)).body as { result: { isError: boolean; structuredContent?: { quality?: Record<string, unknown> } } };
 }
 
 describe("Evolution data integrity and actions", () => {
@@ -224,6 +234,73 @@ describe("Evolution data integrity and actions", () => {
 });
 
 describe("Evolution MCP bounded and tenant-safe change summary", () => {
+  it("discovers agents from historical profiles for a skill-only change and compares only changed skill exposure", async () => {
+    const appliedAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const created = await fixture.action<{ id: string }>("create-change-set", {
+      title: "Research skill v2", appliedAt: appliedAt.toISOString(),
+    });
+    await fixture.db.query(
+      `INSERT INTO public.company_skills (id, company_id, key, slug, name) VALUES ($1, $2, 'research', 'research', 'Research')`, [SKILL, COMPANY],
+    );
+    await fixture.db.query(
+      `INSERT INTO ${NS}.change_items (id, company_id, change_set_id, entity_type, entity_id, change_kind, source_type)
+       VALUES (gen_random_uuid(), $1, $2, 'skill', $3, 'updated', 'test')`, [COMPANY, created.id, SKILL],
+    );
+    await fixture.db.exec(`ALTER TABLE public.heartbeat_runs ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+      CREATE TABLE public.run_execution_profiles (id uuid PRIMARY KEY, company_id uuid NOT NULL, run_id uuid NOT NULL, agent_id uuid NOT NULL, profile jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE public.delivery_revisions (id uuid PRIMARY KEY, company_id uuid NOT NULL, issue_id uuid NOT NULL, work_product_id uuid NOT NULL, revision_key text NOT NULL, snapshot jsonb NOT NULL, publisher_run_id uuid, origin_run_id uuid, precise text NOT NULL, environment text NOT NULL, delivered_at timestamptz, captured_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE public.delivery_evaluations (id uuid PRIMARY KEY, company_id uuid NOT NULL, issue_id uuid NOT NULL, revision_id uuid NOT NULL, evaluated_agent_id uuid, contribution_run_id uuid, contribution_role text NOT NULL, attribution text NOT NULL, attribution_note text, execution_profile jsonb, controlled_test_ref jsonb, reviewer_type text NOT NULL, reviewer_id text NOT NULL, reviewer_run_id uuid, rubric text NOT NULL, state text NOT NULL, dimensions jsonb, score integer NOT NULL, rationale text, evidence jsonb, hypotheses jsonb NOT NULL DEFAULT '[]'::jsonb, eligible text NOT NULL, environment text NOT NULL, delivered_at timestamptz, supersedes_id uuid, request_id text, input_digest text, created_at timestamptz NOT NULL DEFAULT now());`);
+    const targetVersionBefore = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const targetVersionAfter = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    for (let index = 0; index < 10; index += 1) {
+      const isAfter = index >= 5;
+      const offset = (index % 5) * 60_000;
+      const deliveredAt = new Date(appliedAt.getTime() + (isAfter ? 60_000 + offset : -60_000 - offset));
+      const suffix = String(index).padStart(12, "0");
+      const runId = `66666666-6666-4666-8666-${suffix}`;
+      const revisionId = `77777777-7777-4777-8777-${suffix}`;
+      const evaluationId = `88888888-8888-4888-8888-${suffix}`;
+      const workProductId = `99999999-9999-4999-8999-${suffix}`;
+      const skillVersionId = isAfter ? targetVersionAfter : targetVersionBefore;
+      const profile = {
+        version: 1, agentId: AGENT, role: "analyst", reportsTo: "lead", adapterType: "native", configuredModel: "model-a", effectiveModel: "model-a",
+        modelCoverage: "effective_known", configRevisionId: "config-same", instructionFingerprint: "instructions-same", instructionCoverage: "bundle",
+        skillsContentCoverage: "complete", runtimeContextCoverage: "native_verified",
+        nativeRuntimeContext: { aggregateDigest: isAfter ? "aggregate-v2" : "aggregate-v1", promptDigest: "prompt-same", instructionBundleDigest: "bundle-same", mcpDigest: "mcp-same", skills: [{ key: "research", versionId: skillVersionId, bundleDigest: isAfter ? "sha-v2" : "sha-v1" }] },
+        skills: [{ key: "research", versionId: skillVersionId, versionBasis: "pinned", contentFingerprint: isAfter ? "sha-v2" : "sha-v1", exposure: "selected", usage: "unknown" }],
+      };
+      await fixture.db.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, created_at) VALUES ($1, $2, $3, 'succeeded', $4, $4)`,
+        [runId, COMPANY, AGENT, deliveredAt],
+      );
+      await fixture.db.query(
+        `INSERT INTO public.run_execution_profiles (id, company_id, run_id, agent_id, profile) VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)`,
+        [COMPANY, runId, AGENT, JSON.stringify(profile)],
+      );
+      await fixture.db.query(
+        `INSERT INTO public.delivery_revisions (id, company_id, issue_id, work_product_id, revision_key, snapshot, publisher_run_id, origin_run_id, precise, environment, delivered_at)
+         VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, $6, $6, 'exact', 'production', $7)`,
+        [revisionId, COMPANY, "33333333-3333-4333-8333-333333333333", workProductId, "revision-" + index, runId, deliveredAt],
+      );
+      await fixture.db.query(
+        `INSERT INTO public.delivery_evaluations (id, company_id, issue_id, revision_id, evaluated_agent_id, contribution_run_id, contribution_role, attribution, execution_profile, reviewer_type, reviewer_id, rubric, state, score, eligible, environment, delivered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'author', 'source_record', $7::jsonb, 'human', 'same-reviewer', 'research-v1', 'final', $8, 'yes', 'production', $9)`,
+        [evaluationId, COMPANY, "33333333-3333-4333-8333-333333333333", revisionId, AGENT, runId, JSON.stringify(profile), isAfter ? 85 : 70, deliveredAt],
+      );
+    }
+
+    const response = await callMcpDeliveryQuality(created.id);
+    expect(response.result.isError).toBe(false);
+    const quality = response.result.structuredContent?.quality as { agentIds: string[]; skillKeys: string[]; comparisons: Array<{ agentId: string; outcome: string; delta: number | null; reason: string; baselineSamples: unknown[]; currentSamples: unknown[] }> };
+    expect(quality.agentIds).toEqual([AGENT]);
+    expect(quality.skillKeys).toEqual(["research"]);
+    expect(quality.comparisons).toHaveLength(1);
+    expect(quality.comparisons[0]).toMatchObject({ agentId: AGENT, outcome: "improved", delta: 15 });
+    expect(quality.comparisons[0]!.baselineSamples).toHaveLength(5);
+    expect(quality.comparisons[0]!.currentSamples).toHaveLength(5);
+    expect(quality.comparisons[0]!.reason).toBe("observational_threshold_crossed_association_only");
+  });
+
   it("returns only projected rows within 50/50/20 caps, with exact source counts and no snapshots", async () => {
     const created = await createSet("Change-set MCP summary");
     // Attach a sensitive snapshot to prove the MCP read never joins it.
@@ -260,12 +337,14 @@ describe("Evolution MCP bounded and tenant-safe change summary", () => {
     expect(data.items).toHaveLength(50);
     expect(data.metrics).toHaveLength(50);
     expect(data.conclusions).toHaveLength(20);
+    expect(data.quality).toMatchObject({ reason: "host_quality_schema_unavailable", agentIds: [], skillKeys: [] });
     expect(data.coverage).toEqual({
       itemCount: 55, metricCount: 52, conclusionCount: 23,
       itemsTruncated: true, metricsTruncated: true, conclusionsTruncated: true,
     });
     const queries = fixture.logs.join("\n");
-    expect(queries).not.toMatch(/change_snapshots|heartbeat_runs|suggestedRuns|beforeSnapshot|afterSnapshot/i);
+    expect(queries).not.toMatch(/heartbeat_runs|suggestedRuns|beforeSnapshot|afterSnapshot/i);
+    expect(queries).not.toMatch(/SELECT[^\n]*snapshot\s*(?:,|FROM)/i);
     expect(queries).toMatch(/LIMIT 51/);
     expect(queries).toMatch(/LIMIT 21/);
     expect(fixture.logs.every((sql) => sql.includes("company_id = $1"))).toBe(true);

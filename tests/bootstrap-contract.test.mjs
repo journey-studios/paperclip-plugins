@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertEvolutionCompatibilityPatch,
+  assertDeliveryQualityCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertRepository,
   assertTelegramChatPublicationPatch,
@@ -54,6 +55,16 @@ test("validates the Evolution compatibility patch contract", () => {
   ].join("\n");
   assert.doesNotThrow(() => assertEvolutionCompatibilityPatch(valid));
   assert.throws(() => assertEvolutionCompatibilityPatch('"activity_log" only'), /Evolution compatibility/);
+});
+
+test("delivery-quality compatibility adds only core read-table allowlist entries", () => {
+  const patch = readFileSync(resolve(repositoryRoot, "compat/paperclip-delivery-quality-read.patch"), "utf8");
+  assert.doesNotThrow(() => assertDeliveryQualityCompatibilityPatch(patch));
+  assert.throws(() => assertDeliveryQualityCompatibilityPatch(patch.replace('"run_execution_profiles",', '"other_table",')), /three core read-table/);
+  assert.throws(() => assertDeliveryQualityCompatibilityPatch(patch.replace('+  "run_execution_profiles",', '+  "run_execution_profiles",\n+  "extra_table",')), /three core read-table/);
+  assert.throws(() => assertDeliveryQualityCompatibilityPatch(patch.replace('   "company_skill_versions",', '-  "company_skill_versions",\n   "company_skill_versions",')), /three core read-table/);
+  assert.throws(() => assertDeliveryQualityCompatibilityPatch(`${patch}\n+CREATE TABLE delivery_evaluations(id uuid);`), /three core read-table|host code or schema/);
+  assert.throws(() => assertDeliveryQualityCompatibilityPatch(patch.replace("packages/shared/src/constants.ts", "packages/db/src/schema.ts")), /three core read-table/);
 });
 
 test("Telegram chat publication compatibility patch is limited to SDK client files", () => {

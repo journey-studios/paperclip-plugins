@@ -1,0 +1,12 @@
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1455,5 +1455,8 @@ export const PLUGIN_DATABASE_CORE_READ_TABLES = [
+   "activity_log",
+   "agent_config_revisions",
+   "company_skills",
+   "company_skill_versions",
++  "delivery_revisions",
++  "delivery_evaluations",
++  "run_execution_profiles",
+ ] as const;

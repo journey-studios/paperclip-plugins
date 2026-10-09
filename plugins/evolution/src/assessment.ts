@@ -51,13 +51,13 @@ export function assessChangeMetrics(
     return result("inconclusive", "insufficient_observation", "At least 24 hours and 10 runs in each window are required for an observational comparison.");
   }
   // Compare per-run success and mean duration, not total spend across unequal windows.
-  const qualityUp = rateDelta >= 10;
-  const qualityDown = rateDelta <= -10;
+  const reliabilityUp = rateDelta >= 10;
+  const reliabilityDown = rateDelta <= -10;
   const durationSampled = (duration?.baselineSampleSize ?? 0) >= MIN_RUNS && (duration?.currentSampleSize ?? 0) >= MIN_RUNS;
   const speedUp = durationSampled && durationChange != null && durationChange <= -20 && rateDelta >= -3;
   const speedDown = durationSampled && durationChange != null && durationChange >= 25;
-  const positive = qualityUp || speedUp;
-  const negative = qualityDown || speedDown;
+  const positive = reliabilityUp || speedUp;
+  const negative = reliabilityDown || speedDown;
   if (positive && negative) {
     return result("inconclusive", "mixed_signals", "Observed improvements and regressions conflict; a controlled evaluation is needed.");
   }

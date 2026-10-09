@@ -93,6 +93,18 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => ({
           startedAt: "2026-10-01T01:00:00.000Z",
           finishedAt: "2026-10-01T01:01:00.000Z",
         }],
+        quality: {
+          agentIds: ["agent-1"], skillKeys: ["research"], reason: "historical_profiles", notes: ["Temporal changes are associations, not causal proof."],
+          baselineCoverage: { truncated: false, eligibleByAgent: [{ agentId: "agent-1", trackedExactRevisions: 8, assessedDeliveries: 3 }], notes: [] },
+          currentCoverage: { truncated: false, eligibleByAgent: [{ agentId: "agent-1", trackedExactRevisions: 7, assessedDeliveries: 2 }], notes: [] },
+          comparisons: [{
+            agentId: "agent-1", rubric: "research-quality-v1", contributionRole: "author", reviewerType: "human", role: "analyst", model: "unknown",
+            baselineScore: 80, currentScore: null, baselineSample: 6, currentSample: 2, delta: null, outcome: "inconclusive", reason: "effective_model_unknown",
+            confounders: [], causality: "association", baselineSkills: [{ key: "research", versionId: "skill-v1" }], currentSkills: [{ key: "research", versionId: "skill-v2" }],
+            baselineSamples: [{ evaluationId: "evaluation-1", score: 80, feedbackHref: "/api/companies/company-1/work-products/wp-1/evaluations?revisionId=rev-1&evaluationId=evaluation-1" }],
+            currentSamples: [],
+          }],
+        },
       },
       loading: false,
       error: null,
@@ -148,6 +160,15 @@ afterEach(async () => {
 });
 
 describe("Evolution detail actions", () => {
+  it("shows quality by agent, partial coverage and a link to the exact reviewed delivery", async () => {
+    const container = await renderPage();
+    expect(container.textContent).toContain("Delivery quality by agent");
+    expect(container.textContent).toContain("effective_model_unknown");
+    expect(container.textContent).toContain("8/3");
+    expect(container.textContent).toContain("research: skill-v1 → skill-v2");
+    expect(container.querySelector('a[href*="revisionId=rev-1&evaluationId=evaluation-1"]')).toBeTruthy();
+  });
+
   it("refreshes evidence and assessment from the assessment panel", async () => {
     const refreshAssessment = vi.fn(async () => ({ outcome: "inconclusive" }));
     mocks.actions["refresh-assessment"] = refreshAssessment;

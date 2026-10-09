@@ -2,8 +2,10 @@ import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { contributeTelegramCommands } from "../../../shared/telegram-command-api.js";
 import { formatMonthlyCosts, getMonthlyCosts, renderTelegramMonthlyCosts } from "./monthly-costs.js";
 import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
+import manifest from "./manifest.js";
 import {
   getAgent,
+  getDeliveryQuality,
   getAnomalies,
   getFailures,
   getOverview,
@@ -14,12 +16,19 @@ import {
 } from "./service.js";
 
 const objectParams = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const QUALITY_SCHEMA_TABLES = ["delivery_revisions", "delivery_evaluations", "run_execution_profiles"];
+const isMissingQualitySchema = (error) => error?.code === "42P01" || (error?.code === "42703" && String(error?.message ?? error).includes("controlled_test_ref")) || (String(error?.message ?? error).includes("does not exist") && QUALITY_SCHEMA_TABLES.some(table => String(error?.message ?? error).includes(table)));
 let workerContext;
 
 const mcpHandler = createPluginMcpEndpoint({
   name: "journey-studios.agent-observatory",
-  version: "0.1.5",
+  version: "0.2.0",
   tools: [
+    {
+      name: "paperclipDeliveryQuality", title: "Delivery quality by agent", description: "Read reviewed delivery scores by rubric and execution context, evidence links and coverage. Separate controlled tests from production.", readOnly: true,
+      inputSchema: { type: "object", properties: { agentId: { type: "string", format: "uuid" }, days: { type: "integer", minimum: 1, maximum: 365 }, environment: { type: "string", enum: ["production", "skill_test"] } }, additionalProperties: false },
+      execute: (args, { companyId }) => getDeliveryQuality(workerContext, companyId, args),
+    },
     {
       name: "paperclipMonthlyCosts",
       title: "Monthly Agent Costs",
@@ -110,6 +119,8 @@ const plugin = definePlugin({
       if (input.routeKey === "mcp" || input.routeKey === "mcp-get") return mcpHandler(input);
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
       switch (input.routeKey) {
+        case "quality":
+          return { body: await getDeliveryQuality(workerContext, companyId, input.query) };
         case "overview":
           return { body: await getOverview(workerContext, companyId, normalizeWindowHours(input.query.windowHours)) };
         case "agents":
@@ -130,8 +141,11 @@ const plugin = definePlugin({
           return { status: 404, body: { error: "Unknown Agent Observatory route" } };
       }
     } catch (error) {
-      if (error?.status === 400 || error?.status === 404) {
+      if (error?.status === 400 || error?.status === 404 || error?.status === 503) {
         return { status: error.status, body: { error: error.message } };
+      }
+      if ((input.routeKey === "quality" || input.routeKey === "overview" || input.routeKey === "agent") && isMissingQualitySchema(error)) {
+        return { status: 503, body: { error: "Delivery quality requires a host version with delivery evaluation tables", code: "QUALITY_SCHEMA_UNAVAILABLE" } };
       }
       workerContext?.logger?.error("Agent Observatory API request failed", { routeKey: input.routeKey });
       return { status: 500, body: { error: "Agent Observatory request failed" } };
@@ -152,6 +166,7 @@ const plugin = definePlugin({
       const options = objectParams(params);
       return readForUi(ctx, "overview", () => getOverview(ctx, options.companyId, normalizeWindowHours(options.windowHours)));
     });
+    ctx.data.register("quality", params => { const options = objectParams(params); return readForUi(ctx, "quality", () => getDeliveryQuality(ctx, options.companyId, options)); });
     ctx.data.register("agent", (params) => {
       const options = objectParams(params);
       return readForUi(ctx, "agent", () => getAgent(ctx, options.companyId, options.agentId, normalizeWindowHours(options.windowHours)));
@@ -176,6 +191,18 @@ const plugin = definePlugin({
         return { content: overviewText(data), data };
       } catch {
         return { error: "Agent Observatory could not read the overview" };
+      }
+    });
+
+    const qualityTool = manifest.tools.find((tool) => tool.name === "observatory_delivery_quality");
+    if (!qualityTool) throw new Error("Missing Agent Observatory delivery quality tool declaration");
+    ctx.tools.register("observatory_delivery_quality", qualityTool, async (params, runCtx) => {
+      try {
+        const data = await getDeliveryQuality(ctx, runCtx.companyId, objectParams(params));
+        return { content: JSON.stringify(data), data };
+      } catch (error) {
+        if (isMissingQualitySchema(error)) return { error: "Delivery quality requires a host version with delivery evaluation tables", code: "QUALITY_SCHEMA_UNAVAILABLE" };
+        return { error: "Agent delivery quality is unavailable" };
       }
     });
 
@@ -223,6 +250,7 @@ const plugin = definePlugin({
 
 const toolCatalog = [
   { name: "observatory_overview", displayName: "Agent Observatory Overview", readOnly: true },
+  { name: "observatory_delivery_quality", displayName: "Agent Delivery Quality", readOnly: true },
   { name: "observatory_trace", displayName: "Agent Run Trace", readOnly: true },
   { name: "observatory_monthly_costs", displayName: "Monthly Agent Costs", readOnly: true },
 ];

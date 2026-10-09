@@ -1,3 +1,4 @@
+import { readDeliveryQuality, compareDeliveryQuality } from "../../../shared/delivery-quality.js";
 import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import {
   definePlugin,
@@ -32,6 +33,13 @@ const CHANGE_STATUSES = new Set([
 const CAUSALITY_LEVELS = new Set(["observed", "associated", "validated"]);
 const EVIDENCE_VERDICTS = new Set(["positive", "neutral", "negative"]);
 const CONFIDENCE_LEVELS = new Set(["low", "moderate", "high"]);
+const QUALITY_TABLES = ["delivery_revisions", "delivery_evaluations", "run_execution_profiles"];
+function missingQualitySchema(error: unknown): boolean {
+  const candidate = error as { code?: string; message?: string };
+  const message = String(candidate?.message ?? error ?? "");
+  return candidate?.code === "42P01" || (candidate?.code === "42703" && message.includes("controlled_test_ref")) ||
+    (message.includes("does not exist") && QUALITY_TABLES.some(table => message.includes(table)));
+}
 const SKILL_ACTIVITY_ACTIONS = new Set([
   "company.skill_created",
   "company.skill_updated",
@@ -1212,6 +1220,50 @@ async function upsertMetric(
   );
 }
 
+async function affectedDeliveryAgents(ctx: PluginContext, companyId: string, changeSetId: string, start: string, end: string) {
+  const items = await ctx.db.query<{ entityType: string; entityId: string; skillKey: string | null }>(
+    `SELECT ci.entity_type AS "entityType", ci.entity_id AS "entityId",
+      coalesce(after_snapshot.snapshot->>'key', before_snapshot.snapshot->>'key',
+        after_snapshot.snapshot->'activity'->'details'->>'key', before_snapshot.snapshot->'activity'->'details'->>'key', skill.key) AS "skillKey"
+    FROM change_items ci
+    LEFT JOIN change_snapshots after_snapshot ON after_snapshot.company_id = ci.company_id AND after_snapshot.id = ci.after_snapshot_id
+    LEFT JOIN change_snapshots before_snapshot ON before_snapshot.company_id = ci.company_id AND before_snapshot.id = ci.before_snapshot_id
+    LEFT JOIN public.company_skills skill ON skill.company_id = ci.company_id AND skill.id::text = ci.entity_id
+    WHERE ci.company_id = $1 AND ci.change_set_id = $2`, [companyId, changeSetId]);
+  const skillKeys = [...new Set(items.filter(i => i.entityType === "skill" && i.skillKey).map(i => i.skillKey!))];
+  const agentIds = items.filter(i => i.entityType === "agent").map(i => i.entityId);
+  for (const key of skillKeys) {
+    const exposed = await ctx.db.query<{ agentId: string }>(
+      `SELECT DISTINCT p.agent_id AS "agentId" FROM public.run_execution_profiles p
+       JOIN public.heartbeat_runs r ON r.company_id = p.company_id AND r.id = p.run_id
+       WHERE p.company_id = $1 AND r.created_at >= $2 AND r.created_at < $3
+         AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.profile->'skills') skill WHERE skill->>'key' = $4)`, [companyId, start, end, key]);
+    agentIds.push(...exposed.map(p => p.agentId));
+  }
+  return { agentIds: [...new Set(agentIds)], skillKeys };
+}
+
+async function deliveryImpact(ctx: PluginContext, companyId: string, changeSetId: string, appliedAt: string) {
+  const start = new Date(Date.parse(appliedAt) - 7 * 86400000).toISOString();
+  const end = new Date(Math.min(Date.now(), Date.parse(appliedAt) + 7 * 86400000)).toISOString();
+  try {
+    const affected = await affectedDeliveryAgents(ctx, companyId, changeSetId, start, end);
+    const [baseline, current] = await Promise.all([
+      readDeliveryQuality(ctx, companyId, { start, end: appliedAt }),
+      readDeliveryQuality(ctx, companyId, { start: appliedAt, end }),
+    ]);
+    baseline.cohorts = baseline.cohorts.filter(c => affected.agentIds.includes(c.agentId));
+    current.cohorts = current.cohorts.filter(c => affected.agentIds.includes(c.agentId));
+    return { ...affected, comparisons: compareDeliveryQuality(baseline, current, { changedSkillKeys: affected.skillKeys }),
+      baselineCoverage: baseline.coverage, currentCoverage: current.coverage,
+      notes: current.notes, reason: affected.agentIds.length ? "historical_profiles" : "no_historical_exposure_or_agent_evidence" };
+  } catch (error) {
+    if (!missingQualitySchema(error)) throw error;
+    return { agentIds: [], skillKeys: [], comparisons: [], baselineCoverage: { truncated: false, notes: [] }, currentCoverage: { truncated: false, notes: [] },
+      notes: ["Delivery quality requires a host version with delivery_revisions, delivery_evaluations, run_execution_profiles and controlled-test evaluation references."], reason: "host_quality_schema_unavailable" };
+  }
+}
+
 async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSetId: string) {
   const sets = await ctx.db.query<{ appliedAt: string | Date; validationEndsAt: string | Date | null }>(
     'SELECT applied_at AS "appliedAt", validation_ends_at AS "validationEndsAt" FROM change_sets WHERE company_id = $1 AND id = $2 LIMIT 1',
@@ -1231,13 +1283,19 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
     'SELECT DISTINCT entity_id AS "entityId" FROM change_items WHERE company_id = $1 AND change_set_id = $2 AND entity_type = \'agent\'',
     [companyId, changeSetId],
   );
-  const agentIds = agentRows.map((row) => row.entityId);
+  let affected: { agentIds: string[]; skillKeys: string[] };
+  let skillExposureUnavailable = false;
+  try {
+    affected = await affectedDeliveryAgents(ctx, companyId, changeSetId, baselineStart, currentEnd);
+  } catch (error) {
+    if (!missingQualitySchema(error)) throw error;
+    affected = { agentIds: [], skillKeys: [] };
+    skillExposureUnavailable = true;
+  }
+  const agentIds = [...new Set([...agentRows.map((row) => row.entityId), ...affected.agentIds])];
   if (agentIds.length === 0) {
-    await ctx.db.execute(
-      'DELETE FROM change_metrics WHERE company_id = $1 AND change_set_id = $2',
-      [companyId, changeSetId],
-    );
-    return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd };
+    return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd,
+      metricsReason: skillExposureUnavailable ? "host_quality_schema_unavailable_skill_effect_unknown" : "no_change_item_or_historical_profile_exposure" };
   }
   const [baselineRuns, currentRuns, baselineCosts, currentCosts] = await Promise.all([
     queryRunStats(ctx, companyId, agentIds, baselineStart, appliedAt.toISOString()),
@@ -1258,7 +1316,7 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
       durationSeconds: Math.max(0, (new Date(currentEnd).getTime() - appliedAt.getTime()) / 1000),
     },
   };
-  const metricMetadata = { windows };
+  const metricMetadata = { windows, interpretation: "operational_association_by_historically_exposed_agent", notSkillCausalEffect: true, skillExposureUnavailable };
 
   await upsertMetric(ctx, companyId, changeSetId, "run_success_rate", baselineRuns.successRate, currentRuns.successRate, "%", baselineRuns.runs, currentRuns.runs, metricMetadata);
   await upsertMetric(ctx, companyId, changeSetId, "avg_run_duration", baselineRuns.avgDuration, currentRuns.avgDuration, "seconds", baselineRuns.runs, currentRuns.runs, metricMetadata);
@@ -1266,7 +1324,8 @@ async function recomputeMetrics(ctx: PluginContext, companyId: string, changeSet
   await upsertMetric(ctx, companyId, changeSetId, "input_tokens", baselineCosts.inputTokens, currentCosts.inputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
   await upsertMetric(ctx, companyId, changeSetId, "cached_input_tokens", baselineCosts.cachedInputTokens, currentCosts.cachedInputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
   await upsertMetric(ctx, companyId, changeSetId, "output_tokens", baselineCosts.outputTokens, currentCosts.outputTokens, "tokens", baselineCosts.events, currentCosts.events, metricMetadata);
-  return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd };
+  return { agentIds, baselineStart, appliedAt: appliedAt.toISOString(), currentEnd,
+    ...(skillExposureUnavailable ? { metricsReason: "skill_exposure_unavailable_host_quality_schema" } : {}) };
 }
 
 
@@ -1351,7 +1410,8 @@ async function detail(ctx: PluginContext, companyId: string, changeSetId: string
     );
   }
 
-  return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns, assessment: assessments[0] ?? null };
+  const quality = await deliveryImpact(ctx, companyId, changeSetId, requiredIso(sets[0].appliedAt as string));
+  return { changeSet: sets[0], items, evidence, metrics, conclusions, links, suggestedRuns, quality, assessment: assessments[0] ?? null };
 }
 
 /**
@@ -1410,6 +1470,7 @@ async function mcpChangeSummary(ctx: PluginContext, companyId: string, changeSet
   return {
     companyId,
     changeSet,
+    quality: await deliveryImpact(ctx, companyId, changeSetId, requiredIso(changeSet.appliedAt as string)),
     items: items.slice(0, 50),
     metrics: metrics.slice(0, 50),
     conclusions: conclusions.slice(0, 20),
@@ -1775,7 +1836,7 @@ function registerActions(ctx: PluginContext, assessSet: (ctx: PluginContext, com
 let mcpCtx: PluginContext;
 const mcpHandler = createPluginMcpEndpoint({
   name: "journeystudios.evolution",
-  version: "0.2.0",
+  version: "0.3.0",
   tools: [
     {
       name: "orgTrackerOverview",
@@ -1797,6 +1858,17 @@ const mcpHandler = createPluginMcpEndpoint({
       },
       execute: (args, { companyId }) => mcpChangeSummary(mcpCtx, companyId, args.changeSetId as string),
     },
+    {
+      name: "orgTrackerDeliveryQuality",
+      title: "Org Tracker Delivery Quality",
+      description: "Compare eligible reviewed delivery quality before and after one Change Set, with per-agent cohorts, samples, coverage and confounders. Results are observational associations.",
+      readOnly: true,
+      inputSchema: { type: "object", properties: { changeSetId: { type: "string", format: "uuid" } }, required: ["changeSetId"], additionalProperties: false },
+      execute: async (args, { companyId }) => {
+        const result = await mcpChangeSummary(mcpCtx, companyId, args.changeSetId as string);
+        return { companyId, changeSetId: args.changeSetId, quality: result.quality };
+      },
+    },
   ],
 });
 
@@ -1811,6 +1883,20 @@ const plugin = definePlugin({
     workerCtx.data.register("changes-overview", async (params) => overview(workerCtx, requiredString(params, "companyId")));
     workerCtx.data.register("change-detail", async (params) =>
       detail(workerCtx, requiredString(params, "companyId"), requiredString(params, "changeSetId")));
+    const qualityTool = manifest.tools?.find((tool) => tool.name === "org_tracker_delivery_quality");
+    if (!qualityTool) throw new Error("Missing Org Tracker delivery quality tool declaration");
+    workerCtx.tools.register("org_tracker_delivery_quality", qualityTool, async (params, runContext) => {
+      if (!runContext.companyId) return { error: "Authorized company context is required" };
+      try {
+        const changeSetId = requiredString(asRecord(params), "changeSetId").toLowerCase();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(changeSetId)) throw new Error("changeSetId must be a UUID");
+        const summary = await mcpChangeSummary(workerCtx, runContext.companyId, changeSetId);
+        const data = { companyId: runContext.companyId, changeSetId, quality: summary.quality };
+        return { content: JSON.stringify(data), data };
+      } catch {
+        return { error: "Org Tracker delivery quality is unavailable" };
+      }
+    });
 
     const automation = registerAutomation(workerCtx, {
       assertChangeSet,

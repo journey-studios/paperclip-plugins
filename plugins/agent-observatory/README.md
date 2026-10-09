@@ -16,9 +16,19 @@ Only `cost_events` with `cost_status = 'reported'` contribute known cents. Missi
 
 No plugin-owned tables or migrations are created. The declared namespace exists to satisfy Paperclip's plugin database lifecycle contract.
 
+## Canonical delivery quality
+
+Human feedback is recorded against an exact work-product revision by the core delivery-evaluations API. The Observatory reads those immutable evaluations and execution-profile snapshots; it does not write or reconstruct grades. The UI provides a **Qualidade de entregas** view and a per-agent detail with rubric/contribution cohorts, reviewer count, samples, and partial coverage. Every sample links to `GET /api/companies/:companyId/work-products/:workProductId/evaluations?revisionId=...&evaluationId=...`, resolving the exact reviewed revision and evaluation. The same read is available through plugin `GET /quality` and read-only MCP tool `paperclipDeliveryQuality` (native Paperclip tool: `observatory_delivery_quality`); `environment=production|skill_test` keeps production grades separate from Skills Studio tests.
+
+Each delivery contributes one mean grade per comparable cohort after averaging multiple reviewers on that delivery. Cohorts keep rubric, evaluated agent, contribution role, reviewer type, and captured execution context separate. Final, eligible production feedback is aggregated; formative, self-review, unattributed, superseded, and controlled-test grades are excluded from production. Missing grades remain missing. Coverage counts are partial: the tracked-revision denominator includes only exact revisions linked to an origin or publisher run profile, and board-confirmed attribution may be outside that denominator. Query truncation suppresses aggregate scores rather than presenting a capped sample as the full cohort.
+
+The plugins require a host schema with `delivery_revisions`, `delivery_evaluations` (including `controlled_test_ref`), and `run_execution_profiles`, plus the core API that resolves a feedback link to the requested historical revision/evaluation. The public compatibility patch only adds these names to the plugin read allowlist; it does **not** install or migrate database tables. Install the matching private runtime/core migration before enabling these plugin versions. Older hosts return an explicit schema-unavailable response.
+
+Profiles contain only safe fingerprints and selected-skill references, not raw instructions or configuration. Verified native runtime context (`runtimeContextCoverage=native_verified`) can expose aggregate, prompt, instruction-bundle, skill-bundle, and MCP digests without revealing their contents. A skill marked `selected` was exposed in the run profile; it does not prove invocation or semantic use (`usage` remains `unknown`). Configured model is not effective-model evidence. Adapters without runtime proof report effective model as unknown, and comparisons requiring model identity stay inconclusive. Skill-version comparisons also require known target bytes, complete comparable context, unchanged reviewer population, and adequate samples. Org Tracker results are temporal associations, not causal findings; controlled Skills Studio pairs apply only to their exact input and never flow into production scores.
+
 ## Development
 
-From the plugins monorepo, run `pnpm --filter @journey-studios/agent-observatory test`, `pnpm --filter @journey-studios/agent-observatory typecheck`, and `pnpm --filter @journey-studios/agent-observatory build`.
+From the plugins monorepo, run `node --test shared/delivery-quality.test.js`, `pnpm --filter @journey-studios/agent-observatory test`, `pnpm --filter @journey-studios/agent-observatory typecheck`, and `pnpm --filter @journey-studios/agent-observatory build`. The root `pnpm test` includes the shared delivery-quality contract tests.
 
 ## Isolation boundary
 
