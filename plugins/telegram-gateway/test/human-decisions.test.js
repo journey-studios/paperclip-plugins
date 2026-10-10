@@ -154,6 +154,27 @@ test("restricted action and connection cards never fall back to raw prompt or de
   }
 });
 
+test("human-only operational confirmation shows action title without exposing raw details", () => {
+  const issue = {
+    id: "issue-122", identifier: "JOU-122",
+    title: "E2E produção Palantir v2 — execução visual, replay e evidências reais",
+  };
+  const interaction = {
+    id: "interaction-122", kind: "request_confirmation", status: "pending",
+    title: "Liberar flag palantir-v2 para a conta sintética (canary produção)",
+    effectiveResolverPolicy: "human_only",
+    payload: {
+      rejectRequiresReason: true,
+      prompt: "Este texto interno não deve ser copiado para o Telegram",
+    },
+  };
+  const card = buildInteractionCardBody(interaction, issue, BASE);
+  assert.match(card, /Pedido: Liberar flag palantir-v2 para a conta sintética/);
+  assert.match(card, /precisa ser confirmada dentro do Paperclip/);
+  assert.doesNotMatch(card, /Este texto interno não deve ser copiado|exibe o segredo/);
+  assert.match(card, /https:\/\/paper\.journeystudios\.com\.br\/JOU\/issues\/JOU-122#interaction-interaction-122/);
+});
+
 test("governance-critical interactions explain the constraint without dumping prompt or details", () => {
   const issue = { id: "issue-gov", identifier: "JOU-9", companyId: "companyA", title: "Decisão governada" };
   for (const critical of [
