@@ -50,6 +50,29 @@ test("redacts Markdown-wrapped environment assignments before publishing a card"
   assert.match(card, /\[redacted\]/);
 });
 
+test("redacts unquoted multiword values and Markdown-escaped assignments", () => {
+  const secret = ["correct", "horse", "battery", "staple"].join(" ");
+  const direct = stripSensitiveText("PASSWORD=" + secret);
+  assert.match(direct, /\[redacted\]/);
+  assert.ok(!direct.includes("horse"), "multiword value must be fully redacted");
+
+  const issue = { id: "issue-esc", identifier: "JOU-21", title: "Synthetic escaped key" };
+  const interaction = {
+    id: "interaction-esc",
+    kind: "request_confirmation",
+    status: "pending",
+    effectiveResolverPolicy: "anyone",
+    payload: {
+      prompt: "API\\_KEY=" + secret,
+      detailsMarkdown: "PASSWORD = " + secret,
+    },
+  };
+  const card = buildInteractionCardBody(interaction, issue, BASE);
+  assert.ok(!card.includes(secret), "escaped-key assignment must be redacted");
+  assert.ok(!card.includes("horse"), "multiword value must not leak into the card");
+  assert.match(card, /\[redacted\]/);
+});
+
 test("redacts a whole PEM body and complete prefixed API tokens", () => {
   const begin = ["-----", "BEGIN PRIVATE KEY", "-----"].join("");
   const end = ["-----", "END PRIVATE KEY", "-----"].join("");

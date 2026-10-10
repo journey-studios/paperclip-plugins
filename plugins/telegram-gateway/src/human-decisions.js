@@ -9,7 +9,9 @@ const SENSITIVE_LINE_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{10,}\b/gi,
   /\b(?:gh[oprsu]_[A-Za-z0-9_]{10,}|glpat-[A-Za-z0-9_-]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/gi,
   // Match full dotenv/YAML/JSON assignments, including namespaced keys.
-  /\b(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|SERVICE[_-]?ROLE[_-]?KEY|ACCESS[_-]?KEY|DATABASE[_-]?URL|DB[_-]?URL|COOKIE|SESSION[_-]?ID)\s*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
+  // The unquoted alternative consumes the whole value up to the end of the line
+  // (a dotenv/YAML field boundary) so multiword values are not partially leaked.
+  /\b(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|SERVICE[_-]?ROLE[_-]?KEY|ACCESS[_-]?KEY|DATABASE[_-]?URL|DB[_-]?URL|COOKIE|SESSION[_-]?ID)\s*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
   // The entire PEM block must be hidden, not just its BEGIN header.
   /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$)/gi,
 ];
@@ -54,17 +56,21 @@ function sanitizeMarkdownField(value) {
 function humanText(value, maxLength = MAX_TEXT_FIELD) {
   const raw = stringValue(value);
   if (!raw) return null;
-  // Flatten formatting before redaction: inline code and bold delimiters
-  // must not hide an assignment such as `INTERNAL_API_KEY` = **value**.
+  // Normalize formatting before redaction: inline code, bold delimiters and
+  // Markdown escapes must not hide an assignment such as
+  // `INTERNAL_API_KEY` = **value** or API\_KEY=value.
   let out = raw;
   out = out.replace(/```[a-zA-Z0-9]*\n?/g, "");
+  out = out.replace(/\\([_*`~[\]()#>+.!-])/g, "$1");
   out = out.replace(/`/g, "");
   out = out.replace(/^\s*#{1,6}\s+/gm, "");
   out = out.replace(/^\s*[-*+]\s+/gm, "");
   out = out.replace(/\*\*/g, "");
   out = out.replace(/__/g, "");
-  out = out.replace(/\r?\n/g, " ");
+  // Redact while line boundaries are intact so an unquoted multiword value is
+  // consumed up to the end of its own line, then flatten and collapse spaces.
   out = stripSensitiveText(out);
+  out = out.replace(/\r?\n/g, " ");
   out = out.replace(/\s+/g, " ").trim();
   if (!out) return null;
   return out.slice(0, maxLength);
