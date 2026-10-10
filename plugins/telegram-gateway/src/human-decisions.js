@@ -222,8 +222,10 @@ function buildApprovalCardBody(approval, context = {}) {
   const summary = humanText(payload.summary, 700);
   const recommendation = humanText(payload.recommendedAction, 300);
   const risks = (Array.isArray(payload.risks) ? payload.risks : [])
+    .slice(0, 6)
     .map((entry) => humanText(entry, 240))
     .filter(Boolean);
+  const risksText = humanText(risks.join("; "), 600);
 
   const lines = [
     `Ação necessária · Aprovação — ${title}`,
@@ -232,7 +234,7 @@ function buildApprovalCardBody(approval, context = {}) {
   ];
   if (summary && summary !== title) lines.push(`Pedido: ${summary}`);
   if (recommendation) lines.push(`Recomendação: ${recommendation}`);
-  if (risks.length) lines.push(`Risco/impacto: ${risks.join("; ")}`);
+  if (risksText) lines.push(`Risco/impacto: ${risksText}`);
   if (lines.at(-1) !== "") lines.push("");
   lines.push("Como responder: confirme ou recuse dentro do Paperclip. O Telegram é somente leitura.");
 

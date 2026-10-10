@@ -128,6 +128,23 @@ test("cards never leak secrets from prompt or details", () => {
   assert.match(body, /\[redacted\]/);
 });
 
+test("approval card keeps its link even with many long risks", () => {
+  const approval = {
+    id: "appr-many",
+    companyId: "companyA",
+    status: "pending",
+    type: "request_board_approval",
+    payload: {
+      title: "Decisão com muitos riscos",
+      summary: "Resumo longo ".repeat(40),
+      risks: Array.from({ length: 20 }, (_, i) => `Risco numero ${i} `.repeat(20)),
+    },
+  };
+  const body = buildApprovalCardBody(approval, BASE);
+  assert.ok(body.length <= MAX_CARD_CHARS);
+  assert.match(body, /https:\/\/paper\.journeystudios\.com\.br\/JOU\/approvals\/appr-many$/);
+});
+
 test("resolveWebBaseUrl prefers config and rejects non-http(s) values", () => {
   const keys = [
     "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "BETTER_AUTH_URL",
