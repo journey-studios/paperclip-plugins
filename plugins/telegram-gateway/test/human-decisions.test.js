@@ -12,6 +12,37 @@ import {
 
 const BASE = { baseUrl: "https://paper.journeystudios.com.br", issuePrefix: "JOU" };
 
+test("redacts namespaced secret assignments from env, JSON and YAML", () => {
+  const value = ["EXAMPLE", "REDACT", "ME"].join("_");
+  const cases = [
+    "INTERNAL_API_KEY=" + value,
+    "EDGE_SYNC_WEBHOOK_SECRET=" + value,
+    "SUPABASE_SERVICE_ROLE_KEY=" + value,
+    '"INTERNAL_API_KEY": "' + value + '"',
+    "client_secret: " + value,
+    "DATABASE_URL='postgres://example:" + value + "@localhost/test'",
+    "session_cookie=" + value,
+  ];
+  for (const original of cases) {
+    const redacted = stripSensitiveText(original);
+    assert.match(redacted, /\[redacted\]/);
+    assert.ok(!redacted.includes(value), "secret must not appear in the sanitized card");
+  }
+  assert.equal(stripSensitiveText("Plugin running; version=0.3.7"), "Plugin running; version=0.3.7");
+});
+
+test("redacts a whole PEM body and complete prefixed API tokens", () => {
+  const begin = ["-----", "BEGIN PRIVATE KEY", "-----"].join("");
+  const end = ["-----", "END PRIVATE KEY", "-----"].join("");
+  const block = [begin, "FAKE_TEST_ONLY_MATERIAL", end, "status=ok"].join("\n");
+  const redactedPem = stripSensitiveText(block);
+  assert.match(redactedPem, /\[redacted\]/);
+  assert.doesNotMatch(redactedPem, /FAKE_TEST_ONLY_MATERIAL|BEGIN PRIVATE KEY/);
+  assert.match(redactedPem, /status=ok/);
+  const token = ["sk", "proj", "FAKE_TEST_ONLY_TOKEN_REDACT_ME"].join("-");
+  assert.equal(stripSensitiveText(token), "[redacted]");
+});
+
 test("stripSensitiveText redacts bearer tokens and long secrets", () => {
   const input = "Use Bearer abcdefghijklmnop and api_key=super-secret-value";
   const out = stripSensitiveText(input);
