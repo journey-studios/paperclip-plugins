@@ -19,7 +19,7 @@ const mcpApiRoute = (method) => ({
 const manifest = {
   id: "journey-studios.agent-observatory",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.1",
   displayName: "Agent Observatory",
   description: "Read-only observability for agent runs, costs, failures, and suspected anomalies.",
   author: "Journey Studios",
