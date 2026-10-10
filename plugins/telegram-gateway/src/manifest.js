@@ -94,7 +94,7 @@ const manifest = {
       commandsEnabled: {
         type: "boolean",
         title: "Direct Telegram commands",
-        description: "Allow owner-authenticated read-only /agents, /tasks, /credits and /help without a model invocation. This is separate from Telegram's suggested command menu.",
+        description: "Allow owner-authenticated read-only operational commands and allowlisted providers without a model invocation. This is separate from Telegram's suggested command menu.",
         default: true,
       },
       commandProviderIds: {
