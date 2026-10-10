@@ -1,6 +1,7 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { contributeTelegramCommands } from "../../../shared/telegram-command-api.js";
 import { formatMonthlyCosts, getMonthlyCosts, renderTelegramMonthlyCosts } from "./monthly-costs.js";
+import { renderTelegramRuns, renderTelegramHealth } from "./telegram-operations.js";
 import { createPluginMcpEndpoint } from "../../../shared/mcp/index.js";
 import manifest from "./manifest.js";
 import {
@@ -157,11 +158,28 @@ const plugin = definePlugin({
     workerContext = ctx;
     contributeTelegramCommands(ctx, {
       pluginId: "journey-studios.agent-observatory",
-      commands: [{
-        name: "custos", description: "Custos mensais por API e por equipe",
-        usage: "/custos [AAAA-MM]", readOnly: true, audience: "founder",
-      }],
-      execute: async ({ companyId, args }) => renderTelegramMonthlyCosts(ctx, companyId, args),
+      commands: [
+        {
+          name: "custos", description: "Custos mensais por API e por equipe",
+          usage: "/custos [AAAA-MM]", readOnly: true, audience: "founder",
+        },
+        {
+          name: "runs", description: "Execuções ativas dos agentes",
+          usage: "/runs", readOnly: true, audience: "founder",
+        },
+        {
+          name: "health", description: "Saúde e falhas dos agentes nas últimas 24h",
+          usage: "/health", readOnly: true, audience: "founder",
+        },
+      ],
+      execute: async ({ companyId, command, args }) => {
+        switch (command) {
+          case "custos": return renderTelegramMonthlyCosts(ctx, companyId, args);
+          case "runs": return renderTelegramRuns(ctx, companyId, args);
+          case "health": return renderTelegramHealth(ctx, companyId, args);
+          default: throw new Error("Unsupported Observatory Telegram command");
+        }
+      },
     });
     ctx.data.register("overview", (params) => {
       const options = objectParams(params);
