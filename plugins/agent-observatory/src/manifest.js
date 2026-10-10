@@ -19,7 +19,7 @@ const mcpApiRoute = (method) => ({
 const manifest = {
   id: "journey-studios.agent-observatory",
   apiVersion: 1,
-  version: "0.1.5",
+  version: "0.2.0",
   displayName: "Agent Observatory",
   description: "Read-only observability for agent runs, costs, failures, and suspected anomalies.",
   author: "Journey Studios",
@@ -38,11 +38,12 @@ const manifest = {
   database: {
     namespaceSlug: "agent_observatory",
     migrationsDir: "migrations",
-    coreReadTables: ["agents", "heartbeat_runs", "cost_events", "companies"],
+    coreReadTables: ["agents", "heartbeat_runs", "cost_events", "companies", "delivery_revisions", "delivery_evaluations", "run_execution_profiles"],
   },
   apiRoutes: [
     mcpApiRoute("POST"),
     mcpApiRoute("GET"),
+    apiRoute("quality", "/quality"),
     apiRoute("overview", "/overview"),
     apiRoute("agents", "/agents"),
     apiRoute("agent", "/agent"),
@@ -53,6 +54,12 @@ const manifest = {
     apiRoute("monthly-costs", "/monthly-costs"),
   ],
   tools: [
+    {
+      name: "observatory_delivery_quality",
+      displayName: "Agent Delivery Quality",
+      description: "Read reviewed delivery quality by agent, rubric and execution context, with feedback samples and partial coverage.",
+      parametersSchema: { type: "object", properties: { agentId: { type: "string", format: "uuid" }, days: { type: "integer", minimum: 1, maximum: 365 }, environment: { type: "string", enum: ["production", "skill_test"] } }, additionalProperties: false },
+    },
     {
       name: "observatory_overview",
       displayName: "Agent Observatory Overview",

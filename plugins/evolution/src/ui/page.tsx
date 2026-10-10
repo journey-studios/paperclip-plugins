@@ -89,6 +89,21 @@ type Conclusion = {
   createdAt: string;
 };
 
+type DeliveryQualityComparison = {
+  agentId: string; rubric: string; contributionRole: string; reviewerType?: string; role?: string | null; model?: string | null;
+  baselineScore: number | null; currentScore: number | null; baselineSample: number; currentSample: number; delta: number | null;
+  outcome: string; reason: string; causality: "association"; baselineSkills: Array<{ key: string; versionId?: string | null }>;
+  currentSkills: Array<{ key: string; versionId?: string | null }>;
+  confounders: string[]; baselineSamples: Array<{ evaluationId: string; score: number; feedbackHref: string }>;
+  currentSamples: Array<{ evaluationId: string; score: number; feedbackHref: string }>;
+};
+type DeliveryQualityImpact = {
+  agentIds: string[]; skillKeys: string[]; comparisons: DeliveryQualityComparison[];
+  baselineCoverage: { notes: string[]; truncated: boolean; eligibleByAgent?: Array<{ agentId: string; trackedExactRevisions: number; assessedDeliveries: number }> };
+  currentCoverage: { notes: string[]; truncated: boolean; eligibleByAgent?: Array<{ agentId: string; trackedExactRevisions: number; assessedDeliveries: number }> };
+  notes: string[]; reason: string;
+};
+
 type LinkRow = {
   id: string;
   linkType: string;
@@ -120,6 +135,7 @@ type Detail = {
   links: LinkRow[];
   suggestedRuns: SuggestedRun[];
   assessment: Assessment | null;
+  quality?: DeliveryQualityImpact;
 };
 
 const shell: CSSProperties = {
@@ -566,6 +582,8 @@ function DetailView({
         onRefresh={() => void act("assessment", () => refreshAssessment({ companyId, changeSetId: set.id }))}
       />
 
+      <DeliveryQualityPanel quality={data.quality} items={data.items} />
+
       <div style={{ ...panel, padding: 14 }}>
         <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Impact</h3>
         {data.metrics.length === 0 ? (
@@ -793,6 +811,19 @@ function DetailView({
       </div>
     </section>
   );
+}
+
+function DeliveryQualityPanel({ quality, items }: { quality?: DeliveryQualityImpact; items: ChangeItem[] }) {
+  if (!quality) return <section style={{ ...panel, padding: 14 }}><h3 style={{ margin: 0, fontSize: 14 }}>Delivery quality by agent</h3><p style={{ ...muted, fontSize: 12, margin: "6px 0 0" }}>No delivery-quality evaluation is available for this change yet.</p></section>;
+  const names = new Map(items.filter(item => item.entityType === "agent").map(item => [item.entityId, item.entityName ?? item.entityId]));
+  return <section style={{ ...panel, padding: 14, display: "grid", gap: 10 }}>
+    <div><h3 style={{ margin: 0, fontSize: 14 }}>Delivery quality by agent</h3><p style={{ ...muted, fontSize: 12, margin: "5px 0 0" }}>Human-reviewed quality association around the change window. It is separate from run reliability and cost.</p></div>
+    {quality.comparisons.length ? <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr style={{ ...muted, textAlign: "left" }}><th style={{ padding: "6px 8px" }}>Agent</th><th style={{ padding: "6px 8px" }}>Rubric / contribution</th><th style={{ padding: "6px 8px" }}>Configured model / role</th><th style={{ padding: "6px 8px" }}>Before</th><th style={{ padding: "6px 8px" }}>After</th><th style={{ padding: "6px 8px" }}>Outcome</th><th style={{ padding: "6px 8px" }}>Changed skill exposure</th><th style={{ padding: "6px 8px" }}>Confounders / reason</th><th style={{ padding: "6px 8px" }}>Samples</th></tr></thead><tbody>{quality.comparisons.map((row, index) => <tr key={`${row.agentId}:${row.rubric}:${index}`}><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{names.get(row.agentId) ?? row.agentId}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{row.rubric} · {row.contributionRole}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{row.model ?? "Unknown model"}{row.role ? ` · ${row.role}` : ""}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{row.baselineScore == null ? "—" : `${row.baselineScore} (${row.baselineSample ?? "unknown"})`}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{row.currentScore == null ? "—" : `${row.currentScore} (${row.currentSample ?? "unknown"})`}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{row.outcome}{row.delta != null ? ` · ${row.delta > 0 ? "+" : ""}${row.delta}` : ""}<div style={muted}>association only</div></td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{quality.skillKeys.map(key => `${key}: ${row.baselineSkills.find(skill => skill.key === key)?.versionId ?? "absent"} → ${row.currentSkills.find(skill => skill.key === key)?.versionId ?? "absent"}`).join(", ") || "No target skill declared"}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}>{[...row.confounders, row.reason].join(" · ")}</td><td style={{ padding: "7px 8px", borderTop: "1px solid var(--border)" }}><div>Before: {row.baselineSamples.map(sample => <a key={sample.evaluationId} href={sample.feedbackHref} target="_blank" rel="noreferrer" style={{ marginRight: 6 }}>#{sample.score}</a>)}</div><div>After: {row.currentSamples.map(sample => <a key={sample.evaluationId} href={sample.feedbackHref} target="_blank" rel="noreferrer" style={{ marginRight: 6 }}>#{sample.score}</a>)}</div></td></tr>)}</tbody></table></div> : <p style={{ ...muted, fontSize: 12 }}>No attributable agent profile or delivery comparison was found in these windows ({quality.reason}).</p>}
+    <p style={{ ...muted, fontSize: 11, margin: 0 }}>Affected skills: {quality.skillKeys.join(", ") || "none"}. Agents: {quality.agentIds.map(id => names.get(id) ?? id).join(", ") || "none"}. Samples per comparison are distinct reviewed deliveries. Profile-linked exact-revision coverage is partial and is shown as counts, not a complete percentage.</p>
+    <p style={{ ...muted, fontSize: 11, margin: 0 }}>Before tracked/assessed: {quality.baselineCoverage.eligibleByAgent?.map(row => `${names.get(row.agentId) ?? row.agentId}: ${row.trackedExactRevisions}/${row.assessedDeliveries}`).join("; ") || "no profile-linked revisions"}. After tracked/assessed: {quality.currentCoverage.eligibleByAgent?.map(row => `${names.get(row.agentId) ?? row.agentId}: ${row.trackedExactRevisions}/${row.assessedDeliveries}`).join("; ") || "no profile-linked revisions"}.</p>
+    {quality.currentCoverage.truncated || quality.baselineCoverage.truncated ? <p style={{ ...muted, fontSize: 11, margin: 0 }}>A bounded evaluation window reached its query limit; aggregate scores are suppressed for truncated data.</p> : null}
+    {quality.notes.map(note => <p key={note} style={{ ...muted, fontSize: 11, margin: 0 }}>{note}</p>)}
+  </section>;
 }
 
 function SelectedChangeDetail({

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { applyCompatibilityPatchStack } from "./compatibility-patch-stack.mjs";
 import {
   assertEvolutionCompatibilityPatch,
+  assertDeliveryQualityCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertTelegramChatPublicationPatch,
   assertRepository,
@@ -18,6 +19,7 @@ const externalCheckout = process.env.PAPERCLIP_HOST_DIR ? resolve(process.env.PA
 const checkout = externalCheckout ?? localCheckout;
 const artifactPatch = resolve(root, "compat/paperclip-artifacts-read.patch");
 const evolutionPatch = resolve(root, "compat/paperclip-evolution.patch");
+const deliveryQualityPatch = resolve(root, "compat/paperclip-delivery-quality-read.patch");
 const telegramChatPatch = resolve(root, "compat/paperclip-telegram-chat-publication.patch");
 const repository = "https://github.com/paperclipai/paperclip.git";
 const commit = "8f8a0ab7effbd6a0584107d8038736c134ee5047";
@@ -55,6 +57,7 @@ const compatibilityPatches = [
   { path: artifactPatch, validate: assertPublicCompatibilityPatch },
   { path: evolutionPatch, validate: assertEvolutionCompatibilityPatch },
   { path: telegramChatPatch, validate: assertTelegramChatPublicationPatch },
+  { path: deliveryQualityPatch, validate: assertDeliveryQualityCompatibilityPatch },
 ];
 
 for (const compatibilityPatch of compatibilityPatches) {
@@ -67,4 +70,4 @@ const sdkPackage = JSON.parse(readFileSync(resolve(checkout, "packages/plugins/s
 if (sdkPackage.version !== "1.0.0" || !existsSync(resolve(checkout, "packages/plugins/sdk/src/types.ts"))) {
   throw new Error("Pinned Paperclip checkout does not contain the expected Plugin SDK v1 source");
 }
-console.log(`Verified Paperclip ${commit} with Artifact Library, Evolution, and Telegram chat publication SDK compatibility patches.`);
+console.log(`Verified Paperclip ${commit} with Artifact Library, Evolution, delivery-quality table-read, and Telegram chat publication SDK compatibility patches.`);

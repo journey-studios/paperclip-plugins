@@ -18,6 +18,7 @@ type NativeHostValidators = {
 const CORE_READ_TABLES = [
   "companies", "agents", "issues", "projects", "goals", "heartbeat_runs", "cost_events",
   "activity_log", "agent_config_revisions", "company_skills", "company_skill_versions",
+  "delivery_revisions", "delivery_evaluations", "run_execution_profiles",
 ];
 let hostValidatorsPromise: Promise<NativeHostValidators | null> | undefined;
 

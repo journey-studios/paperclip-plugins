@@ -44,6 +44,23 @@ export function assertEvolutionCompatibilityPatch(patchText) {
   }
 }
 
+export function assertDeliveryQualityCompatibilityPatch(patchText) {
+  const paths = [...patchText.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
+  const added = [...patchText.matchAll(/^\+(?!\+)(.*)$/gm)].map((match) => match[1].trim());
+  const removed = [...patchText.matchAll(/^-(?!-)(.*)$/gm)].map((match) => match[1].trim());
+  const fileHeaders = [...patchText.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]);
+  const deletedHeaders = [...patchText.matchAll(/^--- a\/(.+)$/gm)].map((match) => match[1]);
+  const required = ['"delivery_revisions",', '"delivery_evaluations",', '"run_execution_profiles",'];
+  if (paths.length !== 1 || paths[0][1] !== "packages/shared/src/constants.ts" || paths[0][2] !== paths[0][1] ||
+      fileHeaders.length !== 1 || fileHeaders[0] !== paths[0][1] || deletedHeaders.length !== 1 || deletedHeaders[0] !== paths[0][1] ||
+      added.length !== required.length || required.some((line) => !added.includes(line)) || removed.length !== 0) {
+    throw new Error("Delivery-quality compatibility patch must add only its three core read-table declarations");
+  }
+  if (/server\/src|packages\/db\/|CREATE\s+TABLE|CREATE\s+INDEX|migrations\//i.test(patchText)) {
+    throw new Error("Delivery-quality compatibility patch may not add host code or schema");
+  }
+}
+
 export function assertTelegramChatPublicationPatch(patchText) {
   const allowed = new Set([
     "packages/plugins/sdk/src/index.ts",
