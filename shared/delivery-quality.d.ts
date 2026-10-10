@@ -26,7 +26,7 @@ export type Quality = {
   }>;
   notes: string[];
 };
-export function readDeliveryQuality(ctx: unknown, companyId: string, options: { start: string; end: string; agentId?: string | null; environment?: string }): Promise<Quality>;
+export function readDeliveryQuality(ctx: unknown, companyId: string, options: { start: string; end: string; agentId?: string | null; agentIds?: string[] | null; environment?: string }): Promise<Quality>;
 export function summarizeDeliveryQuality(rows: unknown[], options?: { truncated?: boolean }): QualityCohort[];
 export function compareDeliveryQuality(before: Quality, after: Quality, options?: { changedSkillKeys?: string[] }): Array<{
   agentId: string; rubric: string; contributionRole: string; reviewerType: string; reviewerIds: string[]; role: string | null; model: string | null; modelCoverage: string;

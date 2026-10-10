@@ -15,6 +15,11 @@ function fakeContext(overrides = {}) {
   const query = async (sql, params = []) => {
     calls.push({ sql, params });
     if (sql.includes("FROM public.delivery_evaluations e JOIN public.delivery_revisions")) {
+      if (overrides.qualitySchemaError) {
+        const error = new Error("relation delivery_evaluations does not exist");
+        error.code = "42P01";
+        throw error;
+      }
       return (overrides.qualityRows ?? []).filter((row) => params[4] == null || row.agentId === params[4]);
     }
     if (sql.includes("FROM public.delivery_revisions r JOIN public.run_execution_profiles")) {
@@ -216,4 +221,19 @@ test("agent quality detail uses agent-scoped cohorts and full aggregate counts b
   assert.ok(result.agent.quality.samples.every((sample) => sample.agentId === agentId));
   assert.ok(result.agent.quality.samples.every((sample) => sample.feedbackHref.includes("evaluationId=" + sample.id)));
   assert.ok(calls.some(({ sql, params }) => sql.includes("FROM public.delivery_evaluations e JOIN public.delivery_revisions") && params[4] === agentId));
+});
+
+
+test("agent detail performs one scoped quality read and preserves unavailable schema state", async () => {
+  const present = fakeContext();
+  const detail = await getAgent(present.ctx, companyId, agentId);
+  assert.equal(detail.agent.id, agentId);
+  const qualityReads = present.calls.filter(call => call.sql.includes("FROM public.delivery_evaluations e JOIN public.delivery_revisions"));
+  assert.equal(qualityReads.length, 1);
+  assert.equal(qualityReads[0].params[4], agentId);
+  const unavailable = fakeContext({ qualitySchemaError: true });
+  const result = await getAgent(unavailable.ctx, companyId, agentId);
+  assert.deepEqual(result.agent.quality.cohorts, []);
+  assert.equal(result.agent.quality.unavailable, true);
+  assert.match(result.agent.quality.coverage.notes.join(" "), /unavailable/i);
 });

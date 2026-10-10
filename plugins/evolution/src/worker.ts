@@ -1232,12 +1232,14 @@ async function affectedDeliveryAgents(ctx: PluginContext, companyId: string, cha
     WHERE ci.company_id = $1 AND ci.change_set_id = $2`, [companyId, changeSetId]);
   const skillKeys = [...new Set(items.filter(i => i.entityType === "skill" && i.skillKey).map(i => i.skillKey!))];
   const agentIds = items.filter(i => i.entityType === "agent").map(i => i.entityId);
-  for (const key of skillKeys) {
+  if (skillKeys.length) {
+    const placeholders = skillKeys.map((_, index) => "$" + (index + 4) + "::text").join(", ");
     const exposed = await ctx.db.query<{ agentId: string }>(
-      `SELECT DISTINCT p.agent_id AS "agentId" FROM public.run_execution_profiles p
-       JOIN public.heartbeat_runs r ON r.company_id = p.company_id AND r.id = p.run_id
-       WHERE p.company_id = $1 AND r.created_at >= $2 AND r.created_at < $3
-         AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.profile->'skills') skill WHERE skill->>'key' = $4)`, [companyId, start, end, key]);
+      "SELECT DISTINCT p.agent_id AS \"agentId\" FROM public.run_execution_profiles p " +
+      "JOIN public.heartbeat_runs r ON r.company_id = p.company_id AND r.id = p.run_id " +
+      "WHERE p.company_id = $1 AND r.created_at >= $2 AND r.created_at < $3 " +
+      "AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.profile->'skills') skill WHERE skill->>'key' = ANY(ARRAY[" + placeholders + "]))",
+      [companyId, start, end, ...skillKeys]);
     agentIds.push(...exposed.map(p => p.agentId));
   }
   return { agentIds: [...new Set(agentIds)], skillKeys };
@@ -1249,18 +1251,18 @@ async function deliveryImpact(ctx: PluginContext, companyId: string, changeSetId
   try {
     const affected = await affectedDeliveryAgents(ctx, companyId, changeSetId, start, end);
     const [baseline, current] = await Promise.all([
-      readDeliveryQuality(ctx, companyId, { start, end: appliedAt }),
-      readDeliveryQuality(ctx, companyId, { start: appliedAt, end }),
+      readDeliveryQuality(ctx, companyId, { start, end: appliedAt, agentIds: affected.agentIds }),
+      readDeliveryQuality(ctx, companyId, { start: appliedAt, end, agentIds: affected.agentIds }),
     ]);
-    baseline.cohorts = baseline.cohorts.filter(c => affected.agentIds.includes(c.agentId));
-    current.cohorts = current.cohorts.filter(c => affected.agentIds.includes(c.agentId));
     return { ...affected, comparisons: compareDeliveryQuality(baseline, current, { changedSkillKeys: affected.skillKeys }),
       baselineCoverage: baseline.coverage, currentCoverage: current.coverage,
       notes: current.notes, reason: affected.agentIds.length ? "historical_profiles" : "no_historical_exposure_or_agent_evidence" };
   } catch (error) {
-    if (!missingQualitySchema(error)) throw error;
+    const missing = missingQualitySchema(error);
+    ctx?.logger?.error?.("Evolution delivery quality unavailable", { code: missing ? "host_quality_schema_unavailable" : "quality_read_failed" });
+    const reason = missing ? "host_quality_schema_unavailable" : "quality_read_failed";
     return { agentIds: [], skillKeys: [], comparisons: [], baselineCoverage: { truncated: false, notes: [] }, currentCoverage: { truncated: false, notes: [] },
-      notes: ["Delivery quality requires a host version with delivery_revisions, delivery_evaluations, run_execution_profiles and controlled-test evaluation references."], reason: "host_quality_schema_unavailable" };
+      notes: [missing ? "Delivery quality requires compatible host schema." : "Delivery quality read failed; Change Set evidence and operational metrics remain available."], reason };
   }
 }
 

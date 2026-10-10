@@ -186,3 +186,24 @@ test("pairs controlled skill-test grades only when input, template, comparison p
   assert.equal(mismatched.currentSamples[0].actualSkillVersionId, "version-1");
   assert.equal(pairControlledSkillTests([controlled("v1", "version-1", 70), controlled("v2", "version-2", 85)], { truncated: true }).length, 0);
 });
+
+test("agent filters constrain evaluations and coverage before the result cap", async () => {
+  const a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const calls = [];
+  const ctx = { db: { query: async (sql, params) => { calls.push({ sql, params }); return []; } } };
+  await readDeliveryQuality(ctx, "company-1", { start: "2026-10-01", end: "2026-10-09", agentIds: [a, b] });
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(({ sql }) => /IN \(\$7::uuid, \$8::uuid\)/.test(sql)));
+  assert.ok(calls.every(({ params }) => params[6] === a && params[7] === b));
+  calls.length = 0;
+  await readDeliveryQuality(ctx, "company-1", { start: "2026-10-01", end: "2026-10-09", agentIds: [] });
+  assert.ok(calls.every(({ sql }) => sql.includes("AND FALSE")));
+});
+
+test("a cohort absent from either comparison window has an explicit reason", () => {
+  const cohort = summarizeDeliveryQuality([row({ id: "only-before" })]);
+  const [comparison] = compareDeliveryQuality(quality(cohort), quality([]));
+  assert.equal(comparison.outcome, "inconclusive");
+  assert.equal(comparison.reason, "no_comparable_cohort_in_other_window");
+});

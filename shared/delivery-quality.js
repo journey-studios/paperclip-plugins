@@ -137,9 +137,18 @@ export function summarizeDeliveryQuality(rows, { truncated = false } = {}) {
   });
 }
 
-export async function readDeliveryQuality(ctx, companyId, { start, end, agentId = null, environment = "production" }) {
+export async function readDeliveryQuality(ctx, companyId, { start, end, agentId = null, agentIds = null, environment = "production" }) {
   const eligibleState = environment === "skill_test" ? "controlled_test" : "yes";
   const query = (sql, params) => ctx.db.query(sql, params);
+  // Narrow to affected agents before applying the 5,001-row safety cap.
+  const ids = agentIds == null ? null : [...new Set(agentIds)];
+  const validId = id => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(id);
+  if (ids?.some(id => !validId(id))) throw Error("Invalid affected agent ID");
+  // Bind scalars, not a JS array (the plugin bridge expands arrays).
+  const agentFilter = column => ids == null ? "" : ids.length
+    ? " AND " + column + " IN (" + ids.map((_, i) => "$" + (i + 7) + "::uuid").join(", ") + ")"
+    : " AND FALSE";
+  const params = [companyId, start, end, environment, agentId, eligibleState, ...(ids ?? [])];
   const rows = await query(`SELECT e.id, e.company_id AS "companyId", e.issue_id AS "issueId", e.revision_id AS "revisionId", r.work_product_id AS "workProductId",
       e.evaluated_agent_id AS "agentId", e.contribution_role AS "contributionRole", e.rubric, e.score,
       e.execution_profile AS "executionProfile", e.controlled_test_ref AS "controlledTestRef", e.hypotheses, e.delivered_at AS "deliveredAt", e.reviewer_type AS "reviewerType", e.reviewer_id AS "reviewerId"
@@ -147,7 +156,7 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
     WHERE e.company_id = $1 AND e.delivered_at >= $2 AND e.delivered_at < $3 AND e.environment = $4
       AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) AND e.eligible = $6 AND e.state = 'final'
       AND NOT EXISTS (SELECT 1 FROM public.delivery_evaluations next WHERE next.company_id = e.company_id AND next.supersedes_id = e.id)
-    ORDER BY e.delivered_at DESC, e.id DESC LIMIT 5001`, [companyId, start, end, environment, agentId, eligibleState]);
+    ${agentFilter("e.evaluated_agent_id")} ORDER BY e.delivered_at DESC, e.id DESC LIMIT 5001`, params);
   const truncated = rows.length > CAP;
   const selected = rows.slice(0, CAP);
   const [eligible, assessed] = await Promise.all([
@@ -155,12 +164,12 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
       FROM public.delivery_revisions r JOIN public.run_execution_profiles p ON p.company_id = r.company_id
         AND (p.run_id = r.publisher_run_id OR p.run_id = r.origin_run_id)
       WHERE r.company_id = $1 AND r.delivered_at >= $2 AND r.delivered_at < $3 AND r.environment = $4 AND r.precise <> 'unknown'
-        AND ($5::uuid IS NULL OR p.agent_id = $5) GROUP BY p.agent_id`, [companyId, start, end, environment, agentId]),
+        AND ($5::uuid IS NULL OR p.agent_id = $5) ${agentFilter("p.agent_id")} GROUP BY p.agent_id`, params),
     query(`SELECT e.evaluated_agent_id AS "agentId", COUNT(DISTINCT e.revision_id)::int AS count
       FROM public.delivery_evaluations e WHERE e.company_id = $1 AND e.delivered_at >= $2 AND e.delivered_at < $3 AND e.environment = $4
         AND e.eligible = $6 AND e.state = 'final' AND e.evaluated_agent_id IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM public.delivery_evaluations next WHERE next.company_id = e.company_id AND next.supersedes_id = e.id)
-        AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) GROUP BY e.evaluated_agent_id`, [companyId, start, end, environment, agentId, eligibleState]),
+        AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) ${agentFilter("e.evaluated_agent_id")} GROUP BY e.evaluated_agent_id`, params),
   ]);
   const assessedByAgent = new Map(assessed.map(row => [row.agentId, Number(row.count ?? 0)]));
   const trackedByAgent = new Map(eligible.map(row => [row.agentId, Number(row.count ?? 0)]));
@@ -222,7 +231,7 @@ export function compareDeliveryQuality(before, after, { changedSkillKeys = [] } 
       baselineSkills: a?.skills ?? [], currentSkills: b?.skills ?? [],
       baselineScore: a?.score ?? null, currentScore: b?.score ?? null, baselineSample: a?.assessedDeliveries ?? 0, currentSample: b?.assessedDeliveries ?? 0, delta,
       outcome: missing ? "inconclusive" : delta >= 10 ? "improved" : delta <= -10 ? "regressed" : "within_threshold",
-      reason: ambiguous ? "multiple_skill_versions_in_window" : targetSkillNotVaried ? "changed_skill_exposure_not_varied" : confounders.length ? "other_execution_context_changed" : (a?.modelCoverage !== "effective_known" || b?.modelCoverage !== "effective_known") ? "effective_model_unknown" : !hasVerifiedNativeContext(a ?? {}) || !hasVerifiedNativeContext(b ?? {}) ? "native_runtime_context_unverified" : (a?.instructionCoverage !== "bundle" || b?.instructionCoverage !== "bundle") ? "instruction_bundle_coverage_incomplete" : missing ? "insufficient_comparable_delivery_evidence" : Math.abs(delta) < 10 ? "absolute_change_below_10_point_observational_threshold_v1" : "observational_threshold_crossed_association_only",
+      reason: ambiguous ? "multiple_skill_versions_in_window" : (!a || !b) ? "no_comparable_cohort_in_other_window" : targetSkillNotVaried ? "changed_skill_exposure_not_varied" : confounders.length ? "other_execution_context_changed" : (a?.modelCoverage !== "effective_known" || b?.modelCoverage !== "effective_known") ? "effective_model_unknown" : !hasVerifiedNativeContext(a ?? {}) || !hasVerifiedNativeContext(b ?? {}) ? "native_runtime_context_unverified" : (a?.instructionCoverage !== "bundle" || b?.instructionCoverage !== "bundle") ? "instruction_bundle_coverage_incomplete" : missing ? "insufficient_comparable_delivery_evidence" : Math.abs(delta) < 10 ? "absolute_change_below_10_point_observational_threshold_v1" : "observational_threshold_crossed_association_only",
       confounders, baselineSamples: a?.samples ?? [], currentSamples: b?.samples ?? [], causality: "association",
     };
   });

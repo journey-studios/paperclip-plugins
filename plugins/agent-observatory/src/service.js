@@ -14,8 +14,8 @@ function isMissingQualitySchema(error) {
   return error?.code === "42P01" || (error?.code === "42703" && message.includes("controlled_test_ref")) || (message.includes("does not exist") && QUALITY_TABLES.some(table => message.includes(table)));
 }
 
-function unavailableQuality() {
-  return { policy: "delivery-quality.v1", cohorts: [], samples: [], coverage: { evaluationsReturned: 0, limit: 5000, truncated: false, eligibleByAgent: [], notes: ["Delivery-quality tables are unavailable. Install a host version that provides delivery_revisions, delivery_evaluations and run_execution_profiles."] }, notes: [], unavailable: true };
+export function unavailableQuality(note = "Delivery-quality tables are unavailable. Install a host version that provides delivery_revisions, delivery_evaluations and run_execution_profiles.") {
+  return { policy: "delivery-quality.v1", cohorts: [], samples: [], coverage: { evaluationsReturned: 0, limit: 5000, truncated: false, eligibleByAgent: [], notes: [note] }, notes: [], unavailable: true };
 }
 
 const RUN_COLUMNS = `r.id, r.agent_id AS "agentId", r.status,
@@ -118,7 +118,7 @@ async function queryRunCosts(query, companyId, runIds, windowStart) {
   [companyId, ...runIds, windowStart]);
 }
 
-async function readSnapshot(ctx, companyValue, windowHours = 24, agentPage = { limit: AGENT_CAP, offset: 0 }) {
+async function readSnapshot(ctx, companyValue, windowHours = 24, agentPage = { limit: AGENT_CAP, offset: 0 }, qualityAgentId = null) {
   const companyId = uuid(companyValue, "companyId");
   const hours = normalizeWindowHours(windowHours);
   const now = new Date();
@@ -161,8 +161,14 @@ async function readSnapshot(ctx, companyValue, windowHours = 24, agentPage = { l
 
   const runs = runRows.slice(0, RUN_CAP);
   let quality;
-  try { quality = await readDeliveryQuality(ctx, companyId, { start: windowStart.toISOString(), end: now.toISOString() }); }
-  catch (error) { if (!isMissingQualitySchema(error)) throw error; quality = unavailableQuality(); }
+  try { quality = await readDeliveryQuality(ctx, companyId, { start: windowStart.toISOString(), end: now.toISOString(), agentId: qualityAgentId }); }
+  catch (error) {
+    if (isMissingQualitySchema(error)) quality = unavailableQuality();
+    else {
+      ctx?.logger?.error?.("Agent Observatory quality read failed", { code: "quality_read_failed" });
+      quality = unavailableQuality("Delivery quality read failed; operational metrics remain available.");
+    }
+  }
   const runIds = runs.map((run) => run.id);
   const runCostRows = await queryRunCosts(query, companyId, runIds, windowStart);
   const agents = agentRows.slice(0, agentPage.limit);
@@ -207,7 +213,7 @@ function summarizeAgent(agent, snapshot) {
   const failures = Number(stats.failures ?? 0);
   return {
     id: agent.id,
-    quality: { cohorts: snapshot.quality.cohorts.filter(c => c.agentId === agent.id),
+    quality: { unavailable: Boolean(snapshot.quality.unavailable), cohorts: snapshot.quality.cohorts.filter(c => c.agentId === agent.id),
       assessedDeliveries: Number(snapshot.quality.coverage.eligibleByAgent.find(e => e.agentId === agent.id)?.assessedDeliveries ?? 0),
       trackedExactRevisions: Number(snapshot.quality.coverage.eligibleByAgent.find(e => e.agentId === agent.id)?.trackedExactRevisions ?? 0),
       coverage: { ...snapshot.quality.coverage, eligibleByAgent: snapshot.quality.coverage.eligibleByAgent.filter(e => e.agentId === agent.id) },
@@ -427,7 +433,7 @@ export async function listAgents(ctx, companyValue, pagination = parsePage(), wi
 export async function getAgent(ctx, companyValue, agentValue, windowHours = 24) {
   const companyId = uuid(companyValue, "companyId");
   const agentId = uuid(agentValue, "agentId");
-  const snapshot = await readSnapshot(ctx, companyId, windowHours);
+  const snapshot = await readSnapshot(ctx, companyId, windowHours, undefined, agentId);
   const query = dbQuery(ctx);
   const rows = await query("SELECT a.id, a.name, a.status FROM public.agents a WHERE a.company_id = $1 AND a.id = $2 LIMIT 1", [companyId, agentId]);
   if (!rows[0]) throw notFound("Agent not found in this company");
@@ -438,8 +444,6 @@ export async function getAgent(ctx, companyValue, agentValue, windowHours = 24) 
   const recentCostMap = new Map(snapshot.costByRun);
   for (const row of recentCosts) recentCostMap.set(row.runId, Number(row.knownCostCents ?? 0));
   const pageSnapshot = { ...snapshot, agents: [rows[0]] };
-  try { pageSnapshot.quality = await readDeliveryQuality(ctx, companyId, { start: snapshot.windowStart.toISOString(), end: snapshot.now.toISOString(), agentId }); }
-  catch (error) { if (!isMissingQualitySchema(error)) throw error; pageSnapshot.quality = unavailableQuality(); }
   return {
     companyId,
     windowHours: snapshot.windowHours,
@@ -502,5 +506,6 @@ export async function getDeliveryQuality(ctx, companyValue, options = {}) {
   const agentId = options.agentId == null ? null : uuid(options.agentId, "agentId");
   if (!["production", "skill_test"].includes(options.environment ?? "production")) throw badRequest("Invalid quality environment");
   const end = new Date().toISOString();
-  return readDeliveryQuality(ctx, companyId, { start: new Date(Date.parse(end) - days * 86400000).toISOString(), end, agentId, environment: options.environment ?? "production" });
+  const quality = await readDeliveryQuality(ctx, companyId, { start: new Date(Date.parse(end) - days * 86400000).toISOString(), end, agentId, environment: options.environment ?? "production" });
+  return { ...quality, agentId };
 }

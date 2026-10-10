@@ -6,6 +6,7 @@ import manifest from "./manifest.js";
 import {
   getAgent,
   getDeliveryQuality,
+  unavailableQuality,
   getAnomalies,
   getFailures,
   getOverview,
@@ -144,7 +145,7 @@ const plugin = definePlugin({
       if (error?.status === 400 || error?.status === 404 || error?.status === 503) {
         return { status: error.status, body: { error: error.message } };
       }
-      if ((input.routeKey === "quality" || input.routeKey === "overview" || input.routeKey === "agent") && isMissingQualitySchema(error)) {
+      if (input.routeKey === "quality" && isMissingQualitySchema(error)) {
         return { status: 503, body: { error: "Delivery quality requires a host version with delivery evaluation tables", code: "QUALITY_SCHEMA_UNAVAILABLE" } };
       }
       workerContext?.logger?.error("Agent Observatory API request failed", { routeKey: input.routeKey });
@@ -166,7 +167,17 @@ const plugin = definePlugin({
       const options = objectParams(params);
       return readForUi(ctx, "overview", () => getOverview(ctx, options.companyId, normalizeWindowHours(options.windowHours)));
     });
-    ctx.data.register("quality", params => { const options = objectParams(params); return readForUi(ctx, "quality", () => getDeliveryQuality(ctx, options.companyId, options)); });
+    ctx.data.register("quality", params => {
+      const options = objectParams(params);
+      return readForUi(ctx, "quality", async () => {
+        try { return await getDeliveryQuality(ctx, options.companyId, options); }
+        catch (error) {
+          if (!isMissingQualitySchema(error)) throw error;
+          return { ...unavailableQuality(), companyId: options.companyId,
+            environment: options.environment ?? "production", agentId: options.agentId ?? null };
+        }
+      });
+    });
     ctx.data.register("agent", (params) => {
       const options = objectParams(params);
       return readForUi(ctx, "agent", () => getAgent(ctx, options.companyId, options.agentId, normalizeWindowHours(options.windowHours)));
