@@ -251,7 +251,7 @@ function buildApprovalCardBody(approval, context = {}) {
   const directCode = context.decisionCommandsEnabled === true && allowDirectApproval(approval)
     ? approvalActionRef(approval) : null;
   lines.push(directCode
-    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo (4–40 caracteres)."
+    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo curto (até o limite do Telegram)."
     : "Como responder: confirme ou recuse dentro do Paperclip. O Telegram é somente leitura.");
 
   const link = objectUrl(baseUrl, issuePrefix, `approvals/${encodeURIComponent(stringValue(approval.id) ?? "")}`);
@@ -312,7 +312,7 @@ function buildInteractionCardBody(interaction, issue, context = {}) {
   const directCode = context.decisionCommandsEnabled === true && allowDirectInteraction(interaction)
     ? interactionActionRef(interaction, issue) : null;
   const hint = directCode
-    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo (4–40 caracteres)."
+    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo curto (até o limite do Telegram)."
     : nativeTelegramButtonsLikely(interaction)
     ? "Como responder: abra o Paperclip para decidir; botões nativos podem aparecer no chat vinculado."
     : "Como responder: abra o Paperclip para responder. O Telegram não executa esta decisão.";

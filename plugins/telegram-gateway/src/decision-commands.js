@@ -8,7 +8,9 @@ import {
 } from "./decision-references.js";
 
 const MAX_INPUT = 60;
-const MAX_ISSUES = 500;
+// Keep the same 60-character bound as the Paperclip Telegram ingress.
+const PAGE_SIZE = 250;
+const MAX_SCAN_ITEMS = 2000;
 
 function parseResponse(action, args) {
   if (typeof args !== "string" || args.length > MAX_INPUT) return null;
@@ -48,14 +50,18 @@ async function resolveInteraction(ctx, companyId, reference, issueRef, founderUs
   // Avoid a company-wide interaction scan for each command. Lookup is bounded,
   // after which a unique pending interaction is verified against its current
   // fingerprint and resolver policy by Paperclip at application time.
-  const issues = await ctx.issues.list({
-    companyId,
-    limit: MAX_ISSUES,
-    offset: 0,
-    includePluginOperations: false,
-  });
-  const issue = (Array.isArray(issues) ? issues : [])
-    .find((item) => item.companyId === companyId && item.identifier === issueRef);
+  let issue = null;
+  for (let offset = 0; offset < MAX_SCAN_ITEMS; offset += PAGE_SIZE) {
+    const page = await ctx.issues.list({
+      companyId,
+      limit: PAGE_SIZE,
+      offset,
+      includePluginOperations: false,
+    });
+    const rows = Array.isArray(page) ? page : [];
+    issue = rows.find((item) => item.companyId === companyId && item.identifier === issueRef) ?? null;
+    if (issue || rows.length < PAGE_SIZE) break;
+  }
   if (!issue) return null;
   const list = await ctx.issues.listInteractions(issue.id, companyId);
   const matches = (Array.isArray(list) ? list : []).filter((item) =>

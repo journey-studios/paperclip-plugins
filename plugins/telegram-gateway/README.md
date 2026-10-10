@@ -44,8 +44,9 @@ the moment of mutation; Paperclip remains the single source of truth.
 
 - To approve: `/aprovar CODIGO CONFIRMO`. The explicit `CONFIRMO` protects
   against an accidental copied reference.
-- To reject: `/rejeitar CODIGO motivo curto`. A reason of 4–40 characters is
-  required. For longer justifications, open the original Paperclip link.
+- To reject: `/rejeitar CODIGO motivo curto`. A reason of at least 4 characters is required; its maximum is 40 characters
+  or the remaining space within the native 60-character command-argument limit,
+  whichever is shorter. For longer justifications, use the Paperclip link.
 - The code is a *locator*, not a credential. It includes a fingerprint of the
   current decision version, so an outdated card cannot decide a revised item.
   Cross-company and ambiguous matches fail closed.

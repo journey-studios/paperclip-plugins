@@ -131,6 +131,32 @@ test("company isolation and ambiguous refs fail closed", async () => {
   assert.equal(updates.length, 0);
 });
 
+test("interaction resolution pages beyond the first batch without crossing the company", async () => {
+  const { ctx, updates } = fakeCtx();
+  const original = interaction();
+  const target = issue();
+  const distractors = Array.from({ length: 250 }, (_, index) => ({
+    id: "irrelevant-" + index, companyId: COMPANY,
+    identifier: "JOU-" + (index + 1000),
+  }));
+  ctx.issues.list = async ({ offset, limit }) => [...distractors, target].slice(offset, offset + limit);
+  const ref = interactionActionRef(original, target);
+  const result = await executeDecisionCommand(ctx, COMPANY, FOUNDER, "approve", ref + " CONFIRMO", config);
+  assert.match(result, /Confirmação registrada/);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].id, original.id);
+});
+
+test("reject reason is bounded by the native Telegram 60-char ingress", async () => {
+  const pending = interaction();
+  const { ctx, updates } = fakeCtx({ interaction: pending });
+  const ref = interactionActionRef(pending, issue());
+  const tooLong = ref + " " + "a".repeat(43);
+  assert.ok(tooLong.length > 60);
+  assert.match(await executeDecisionCommand(ctx, COMPANY, FOUNDER, "reject", tooLong, config), /Formato/);
+  assert.equal(updates.length, 0);
+});
+
 test("interaction addressed to a different human is not decided by the Founder", async () => {
   const pending = { ...interaction(), addresseeUserId: "some-other-user" };
   const { ctx, updates } = fakeCtx({ interaction: pending });
