@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createHumanDecisionDelivery } from "./human-decision-delivery.js";
+import { resolveWebBaseUrl } from "./human-decisions.js";
 import {
   assertPublicationAccepted,
   nextPublicationFailure,
@@ -45,6 +46,7 @@ async function companyConfig(ctx, companyId) {
     conversationIssueId: stringValue(raw.conversationIssueId),
     chatChannels: channels,
     projectId: stringValue(raw.projectId),
+    webBaseUrl: resolveWebBaseUrl(raw.webBaseUrl),
     digestTimezone: timezone,
     digestTimes: [...new Set(digestTimes)],
     digestWeekdays: [...new Set(weekdays)],
@@ -55,7 +57,7 @@ function validateConfig(value) {
   const config = asObject(value);
   const errors = [];
   const knownKeys = new Set([
-    "liaisonAgentId", "founderUserId", "conversationIssueId", "chatChannels", "projectId",
+    "liaisonAgentId", "founderUserId", "conversationIssueId", "chatChannels", "projectId", "webBaseUrl",
     "immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays", "commandProviderIds",
   ]);
   for (const key of Object.keys(config)) {
@@ -64,7 +66,7 @@ function validateConfig(value) {
   for (const key of ["liaisonAgentId", "founderUserId"]) {
     if (!stringValue(config[key])) errors.push(`Missing required setting: ${key}`);
   }
-  for (const key of ["conversationIssueId", "projectId"]) {
+  for (const key of ["conversationIssueId", "projectId", "webBaseUrl"]) {
     if (config[key] !== undefined && !stringValue(config[key])) errors.push(`${key} must be a non-empty string`);
   }
   for (const key of ["immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled"]) {

@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.3.6",
+  version: "0.3.7",
   displayName: "Telegram Gateway",
   description: "Routes authorized Telegram commands and publishes native chat messages, including Founder Liaison notifications.",
   author: "Journey Studios",
@@ -74,6 +74,11 @@ const manifest = {
         minLength: 1,
         title: "Project filter",
         description: "Optional company project ID required on the target conversation.",
+      },
+      webBaseUrl: {
+        type: "string",
+        title: "Paperclip web base URL",
+        description: "Absolute origin used to build the human decision card links sent to Telegram, for example https://paperclip.example.com. Defaults to the host public URL, then to the observed Journey Studios base.",
       },
       immediateEnabled: {
         type: "boolean",

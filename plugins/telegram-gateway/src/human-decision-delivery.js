@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import {
-  CARD_MARKER,
   INTERACTION_ISSUE_LIMIT_PER_STATUS,
   INTERACTION_ISSUE_STATUSES,
   approvalFingerprint,
   buildApprovalCardBody,
   buildInteractionCardBody,
   cardDeliveryId,
+  companyPrefix,
   interactionFingerprint,
   isFounderReachableInteraction,
 } from "./human-decisions.js";
@@ -65,10 +65,14 @@ async function clearHumanDecisionFingerprint(ctx, companyId, trackKey) {
   await ctx.state.set(key, prior);
 }
 
+async function resolveIssuePrefix(ctx, companyId, conversation) {
+  const company = ctx.companies?.get ? await ctx.companies.get(companyId) : null;
+  return stringValue(company?.issuePrefix) ?? companyPrefix(conversation);
+}
+
 async function ensureHumanDecisionComment(ctx, companyId, conversation, config, deliveryId, cardBody) {
-  if (!stringValue(cardBody)?.includes(CARD_MARKER)) {
-    throw new Error("Invalid founder human decision card marker");
-  }
+  const trimmed = stringValue(cardBody);
+  if (!trimmed) throw new Error("Invalid founder human decision card body");
   const token = createHash("sha256")
     .update(JSON.stringify([companyId, conversation.id, deliveryId]))
     .digest("hex");
@@ -78,23 +82,28 @@ async function ensureHumanDecisionComment(ctx, companyId, conversation, config, 
     return { commentId: prior.commentId, issueId: conversation.id };
   }
 
-  const deliveryLine = `delivery=${token}`;
-  const tagged = cardBody.includes(deliveryLine) ? cardBody : `${cardBody}\n${deliveryLine}`;
+  // The published body carries no internal marker, so idempotency falls back to
+  // an exact body match (deterministic for a given decision + fingerprint)
+  // instead of embedding a delivery token in the Telegram text.
   const existing = (await ctx.issues.listComments(conversation.id, companyId)).find((comment) =>
     comment.issueId === conversation.id && comment.companyId === companyId && !comment.deletedAt &&
-    typeof comment.body === "string" && comment.body.includes(CARD_MARKER) && comment.body.includes(deliveryLine));
+    typeof comment.body === "string" && comment.body.trim() === trimmed);
   const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
   const created = existing ?? await ctx.issues.createComment(
-    conversation.id, tagged, companyId, { authorAgentId },
+    conversation.id, trimmed, companyId, { authorAgentId },
   );
   const record = { created: true, issueId: conversation.id, commentId: stringValue(created?.id) };
   await ctx.state.set(key, record);
   return record;
 }
 
-async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody, resolveConversation) {
+async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, buildBody, resolveConversation) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) return { delivered: false, reason: "conversation_not_bound" };
+
+  const issuePrefix = await resolveIssuePrefix(ctx, companyId, conversation);
+  const cardBody = buildBody({ baseUrl: config.webBaseUrl, issuePrefix });
+  if (!stringValue(cardBody)) return { delivered: false, reason: "empty_card" };
 
   const { commentId } = await ensureHumanDecisionComment(
     ctx, companyId, conversation, config, deliveryId, cardBody,
@@ -127,7 +136,7 @@ async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, card
 }
 
 async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolveConversation) {
-  const { kind, entityId, fingerprint, cardBody, wakeEventId } = delivery;
+  const { kind, entityId, fingerprint, buildBody, wakeEventId } = delivery;
   const trackKey = `${kind}:${entityId}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
@@ -142,7 +151,7 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   }
 
   const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, fingerprint);
-  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody, resolveConversation);
+  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, buildBody, resolveConversation);
   if (result.delivered !== false) {
     await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId);
   }
@@ -162,7 +171,7 @@ async function reconcilePendingApprovals(ctx, companyId, config, resolveConversa
         kind: "approval",
         entityId: approval.id,
         fingerprint,
-        cardBody: buildApprovalCardBody(approval, null, companyId),
+        buildBody: (link) => buildApprovalCardBody(approval, link),
       }, resolveConversation);
     } catch {
       logDeliveryFailure(ctx, companyId, "approval", approval.id);
@@ -222,7 +231,7 @@ async function reconcilePendingInteractions(ctx, companyId, config, resolveConve
           entityId: interaction.id,
           issueId: issue.id,
           fingerprint,
-          cardBody: buildInteractionCardBody(interaction, issue, companyId),
+          buildBody: (link) => buildInteractionCardBody(interaction, issue, link),
         }, resolveConversation);
       } catch {
         logDeliveryFailure(ctx, companyId, "interaction", interaction.id);
@@ -282,7 +291,7 @@ async function handleApproval(ctx, event, config, resolveConversation) {
       kind: "approval",
       entityId: approval.id,
       fingerprint,
-      cardBody: buildApprovalCardBody(approval, null, event.companyId),
+      buildBody: (link) => buildApprovalCardBody(approval, link),
     }, resolveConversation);
   } catch {
     throw new Error("Human decision delivery failed");

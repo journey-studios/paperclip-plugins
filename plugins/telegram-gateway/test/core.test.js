@@ -101,6 +101,8 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
 const chat = (id, originId, projectId = "project-a") => ({
   id,
   companyId: "companyA",
+  identifier: "JOU-1",
+  title: "Founder chat",
   originKind: "chat_channel",
   originId,
   assigneeAgentId: "liaison-a",
@@ -185,8 +187,9 @@ test("routes immediate events to the configured company conversation and ignores
   assert.equal(ctx.inspect.publications.length, 1);
   assert.equal(ctx.inspect.publications[0].companyId, "companyA");
   assert.equal(ctx.inspect.comments[0].authorAgentId, "liaison-a");
-  assert.match(ctx.inspect.comments[0].body, /kind=approval/);
-  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+  assert.match(ctx.inspect.comments[0].body, /Ação necessária · Aprovação/);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/paper\.journeystudios\.com\.br\/JOU\/approvals\/approval-a/);
+  assert.doesNotMatch(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD|kind=|companyId=|fingerprint=|delivery=|Coverage note/);
 });
 
 test("publication disabled records and deduplicates the Paperclip card without calling the bridge", async () => {
@@ -203,7 +206,8 @@ test("publication disabled records and deduplicates the Paperclip card without c
   await processEvent(ctx, event);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.publications.length, 0);
-  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+  assert.match(ctx.inspect.comments[0].body, /Ação necessária · Aprovação/);
+  assert.doesNotMatch(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD|delivery=/);
   settings.publicationEnabled = true;
   await reconcilePendingApprovals(ctx, "companyA", await companyConfig(ctx, "companyA"));
   assert.equal(ctx.inspect.comments.length, 1);
@@ -329,10 +333,10 @@ test("published unchanged interactions skip conversation resolution", async () =
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingInteractions(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 1);
+  assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 1);
   await reconcilePendingInteractions(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 1);
+  assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 1);
 });
 
@@ -454,18 +458,19 @@ test("published human decision cards skip conversation resolution until their fi
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 1);
+  assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 1);
 
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 1);
+  assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 1);
 
   ctx.approvals.list = async () => [{
     id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+    payload: { summary: "Budget bump v2" },
   }];
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 2);
+  assert.equal(resolutionChecks, 4);
   assert.equal(ctx.inspect.publications.length, 2);
 });
 
