@@ -111,7 +111,7 @@ export async function renderInbox(ctx, companyId, founderUserId) {
   if (approvals.length) sections.push("**Aprovações pendentes**\n" +
     approvals.slice(0, ROW_LIMIT).map(approvalLine).join("\n"));
   if (assigned.length) sections.push("**Tarefas atribuídas a você**\n" +
-    assigned.slice(0, ROW_LIMIT).map(line).join("\n"));
+    assigned.slice(0, ROW_LIMIT).map((issue) => line(issue)).join("\n"));
   if (!sections.length) sections.push("_Nenhuma aprovação ou tarefa atribuída encontrada nesta consulta._");
   return formatSections("Sua atenção", sections, "\n\n_Tarefas consultadas: até 100 por estado. " +
     "Aprovações são pendências da empresa; não significam necessariamente atribuição pessoal._");
