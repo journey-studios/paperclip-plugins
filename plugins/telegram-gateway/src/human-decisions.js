@@ -5,11 +5,13 @@ const MAX_CARD_CHARS = 3500;
 const DEFAULT_WEB_BASE_URL = "https://paper.journeystudios.com.br";
 
 const SENSITIVE_LINE_PATTERNS = [
-  /\bBearer\s+[A-Za-z0-9._-]{8,}\b/gi,
-  /\bsk-[A-Za-z0-9]{10,}\b/g,
-  /\bghp_[A-Za-z0-9]{10,}\b/g,
-  /\b(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi,
-  /-----BEGIN [A-Z ]+-----/g,
+  /\bBearer\s+[A-Za-z0-9._~-]{8,}\b/gi,
+  /\bsk-[A-Za-z0-9_-]{10,}\b/gi,
+  /\b(?:gh[oprsu]_[A-Za-z0-9_]{10,}|glpat-[A-Za-z0-9_-]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/gi,
+  // Match full dotenv/YAML/JSON assignments, including namespaced keys.
+  /\b(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|SERVICE[_-]?ROLE[_-]?KEY|ACCESS[_-]?KEY|DATABASE[_-]?URL|DB[_-]?URL|COOKIE|SESSION[_-]?ID)\s*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
+  // The entire PEM block must be hidden, not just its BEGIN header.
+  /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$)/gi,
 ];
 
 const STATUS_LABELS = {
