@@ -119,12 +119,12 @@ test("cards never leak secrets from prompt or details", () => {
     effectiveResolverPolicy: "anyone",
     title: "Decidir",
     payload: {
-      prompt: "Use api_key=sk-abcdefghij12345 para concluir",
-      detailsMarkdown: "Bearer abcdefghijklmnop",
+      prompt: "Use api_key=aaaaaaaaaaaaaaaaaa para concluir",
+      detailsMarkdown: "Bearer cccccccccccccccc",
     },
   };
   const body = buildInteractionCardBody(interaction, issue, BASE);
-  assert.doesNotMatch(body, /sk-abcdefghij12345|abcdefghijklmnop/);
+  assert.doesNotMatch(body, /aaaaaaaaaaaaaaaaaa|cccccccccccccccc/);
   assert.match(body, /\[redacted\]/);
 });
 
