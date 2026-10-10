@@ -1,3 +1,4 @@
+import { isFounderReachableInteraction } from "./human-decisions.js";
 import {
   allowDirectApproval,
   allowDirectInteraction,
@@ -43,7 +44,7 @@ async function resolveApproval(ctx, companyId, reference) {
   return matches.length === 1 ? { approval: matches[0] } : null;
 }
 
-async function resolveInteraction(ctx, companyId, reference, issueRef) {
+async function resolveInteraction(ctx, companyId, reference, issueRef, founderUserId) {
   // Avoid a company-wide interaction scan for each command. Lookup is bounded,
   // after which a unique pending interaction is verified against its current
   // fingerprint and resolver policy by Paperclip at application time.
@@ -58,7 +59,7 @@ async function resolveInteraction(ctx, companyId, reference, issueRef) {
   if (!issue) return null;
   const list = await ctx.issues.listInteractions(issue.id, companyId);
   const matches = (Array.isArray(list) ? list : []).filter((item) =>
-    allowDirectInteraction(item) && interactionActionRef(item, issue) === reference);
+    isFounderReachableInteraction(item, founderUserId) && allowDirectInteraction(item) && interactionActionRef(item, issue) === reference);
   return matches.length === 1 ? { issue, interaction: matches[0] } : null;
 }
 
@@ -96,7 +97,7 @@ export async function executeDecisionCommand(ctx, companyId, actorUserId, action
         : "Esta aprovação já havia sido resolvida. Consulte o Paperclip.";
     }
 
-    const current = await resolveInteraction(ctx, companyId, request.ref, request.issueRef);
+    const current = await resolveInteraction(ctx, companyId, request.ref, request.issueRef, actorUserId);
     if (!current) return notFoundText();
     // The host applies the current governance, creator, document revision and
     // concurrency checks; this isn't a second authority or state machine.

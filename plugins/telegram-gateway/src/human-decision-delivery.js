@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { allowDirectApproval, allowDirectInteraction } from "./decision-references.js";
 import {
   INTERACTION_ISSUE_LIMIT_PER_STATUS,
   INTERACTION_ISSUE_STATUSES,
@@ -141,11 +142,11 @@ async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, issu
 }
 
 async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolveConversation) {
-  const { kind, entityId, fingerprint, buildBody, wakeEventId, issuePrefix = null } = delivery;
+  const { kind, entityId, fingerprint, buildBody, wakeEventId, issuePrefix = null, directEligible = false } = delivery;
   const trackKey = `${kind}:${entityId}`;
   // The link identity includes the web base and the company issue prefix, so a
   // corrected link re-delivers even when the decision fingerprint is unchanged.
-  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}${config.decisionCommandsEnabled === true ? "|commands-v1" : ""}`;
+  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}${config.decisionCommandsEnabled === true && directEligible ? "|commands-v1" : ""}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
   const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;
@@ -206,6 +207,7 @@ async function reconcilePendingApprovals(ctx, companyId, config, resolveConversa
         entityId: approval.id,
         fingerprint,
         issuePrefix,
+        directEligible: allowDirectApproval(approval),
         buildBody: (link) => buildApprovalCardBody(approval, link),
       }, resolveConversation);
     } catch {
@@ -268,6 +270,7 @@ async function reconcilePendingInteractions(ctx, companyId, config, resolveConve
           issueId: issue.id,
           fingerprint,
           issuePrefix,
+          directEligible: allowDirectInteraction(interaction),
           buildBody: (link) => buildInteractionCardBody(interaction, issue, link),
         }, resolveConversation);
       } catch {
@@ -330,6 +333,7 @@ async function handleApproval(ctx, event, config, resolveConversation) {
       entityId: approval.id,
       fingerprint,
       issuePrefix,
+      directEligible: allowDirectApproval(approval),
       buildBody: (link) => buildApprovalCardBody(approval, link),
     }, resolveConversation);
   } catch {

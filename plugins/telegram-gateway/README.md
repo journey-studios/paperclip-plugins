@@ -59,6 +59,15 @@ the moment of mutation; Paperclip remains the single source of truth.
 - Button-based Telegram callbacks are not part of this feature: the plugin
   SDK has no generic `callback_query` action channel. Paperclip's native simple
   confirmation buttons are unaffected. No bot/webhook/core changes.
+- **Production ingress caveat:** the current Paperclip host forwards a trusted
+  actor ID for slash commands, but does **not** forward a trusted DM/group
+  indicator to the plugin. Before enabling writes, verify the *active* Telegram
+  endpoint is configured **DM-only**, has no enabled group resources, and is
+  monitored so a later endpoint change cannot enable group-based decisions.
+  This is an operational gate, not a cryptographic DM attestation. If strict
+  rejection of all group-origin decisions regardless of endpoint configuration
+  is required, the current plugin SDK alone cannot provide it; keep the flag
+  off and the Paperclip links active until a native ingress API is available.
 - This release adds `approvals.respond` and `issue.interactions.respond`
   capabilities. **Do not enable or deploy without capability review**, CI and
   a reversible canary in the existing company. The new opt-in intentionally

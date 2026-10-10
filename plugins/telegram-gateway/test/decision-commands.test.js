@@ -131,6 +131,15 @@ test("company isolation and ambiguous refs fail closed", async () => {
   assert.equal(updates.length, 0);
 });
 
+test("interaction addressed to a different human is not decided by the Founder", async () => {
+  const pending = { ...interaction(), addresseeUserId: "some-other-user" };
+  const { ctx, updates } = fakeCtx({ interaction: pending });
+  const ref = interactionActionRef(pending, issue());
+  const result = await executeDecisionCommand(ctx, COMPANY, FOUNDER, "approve", ref + " CONFIRMO", config);
+  assert.match(result, /não está mais pendente|não foi encontrada/);
+  assert.equal(updates.length, 0);
+});
+
 test("host-error reply never echoes internals or pretends the decision succeeded", async () => {
   const a = approval();
   const { ctx } = fakeCtx();
