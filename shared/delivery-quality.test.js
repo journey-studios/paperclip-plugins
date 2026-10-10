@@ -194,8 +194,11 @@ test("agent filters constrain evaluations and coverage before the result cap", a
   const ctx = { db: { query: async (sql, params) => { calls.push({ sql, params }); return []; } } };
   await readDeliveryQuality(ctx, "company-1", { start: "2026-10-01", end: "2026-10-09", agentIds: [a, b] });
   assert.equal(calls.length, 3);
-  assert.ok(calls.every(({ sql }) => /IN \(\$7::uuid, \$8::uuid\)/.test(sql)));
-  assert.ok(calls.every(({ params }) => params[6] === a && params[7] === b));
+  assert.ok([calls[0], calls[2]].every(({ sql }) => /IN \(\$7::uuid, \$8::uuid\)/.test(sql)));
+  assert.match(calls[1].sql, /IN \(\$6::uuid, \$7::uuid\)/);
+  assert.ok([calls[0], calls[2]].every(({ params }) => params[6] === a && params[7] === b));
+  assert.deepEqual(calls[1].params.slice(-2), [a, b]);
+  assert.equal(calls[1].params.length, 7, "revision SQL must not bind unused eligibility parameter");
   calls.length = 0;
   await readDeliveryQuality(ctx, "company-1", { start: "2026-10-01", end: "2026-10-09", agentIds: [] });
   assert.ok(calls.every(({ sql }) => sql.includes("AND FALSE")));

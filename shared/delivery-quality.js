@@ -144,10 +144,12 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
   const validId = id => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(id);
   const ids = agentIds == null ? null : [...new Set(agentIds)].filter(validId);
   // Bind scalars, not a JS array (the plugin bridge expands arrays).
-  const agentFilter = column => ids == null ? "" : ids.length
-    ? " AND " + column + " IN (" + ids.map((_, i) => "$" + (i + 7) + "::uuid").join(", ") + ")"
+  const agentFilter = (column, firstParameter) => ids == null ? "" : ids.length
+    ? " AND " + column + " IN (" + ids.map((_, i) => "$" + (i + firstParameter) + "::uuid").join(", ") + ")"
     : " AND FALSE";
-  const params = [companyId, start, end, environment, agentId, eligibleState, ...(ids ?? [])];
+  const evaluationParams = [companyId, start, end, environment, agentId, eligibleState, ...(ids ?? [])];
+  // Denominator SQL does not reference $6 eligibility, so scoped UUIDs start at $6.
+  const revisionParams = [companyId, start, end, environment, agentId, ...(ids ?? [])];
   const rows = await query(`SELECT e.id, e.company_id AS "companyId", e.issue_id AS "issueId", e.revision_id AS "revisionId", r.work_product_id AS "workProductId",
       e.evaluated_agent_id AS "agentId", e.contribution_role AS "contributionRole", e.rubric, e.score,
       e.execution_profile AS "executionProfile", e.controlled_test_ref AS "controlledTestRef", e.hypotheses, e.delivered_at AS "deliveredAt", e.reviewer_type AS "reviewerType", e.reviewer_id AS "reviewerId"
@@ -155,7 +157,7 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
     WHERE e.company_id = $1 AND e.delivered_at >= $2 AND e.delivered_at < $3 AND e.environment = $4
       AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) AND e.eligible = $6 AND e.state = 'final'
       AND NOT EXISTS (SELECT 1 FROM public.delivery_evaluations next WHERE next.company_id = e.company_id AND next.supersedes_id = e.id)
-    ${agentFilter("e.evaluated_agent_id")} ORDER BY e.delivered_at DESC, e.id DESC LIMIT 5001`, params);
+    ${agentFilter("e.evaluated_agent_id", 7)} ORDER BY e.delivered_at DESC, e.id DESC LIMIT 5001`, evaluationParams);
   const truncated = rows.length > CAP;
   const selected = rows.slice(0, CAP);
   const [eligible, assessed] = await Promise.all([
@@ -163,12 +165,12 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
       FROM public.delivery_revisions r JOIN public.run_execution_profiles p ON p.company_id = r.company_id
         AND (p.run_id = r.publisher_run_id OR p.run_id = r.origin_run_id)
       WHERE r.company_id = $1 AND r.delivered_at >= $2 AND r.delivered_at < $3 AND r.environment = $4 AND r.precise <> 'unknown'
-        AND ($5::uuid IS NULL OR p.agent_id = $5) ${agentFilter("p.agent_id")} GROUP BY p.agent_id`, params),
+        AND ($5::uuid IS NULL OR p.agent_id = $5) ${agentFilter("p.agent_id", 6)} GROUP BY p.agent_id`, revisionParams),
     query(`SELECT e.evaluated_agent_id AS "agentId", COUNT(DISTINCT e.revision_id)::int AS count
       FROM public.delivery_evaluations e WHERE e.company_id = $1 AND e.delivered_at >= $2 AND e.delivered_at < $3 AND e.environment = $4
         AND e.eligible = $6 AND e.state = 'final' AND e.evaluated_agent_id IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM public.delivery_evaluations next WHERE next.company_id = e.company_id AND next.supersedes_id = e.id)
-        AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) ${agentFilter("e.evaluated_agent_id")} GROUP BY e.evaluated_agent_id`, params),
+        AND ($5::uuid IS NULL OR e.evaluated_agent_id = $5) ${agentFilter("e.evaluated_agent_id", 7)} GROUP BY e.evaluated_agent_id`, evaluationParams),
   ]);
   const assessedByAgent = new Map(assessed.map(row => [row.agentId, Number(row.count ?? 0)]));
   const trackedByAgent = new Map(eligible.map(row => [row.agentId, Number(row.count ?? 0)]));
