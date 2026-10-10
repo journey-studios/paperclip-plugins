@@ -1,5 +1,6 @@
 import { companyConfig } from "./core.js";
 import { NATIVE_TELEGRAM_COMMANDS } from "./command-catalog.js";
+import { renderToday, renderInbox, renderBlocked, renderIssue } from "./operational-commands.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_TEXT = 3600;
@@ -246,11 +247,13 @@ async function displayCredits(ctx, companyId) {
 const commands = new Map([
   ["help", {
     description: "Exibir esta ajuda",
-    handler: async () => [
+    handler: async (ctx, companyId, params, registry, config) => [
     "**Comandos do Telegram Gateway**",
     "",
     ...listBuiltinTelegramCommands().map(({ name, description }) =>
       `\`/${name}\` — ${description}`),
+    ...(registry ? (await registry.discover(companyId, config.commandProviderIds)).map(({ name, description }) =>
+      `\`/${name}\` — ${description}`) : []),
     "",
     "**Comandos nativos do Paperclip**",
     "",
@@ -275,6 +278,23 @@ const commands = new Map([
   ["credits", {
     description: "Ver créditos gastos no mês por grupo",
     handler: async (ctx, companyId) => displayCredits(ctx, companyId),
+  }],
+  ["today", {
+    description: "Resumo operacional da empresa",
+    handler: (ctx, companyId) => renderToday(ctx, companyId),
+  }],
+  ["inbox", {
+    description: "Aprovações e tarefas que precisam de atenção",
+    handler: (ctx, companyId, _params, _registry, config) =>
+      renderInbox(ctx, companyId, config.founderUserId),
+  }],
+  ["blocked", {
+    description: "Consultar tarefas bloqueadas",
+    handler: (ctx, companyId) => renderBlocked(ctx, companyId),
+  }],
+  ["issue", {
+    description: "Detalhar tarefa (/issue JOU-38)",
+    handler: (ctx, companyId, params) => renderIssue(ctx, companyId, params.args),
   }],
 ]);
 
@@ -316,7 +336,7 @@ export async function executeFounderCommand(ctx, params, invocation, registry = 
     text: "Este comando é restrito ao Founder vinculado no Paperclip.",
   };
   if (command) {
-    const text = await command(ctx, companyId);
+    const text = await command(ctx, companyId, params, registry, config);
     return { handled: true, text: String(text).slice(0, MAX_TEXT) };
   }
   // External providers never run before the linked Founder is authorized.
