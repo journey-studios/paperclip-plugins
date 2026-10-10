@@ -73,6 +73,21 @@ test("redacts unquoted multiword values and Markdown-escaped assignments", () =>
   assert.match(card, /\[redacted\]/);
 });
 
+test("redacts AUTH_CONFIG assignments in an issue title before publishing", () => {
+  const value = ["eyJhdXRocyI6", "e319"].join("");
+  const issue = { id: "issue-auth", identifier: "JOU-22", title: "DOCKER_AUTH_CONFIG=" + value };
+  const interaction = {
+    id: "interaction-auth",
+    kind: "request_confirmation",
+    status: "pending",
+    effectiveResolverPolicy: "anyone",
+    payload: {},
+  };
+  const card = buildInteractionCardBody(interaction, issue, BASE);
+  assert.doesNotMatch(card, new RegExp(value), "registry credential must not leak via the title");
+  assert.match(card, /\[redacted\]/);
+});
+
 test("redacts a whole PEM body and complete prefixed API tokens", () => {
   const begin = ["-----", "BEGIN PRIVATE KEY", "-----"].join("");
   const end = ["-----", "END PRIVATE KEY", "-----"].join("");

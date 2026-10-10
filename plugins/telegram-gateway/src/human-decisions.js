@@ -11,7 +11,7 @@ const SENSITIVE_LINE_PATTERNS = [
   // Match full dotenv/YAML/JSON assignments, including namespaced keys.
   // The unquoted alternative consumes the whole value up to the end of the line
   // (a dotenv/YAML field boundary) so multiword values are not partially leaked.
-  /\b(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|SERVICE[_-]?ROLE[_-]?KEY|ACCESS[_-]?KEY|DATABASE[_-]?URL|DB[_-]?URL|COOKIE|SESSION[_-]?ID)\s*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
+  /\b(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|SERVICE[_-]?ROLE[_-]?KEY|ACCESS[_-]?KEY|AUTH[_-]?CONFIG|DATABASE[_-]?URL|DB[_-]?URL|COOKIE|SESSION[_-]?ID)\s*["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
   // The entire PEM block must be hidden, not just its BEGIN header.
   /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$)/gi,
 ];
