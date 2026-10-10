@@ -7,7 +7,8 @@ const TELEGRAM_COMMAND_LIMIT = 100;
 export function buildTelegramCommandCatalog({ config, providerCommands }) {
   const byName = new Map();
   for (const command of [
-    ...listBuiltinTelegramCommands(),
+    ...listBuiltinTelegramCommands().filter(({ name }) =>
+      config.decisionCommandsEnabled === true || !["aprovar", "rejeitar"].includes(name)),
     ...NATIVE_TELEGRAM_COMMANDS,
     ...providerCommands.map((command) => ({ ...command, source: "provider" })),
   ]) {

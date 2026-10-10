@@ -107,7 +107,7 @@ async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, issu
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) return { delivered: false, reason: "conversation_not_bound" };
 
-  const cardBody = buildBody({ baseUrl: config.webBaseUrl, issuePrefix });
+  const cardBody = buildBody({ baseUrl: config.webBaseUrl, issuePrefix, decisionCommandsEnabled: config.decisionCommandsEnabled === true });
   if (!stringValue(cardBody)) return { delivered: false, reason: "empty_card" };
 
   const { commentId } = await ensureHumanDecisionComment(
@@ -145,7 +145,7 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   const trackKey = `${kind}:${entityId}`;
   // The link identity includes the web base and the company issue prefix, so a
   // corrected link re-delivers even when the decision fingerprint is unchanged.
-  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}`;
+  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}${config.decisionCommandsEnabled === true ? "|commands-v1" : ""}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
   const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;

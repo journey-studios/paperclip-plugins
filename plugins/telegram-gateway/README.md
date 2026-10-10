@@ -32,6 +32,43 @@ Known commands use a small in-plugin registry, with duplicate registration rejec
 
 Commands are off when `commandsEnabled=false`, and disabled if the runtime bridge is absent. A standard message continues into the Founder Liaison. No second webhook or raw Telegram Bot API is used.
 
+## Direct decisions from Telegram (JOU-91, opt-in)
+
+**0.3.8 proposal — not enabled by default.** The optional company setting
+`decisionCommandsEnabled=true` publishes version-bound command references on
+eligible founder cards and enables deterministic `/aprovar` and `/rejeitar` in
+the existing Telegram bot. The host proves the linked Telegram user's company,
+and the plugin checks that the user is the configured Founder. The SDK host
+rechecks active human membership and current interaction/approval permissions at
+the moment of mutation; Paperclip remains the single source of truth.
+
+- To approve: `/aprovar CODIGO CONFIRMO`. The explicit `CONFIRMO` protects
+  against an accidental copied reference.
+- To reject: `/rejeitar CODIGO motivo curto`. A reason of 4–40 characters is
+  required. For longer justifications, open the original Paperclip link.
+- The code is a *locator*, not a credential. It includes a fingerprint of the
+  current decision version, so an outdated card cannot decide a revised item.
+  Cross-company and ambiguous matches fail closed.
+- Only `request_board_approval` board approvals and `request_confirmation`
+  issue interactions without sensitive `secretProposal`, `toolAction`,
+  `connectionAuthorization`, `connectionIntent`, or `issue_document` targets
+  offer commands. Human-only cases require an authenticated Founder and
+  deliberate typed confirmation, not a one-tap bypass.
+- Other types (budget override, new agents, confidential tool/secret changes,
+  revision-bound documents) remain on the Paperclip review UI.
+- Button-based Telegram callbacks are not part of this feature: the plugin
+  SDK has no generic `callback_query` action channel. Paperclip's native simple
+  confirmation buttons are unaffected. No bot/webhook/core changes.
+- This release adds `approvals.respond` and `issue.interactions.respond`
+  capabilities. **Do not enable or deploy without capability review**, CI and
+  a reversible canary in the existing company. The new opt-in intentionally
+  reissues pending eligible cards when first enabled; validate the volume and
+  do not switch it on in a busy inbox without a safe rollout window.
+- Requests containing the command or reason are handled in the authenticated
+  plugin worker without an LLM. Failure replies disclose no provider internals;
+  new Telegram messages acknowledge an applied decision without assuming that
+  external operational work (such as a feature flag rollout) succeeded.
+
 ## Native Telegram publication
 
 Configure `publicationEnabled=true` **only after** deploying a Paperclip image that implements the scoped `chat.publications.publish_existing_comment` capability. It defaults to **false** for compatibility and safe rollout. This manifest requests only that additional publication capability, and the host is responsible for verifying company, agent comment author, issue and bound chat.
