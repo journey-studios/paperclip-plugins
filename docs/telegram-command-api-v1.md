@@ -1,6 +1,6 @@
 # Telegram Command API v1 (plugin-only)
 
-**Status:** cross-plugin dispatch and six operational command handlers are implemented and tested. The live custom runtime already includes a generic, host-authenticated slash-command admission bridge (compiled parser checked 2026-10-10): new command names and arguments are recognized without changing Paperclip upstream. The **remaining rollout gate** is updating the installed Gateway and Observatory plugin packages, then conducting real Telegram E2E tests. No separate bot, token, webhook or extra runtime patch is needed for this environment.
+**Status:** cross-plugin dispatch and six operational command handlers are implemented and tested. The live custom runtime already includes a generic, host-authenticated slash-command admission bridge (compiled parser checked 2026-10-10): new command names and arguments are recognized without changing Paperclip upstream. The **remaining rollout gate** is updating the registry-installed Gateway `0.3.5` and Observatory `0.1.5` packages to their tested new versions, then conducting real Telegram E2E tests. The older bundle shipped inside the image is not the active plugin registration. No separate bot, token, webhook or extra runtime patch is needed for this environment.
 
 ## Responsibilities
 
