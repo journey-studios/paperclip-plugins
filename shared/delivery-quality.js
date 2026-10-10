@@ -141,9 +141,8 @@ export async function readDeliveryQuality(ctx, companyId, { start, end, agentId 
   const eligibleState = environment === "skill_test" ? "controlled_test" : "yes";
   const query = (sql, params) => ctx.db.query(sql, params);
   // Narrow to affected agents before applying the 5,001-row safety cap.
-  const ids = agentIds == null ? null : [...new Set(agentIds)];
   const validId = id => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(id);
-  if (ids?.some(id => !validId(id))) throw Error("Invalid affected agent ID");
+  const ids = agentIds == null ? null : [...new Set(agentIds)].filter(validId);
   // Bind scalars, not a JS array (the plugin bridge expands arrays).
   const agentFilter = column => ids == null ? "" : ids.length
     ? " AND " + column + " IN (" + ids.map((_, i) => "$" + (i + 7) + "::uuid").join(", ") + ")"

@@ -1233,13 +1233,12 @@ async function affectedDeliveryAgents(ctx: PluginContext, companyId: string, cha
   const skillKeys = [...new Set(items.filter(i => i.entityType === "skill" && i.skillKey).map(i => i.skillKey!))];
   const agentIds = items.filter(i => i.entityType === "agent").map(i => i.entityId);
   if (skillKeys.length) {
-    const placeholders = skillKeys.map((_, index) => "$" + (index + 4) + "::text").join(", ");
     const exposed = await ctx.db.query<{ agentId: string }>(
       "SELECT DISTINCT p.agent_id AS \"agentId\" FROM public.run_execution_profiles p " +
       "JOIN public.heartbeat_runs r ON r.company_id = p.company_id AND r.id = p.run_id " +
       "WHERE p.company_id = $1 AND r.created_at >= $2 AND r.created_at < $3 " +
-      "AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.profile->'skills') skill WHERE skill->>'key' = ANY(ARRAY[" + placeholders + "]))",
-      [companyId, start, end, ...skillKeys]);
+      "AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.profile->'skills') skill WHERE skill->>'key' = ANY (SELECT jsonb_array_elements_text($4::jsonb)))",
+      [companyId, start, end, JSON.stringify(skillKeys)]);
     agentIds.push(...exposed.map(p => p.agentId));
   }
   return { agentIds: [...new Set(agentIds)], skillKeys };
