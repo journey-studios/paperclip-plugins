@@ -64,7 +64,7 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
         .map(([, entry]) => entry),
     },
     companies: {
-      get: async (companyId) => overrides.company ? overrides.company(companyId) : (configs[companyId] ? { id: companyId } : null),
+      get: async (companyId) => overrides.company ? overrides.company(companyId) : (configs[companyId] ? { id: companyId, issuePrefix: "JOU" } : null),
     },
     agents: {
       get: async (id, companyId) => overrides.agent ? overrides.agent(id, companyId) :
@@ -328,15 +328,15 @@ test("published unchanged interactions skip conversation resolution", async () =
     },
   });
   let resolutionChecks = 0;
-  const getCompany = ctx.companies.get;
-  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const getIssue = ctx.issues.get;
+  ctx.issues.get = async (...args) => { resolutionChecks++; return getIssue(...args); };
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingInteractions(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 2);
+  assert.equal(resolutionChecks, 1);
   assert.equal(ctx.inspect.publications.length, 1);
   await reconcilePendingInteractions(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 2);
+  assert.equal(resolutionChecks, 1);
   assert.equal(ctx.inspect.publications.length, 1);
 });
 
@@ -453,16 +453,16 @@ test("published human decision cards skip conversation resolution until their fi
     "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
   });
   let resolutionChecks = 0;
-  const getCompany = ctx.companies.get;
-  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const getIssue = ctx.issues.get;
+  ctx.issues.get = async (...args) => { resolutionChecks++; return getIssue(...args); };
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 2);
+  assert.equal(resolutionChecks, 1);
   assert.equal(ctx.inspect.publications.length, 1);
 
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 2);
+  assert.equal(resolutionChecks, 1);
   assert.equal(ctx.inspect.publications.length, 1);
 
   ctx.approvals.list = async () => [{
@@ -470,7 +470,7 @@ test("published human decision cards skip conversation resolution until their fi
     payload: { summary: "Budget bump v2" },
   }];
   await reconcilePendingApprovals(ctx, "companyA", config);
-  assert.equal(resolutionChecks, 4);
+  assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 2);
 });
 
@@ -496,6 +496,28 @@ test("correcting webBaseUrl re-delivers a corrected-link card", async () => {
   await reconcilePendingApprovals(ctx, "companyA", config);
   assert.equal(ctx.inspect.publications.length, 2);
   assert.match(ctx.inspect.comments.at(-1).body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
+});
+
+test("correcting the company issue prefix re-delivers a corrected-link card", async () => {
+  let prefix = "JOU";
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  }, {
+    company: (companyId) => (companyId === "companyA" ? { id: companyId, issuePrefix: prefix } : null),
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /\/JOU\/approvals\/approval-a/);
+
+  prefix = "NEW";
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 2);
+  assert.match(ctx.inspect.comments.at(-1).body, /\/NEW\/approvals\/approval-a/);
 });
 
 test("card idempotency does not adopt an identical comment authored by another agent", async () => {
