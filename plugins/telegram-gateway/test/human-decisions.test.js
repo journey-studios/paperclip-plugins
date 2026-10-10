@@ -31,6 +31,25 @@ test("redacts namespaced secret assignments from env, JSON and YAML", () => {
   assert.equal(stripSensitiveText("Plugin running; version=0.3.7"), "Plugin running; version=0.3.7");
 });
 
+test("redacts Markdown-wrapped environment assignments before publishing a card", () => {
+  const secret = ["EXAMPLE", "REDACT", "ME"].join("_");
+  const tick = String.fromCharCode(96);
+  const issue = { id: "issue-synthetic", identifier: "JOU-20", title: "Synthetic safe card" };
+  const interaction = {
+    id: "interaction-synthetic",
+    kind: "request_confirmation",
+    status: "pending",
+    effectiveResolverPolicy: "anyone",
+    payload: {
+      prompt: tick + "INTERNAL_API_KEY" + tick + " = **" + secret + "**",
+      detailsMarkdown: "**EDGE_SYNC_WEBHOOK_SECRET**: " + tick + secret + tick,
+    },
+  };
+  const card = buildInteractionCardBody(interaction, issue, BASE);
+  assert.ok(!card.includes(secret), "an inline Markdown assignment must be redacted");
+  assert.match(card, /\[redacted\]/);
+});
+
 test("redacts a whole PEM body and complete prefixed API tokens", () => {
   const begin = ["-----", "BEGIN PRIVATE KEY", "-----"].join("");
   const end = ["-----", "END PRIVATE KEY", "-----"].join("");
