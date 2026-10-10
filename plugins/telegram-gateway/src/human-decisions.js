@@ -54,7 +54,9 @@ function sanitizeMarkdownField(value) {
 function humanText(value, maxLength = MAX_TEXT_FIELD) {
   const raw = stringValue(value);
   if (!raw) return null;
-  let out = stripSensitiveText(raw);
+  // Flatten formatting before redaction: inline code and bold delimiters
+  // must not hide an assignment such as `INTERNAL_API_KEY` = **value**.
+  let out = raw;
   out = out.replace(/```[a-zA-Z0-9]*\n?/g, "");
   out = out.replace(/`/g, "");
   out = out.replace(/^\s*#{1,6}\s+/gm, "");
@@ -62,6 +64,7 @@ function humanText(value, maxLength = MAX_TEXT_FIELD) {
   out = out.replace(/\*\*/g, "");
   out = out.replace(/__/g, "");
   out = out.replace(/\r?\n/g, " ");
+  out = stripSensitiveText(out);
   out = out.replace(/\s+/g, " ").trim();
   if (!out) return null;
   return out.slice(0, maxLength);
