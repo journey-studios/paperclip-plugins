@@ -24,7 +24,7 @@ let workerContext;
 
 const mcpHandler = createPluginMcpEndpoint({
   name: "journey-studios.agent-observatory",
-  version: "0.2.0",
+  version: "0.2.1",
   tools: [
     {
       name: "paperclipDeliveryQuality", title: "Delivery quality by agent", description: "Read reviewed delivery scores by rubric and execution context, evidence links and coverage. Separate controlled tests from production.", readOnly: true,
