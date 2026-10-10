@@ -498,6 +498,34 @@ test("correcting webBaseUrl re-delivers a corrected-link card", async () => {
   assert.match(ctx.inspect.comments.at(-1).body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
 });
 
+test("backfills a legacy string fingerprint with link context so a later link fix re-delivers", async () => {
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a",
+      webBaseUrl: "https://a.example.com",
+    },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  });
+  // Simulate a pre-upgrade record: the fingerprint map stored a bare string and
+  // no link context, with native publication disabled.
+  ctx.inspect.state.set(
+    JSON.stringify({ scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-fingerprints" }),
+    { "approval:approval-a": "pending:v1:budget" },
+  );
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 0);
+  assert.equal(ctx.inspect.publications.length, 0);
+
+  await reconcilePendingApprovals(ctx, "companyA", { ...config, webBaseUrl: "https://b.example.com" });
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
+});
+
 test("correcting the company issue prefix re-delivers a corrected-link card", async () => {
   let prefix = "JOU";
   const ctx = makeContext({

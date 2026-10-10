@@ -45,7 +45,9 @@ async function humanDecisionFingerprints(ctx, companyId) {
 async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null, linkContext = null) {
   const key = companyScope(companyId, FINGERPRINTS_KEY);
   const prior = await humanDecisionFingerprints(ctx, companyId);
-  if (issueId || commentId) {
+  // A link context must upgrade even a legacy string record to a structured one,
+  // so a later link correction still re-delivers under publication-disabled.
+  if (issueId || commentId || linkContext !== null) {
     const record = { fingerprint };
     if (issueId) record.issueId = issueId;
     if (commentId) record.commentId = commentId;
