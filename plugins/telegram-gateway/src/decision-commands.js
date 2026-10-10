@@ -32,7 +32,7 @@ function parseResponse(action, args) {
 function guidance(action) {
   return action === "approve"
     ? "Formato: /aprovar CODIGO CONFIRMO. Use somente o código mostrado no card atual."
-    : "Formato: /rejeitar CODIGO motivo. Motivo obrigatório (4–40 caracteres); para justificativas longas use o Paperclip.";
+    : "Formato: /rejeitar CODIGO motivo. Motivo obrigatório (mínimo 4, máximo 40 caracteres e dentro do limite total de 60 caracteres do Telegram); para texto longo use o Paperclip.";
 }
 
 function notFoundText() {
