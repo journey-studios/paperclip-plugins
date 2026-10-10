@@ -284,7 +284,14 @@ function buildInteractionCardBody(interaction, issue, context = {}) {
   if (restricted) {
     const reasons = sensitiveReasonText(interaction);
     const why = reasons.length ? ` (${reasons.join("; ")})` : "";
-    lines.push(`Esta decisão é sensível${why} e precisa ser confirmada dentro do Paperclip — o Telegram não aprova nem exibe o segredo.`);
+    lines.push(`Esta decisão precisa ser confirmada dentro do Paperclip${why}; o Telegram não executa a resposta.`);
+    // A governed confirmation can be human-only without containing any secret.
+    // Its explicit interaction title is a useful action label, but opaque
+    // credential/tool/connection proposals must never publish their details.
+    if (!payload.secretProposal && !payload.toolAction && !payload.connectionAuthorization && !payload.connectionIntent) {
+      const actionTitle = humanText(interaction.title, 220);
+      if (actionTitle && actionTitle !== heading) lines.push(`Pedido: ${actionTitle}`);
+    }
   } else {
     const prompt = humanText(sanitized.prompt ?? payload.prompt ?? interaction.title, 700);
     const details = humanText(sanitized.detailsMarkdown ?? payload.detailsMarkdown, 700);
