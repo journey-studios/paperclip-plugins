@@ -53,7 +53,7 @@ test("catalog preserves gateway collisions, sorts deterministically, and caps Bo
   for (const command of reservedCommands) {
     assert.ok(catalog.botFatherLines.some((line) => line.startsWith(`${command.name} - `)), `${command.name} remains in BotFather menu`);
   }
-  assert.equal(catalog.omittedFromBotFather, 19);
+  assert.equal(catalog.omittedFromBotFather, reservedCommands.length + many.length - 100);
 });
 
 test("worker data registration requires company context and discovers only configured provider IDs", async () => {
