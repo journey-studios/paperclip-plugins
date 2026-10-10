@@ -66,6 +66,27 @@ test("restricted action and connection cards never fall back to raw prompt or de
   }
 });
 
+test("governance-critical interactions explain the constraint without dumping prompt or details", () => {
+  const issue = { id: "issue-gov", identifier: "JOU-9", companyId: "companyA", title: "Decisão governada" };
+  for (const critical of [
+    { effectiveResolverPolicy: "human_only", payload: {} },
+    { effectiveResolverPolicy: "anyone", payload: { target: { type: "issue_document" } } },
+    { effectiveResolverPolicy: "anyone", payload: { rejectRequiresReason: true } },
+  ]) {
+    const body = buildInteractionCardBody({
+      id: "interaction-gov",
+      kind: "request_confirmation",
+      status: "pending",
+      title: "Decidir",
+      ...critical,
+      payload: { prompt: "Conteúdo interno do pedido", detailsMarkdown: "Detalhe interno reservado", ...critical.payload },
+    }, issue, BASE);
+    assert.doesNotMatch(body, /Conteúdo interno do pedido|Detalhe interno reservado/);
+    assert.match(body, /precisa ser confirmada dentro do Paperclip/);
+    assert.match(body, /https:\/\/paper\.journeystudios\.com\.br\/JOU\/issues\/JOU-9#interaction-interaction-gov/);
+  }
+});
+
 test("approval card carries a human summary and canonical absolute link", () => {
   const approval = {
     id: "appr-1",
@@ -154,6 +175,7 @@ test("resolveWebBaseUrl prefers config and rejects non-http(s) values", () => {
   for (const key of keys) delete process.env[key];
   try {
     assert.equal(resolveWebBaseUrl("https://paper.example.com/"), "https://paper.example.com");
+    assert.equal(resolveWebBaseUrl("http://paper.example.com"), "https://paper.journeystudios.com.br");
     assert.equal(resolveWebBaseUrl("not a url"), "https://paper.journeystudios.com.br");
     assert.equal(resolveWebBaseUrl(undefined), "https://paper.journeystudios.com.br");
   } finally {

@@ -474,6 +474,50 @@ test("published human decision cards skip conversation resolution until their fi
   assert.equal(ctx.inspect.publications.length, 2);
 });
 
+test("correcting webBaseUrl re-delivers a corrected-link card", async () => {
+  const settings = {
+    liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a",
+    publicationEnabled: true, webBaseUrl: "https://a.example.com",
+  };
+  const ctx = makeContext({ companyA: settings }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  });
+  let config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/a\.example\.com\/JOU\/approvals\/approval-a/);
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  config = { ...config, webBaseUrl: "https://b.example.com" };
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 2);
+  assert.match(ctx.inspect.comments.at(-1).body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
+});
+
+test("card idempotency does not adopt an identical comment authored by another agent", async () => {
+  const conversation = chat("chat-a", "source:telegram:room-a");
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": conversation }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 1);
+
+  conversation.comments[0].authorAgentId = "some-other-agent";
+  ctx.approvals.list = async () => [{
+    id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+  }];
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 2);
+  assert.equal(ctx.inspect.comments[1].authorAgentId, "liaison-a");
+});
+
 test("enabling publication later publishes the existing canonical comment", async () => {
   const ctx = makeContext({
     companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: false },

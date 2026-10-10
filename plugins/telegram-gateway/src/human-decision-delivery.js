@@ -43,13 +43,14 @@ async function humanDecisionFingerprints(ctx, companyId) {
   return asObject(await ctx.state.get(companyScope(companyId, FINGERPRINTS_KEY)));
 }
 
-async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null) {
+async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null, linkContext = null) {
   const key = companyScope(companyId, FINGERPRINTS_KEY);
   const prior = await humanDecisionFingerprints(ctx, companyId);
   if (issueId || commentId) {
     const record = { fingerprint };
     if (issueId) record.issueId = issueId;
     if (commentId) record.commentId = commentId;
+    if (linkContext !== null) record.linkContext = linkContext;
     prior[trackKey] = record;
   } else {
     prior[trackKey] = fingerprint;
@@ -84,11 +85,14 @@ async function ensureHumanDecisionComment(ctx, companyId, conversation, config, 
 
   // The published body carries no internal marker, so idempotency falls back to
   // an exact body match (deterministic for a given decision + fingerprint)
-  // instead of embedding a delivery token in the Telegram text.
+  // instead of embedding a delivery token in the Telegram text. The match is
+  // scoped to the intended Liaison author so an unrelated identical comment
+  // cannot be adopted.
+  const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
   const existing = (await ctx.issues.listComments(conversation.id, companyId)).find((comment) =>
     comment.issueId === conversation.id && comment.companyId === companyId && !comment.deletedAt &&
+    comment.authorAgentId === authorAgentId &&
     typeof comment.body === "string" && comment.body.trim() === trimmed);
-  const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
   const created = existing ?? await ctx.issues.createComment(
     conversation.id, trimmed, companyId, { authorAgentId },
   );
@@ -138,6 +142,7 @@ async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, buil
 async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolveConversation) {
   const { kind, entityId, fingerprint, buildBody, wakeEventId } = delivery;
   const trackKey = `${kind}:${entityId}`;
+  const linkContext = config.webBaseUrl ?? "";
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
   const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;
@@ -146,14 +151,27 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
     const priorCommentId = stringValue(priorRecord.commentId);
     if (priorCommentId) {
       const published = await ctx.state.get(companyScope(companyId, "published-comment-ids"));
-      if (Array.isArray(published) && published.includes(priorCommentId)) return { skipped: true };
+      if (Array.isArray(published) && published.includes(priorCommentId)) {
+        // Missing linkContext means a pre-upgrade record: backfill it without
+        // re-publishing, so the upgrade never double-sends. Only a recorded
+        // context that changed (e.g. a corrected webBaseUrl) re-delivers.
+        if (priorRecord.linkContext === undefined) {
+          await rememberHumanDecisionFingerprint(
+            ctx, companyId, trackKey, fingerprint, priorRecord.issueId, priorCommentId, linkContext,
+          );
+          return { skipped: true };
+        }
+        if (priorRecord.linkContext === linkContext) return { skipped: true };
+      }
     }
   }
 
-  const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, fingerprint);
+  const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, `${fingerprint}|${linkContext}`);
   const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, buildBody, resolveConversation);
   if (result.delivered !== false) {
-    await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId);
+    await rememberHumanDecisionFingerprint(
+      ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId, linkContext,
+    );
   }
   return result;
 }

@@ -113,7 +113,7 @@ function normalizeWebBase(value) {
   if (!raw) return null;
   try {
     const url = new URL(raw);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.protocol !== "https:") return null;
     return url.origin;
   } catch {
     return null;
@@ -256,7 +256,10 @@ function buildInteractionCardBody(interaction, issue, context = {}) {
   const payload = asObject(interaction.payload);
   const sanitized = redactPayloadForCard(interaction.kind, payload);
   const restricted = Boolean(
-    payload.secretProposal || payload.toolAction || payload.connectionAuthorization || payload.connectionIntent,
+    payload.secretProposal || payload.toolAction || payload.connectionAuthorization || payload.connectionIntent ||
+    payload.target?.type === "issue_document" ||
+    payload.rejectRequiresReason === true ||
+    interaction.effectiveResolverPolicy === "human_only",
   );
   const ref = stringValue(issue?.identifier) ?? stringValue(issue?.id) ?? "tarefa";
   const heading = humanText(issue?.title ?? interaction.title, 180) ?? "Decisão pendente";
