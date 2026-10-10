@@ -1,6 +1,6 @@
 # Telegram Command API v1 (plugin-only)
 
-**Status:** cross-plugin dispatch implemented and tested; production Telegram slash-command ingress for arbitrary names is **NOT** enabled. No changes to Paperclip core, runtime patches or native chat-webhook configuration are included.
+**Status:** cross-plugin dispatch and six operational command handlers are implemented and tested. Production Telegram slash-command ingress for additional names and arguments is a **separate runtime-adapter rollout gate**. No upstream Paperclip core changes, separate bot, token or webhook are required. The installed native admission bridge must be updated and E2E-validated before these commands work through Telegram.
 
 ## Responsibilities
 
