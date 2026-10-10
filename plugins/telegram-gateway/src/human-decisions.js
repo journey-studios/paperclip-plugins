@@ -1,3 +1,4 @@
+import { allowDirectApproval, allowDirectInteraction, approvalActionRef, interactionActionRef } from "./decision-references.js";
 const INTERACTION_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"];
 const INTERACTION_ISSUE_LIMIT_PER_STATUS = 12;
 const MAX_TEXT_FIELD = 1200;
@@ -247,7 +248,11 @@ function buildApprovalCardBody(approval, context = {}) {
   if (recommendation) lines.push(`Recomendação: ${recommendation}`);
   if (risksText) lines.push(`Risco/impacto: ${risksText}`);
   if (lines.at(-1) !== "") lines.push("");
-  lines.push("Como responder: confirme ou recuse dentro do Paperclip. O Telegram é somente leitura.");
+  const directCode = context.decisionCommandsEnabled === true && allowDirectApproval(approval)
+    ? approvalActionRef(approval) : null;
+  lines.push(directCode
+    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo curto (até o limite do Telegram)."
+    : "Como responder: confirme ou recuse dentro do Paperclip. O Telegram é somente leitura.");
 
   const link = objectUrl(baseUrl, issuePrefix, `approvals/${encodeURIComponent(stringValue(approval.id) ?? "")}`);
   lines.push(link
@@ -284,7 +289,9 @@ function buildInteractionCardBody(interaction, issue, context = {}) {
   if (restricted) {
     const reasons = sensitiveReasonText(interaction);
     const why = reasons.length ? ` (${reasons.join("; ")})` : "";
-    lines.push(`Esta decisão precisa ser confirmada dentro do Paperclip${why}; o Telegram não executa a resposta.`);
+    lines.push(context.decisionCommandsEnabled === true && allowDirectInteraction(interaction)
+      ? "Esta decisão exige confirmação explícita do Founder"+why+". Consulte o contexto antes de responder."
+      : `Esta decisão precisa ser confirmada dentro do Paperclip${why}; o Telegram não executa a resposta.`);
     // A governed confirmation can be human-only without containing any secret.
     // Its explicit interaction title is a useful action label, but opaque
     // credential/tool/connection proposals must never publish their details.
@@ -302,7 +309,11 @@ function buildInteractionCardBody(interaction, issue, context = {}) {
   const risks = interactionRiskNotes(interaction);
   if (risks.length) lines.push(`Risco/impacto: ${risks.join("; ")}`);
 
-  const hint = nativeTelegramButtonsLikely(interaction)
+  const directCode = context.decisionCommandsEnabled === true && allowDirectInteraction(interaction)
+    ? interactionActionRef(interaction, issue) : null;
+  const hint = directCode
+    ? "Como responder no Telegram: /aprovar " + directCode + " CONFIRMO ou /rejeitar " + directCode + " motivo curto (até o limite do Telegram)."
+    : nativeTelegramButtonsLikely(interaction)
     ? "Como responder: abra o Paperclip para decidir; botões nativos podem aparecer no chat vinculado."
     : "Como responder: abra o Paperclip para responder. O Telegram não executa esta decisão.";
   lines.push("", hint);

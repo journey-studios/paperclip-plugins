@@ -1,3 +1,4 @@
+import { executeDecisionCommand } from "./decision-commands.js";
 import { companyConfig } from "./core.js";
 import { NATIVE_TELEGRAM_COMMANDS } from "./command-catalog.js";
 import { renderToday, renderInbox, renderBlocked, renderIssue } from "./operational-commands.js";
@@ -250,7 +251,8 @@ const commands = new Map([
     handler: async (ctx, companyId, params, registry, config) => [
     "**Comandos do Telegram Gateway**",
     "",
-    ...listBuiltinTelegramCommands().map(({ name, description }) =>
+    ...listBuiltinTelegramCommands().filter(({ name }) =>
+      config.decisionCommandsEnabled === true || !["aprovar", "rejeitar"].includes(name)).map(({ name, description }) =>
       `\`/${name}\` — ${description}`),
     ...(registry ? (await registry.discover(companyId, config.commandProviderIds)).map(({ name, description }) =>
       `\`/${name}\` — ${description}`) : []),
@@ -296,6 +298,16 @@ const commands = new Map([
     description: "Detalhar tarefa (/issue JOU-38)",
     handler: (ctx, companyId, params) => renderIssue(ctx, companyId, params.args),
   }],
+  ["aprovar", {
+    description: "Confirmar uma decisão elegível (/aprovar CODIGO CONFIRMO)",
+    handler: (ctx, companyId, params, _registry, config, actorUserId) =>
+      executeDecisionCommand(ctx, companyId, actorUserId, "approve", params.args, config),
+  }],
+  ["rejeitar", {
+    description: "Recusar uma decisão elegível (/rejeitar CODIGO motivo)",
+    handler: (ctx, companyId, params, _registry, config, actorUserId) =>
+      executeDecisionCommand(ctx, companyId, actorUserId, "reject", params.args, config),
+  }],
 ]);
 
 export function listBuiltinTelegramCommands() {
@@ -336,7 +348,7 @@ export async function executeFounderCommand(ctx, params, invocation, registry = 
     text: "Este comando é restrito ao Founder vinculado no Paperclip.",
   };
   if (command) {
-    const text = await command(ctx, companyId, params, registry, config);
+    const text = await command(ctx, companyId, params, registry, config, actor.userId);
     return { handled: true, text: String(text).slice(0, MAX_TEXT) };
   }
   // External providers never run before the linked Founder is authorized.

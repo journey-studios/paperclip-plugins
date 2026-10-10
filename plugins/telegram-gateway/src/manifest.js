@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.3.7",
+  version: "0.3.8",
   displayName: "Telegram Gateway",
   description: "Routes authorized Telegram commands and publishes native chat messages, including Founder Liaison notifications.",
   author: "Journey Studios",
@@ -18,7 +18,9 @@ const manifest = {
     "chat.publications.publish_existing_comment",
     "issues.wakeup",
     "approvals.read",
+    "approvals.respond",
     "issue.interactions.read",
+    "issue.interactions.respond",
     "agents.read",
     "companies.read",
     "projects.read",
@@ -94,6 +96,12 @@ const manifest = {
         type: "boolean",
         title: "Automatic native chat publication",
         description: "Safe rollout gate for the Liaison run reply and deterministic human decision cards through Paperclip's native publication bridge.",
+        default: false,
+      },
+      decisionCommandsEnabled: {
+        type: "boolean",
+        title: "Founder decision commands (opt-in)",
+        description: "Explicit /aprovar and /rejeitar commands for eligible decisions. Disabled until reviewed rollout; does not add callback buttons.",
         default: false,
       },
       commandsEnabled: {

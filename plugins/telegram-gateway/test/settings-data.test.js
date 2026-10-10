@@ -9,6 +9,7 @@ import { buildTelegramCommandCatalog, registerTelegramCommandCatalogData } from 
 const config = {
   commandsEnabled: true,
   commandProviderIds: ["journey-studios.agent-observatory"],
+  decisionCommandsEnabled: true,
 };
 
 test("settings catalog derives built-ins, native commands, and allowlisted provider discoveries", () => {
@@ -36,7 +37,7 @@ test("catalog preserves gateway collisions, sorts deterministically, and caps Bo
     providerId: "journey-studios.provider",
   }));
   const catalog = buildTelegramCommandCatalog({
-    config: { ...config, commandsEnabled: false },
+    config: { ...config, commandsEnabled: false, decisionCommandsEnabled: false },
     providerCommands: [
       { name: "agents", description: "provider collision", providerId: "journey-studios.provider" },
       ...many,
@@ -48,8 +49,9 @@ test("catalog preserves gateway collisions, sorts deterministically, and caps Bo
   assert.equal(catalog.botFatherLines.length, 100);
   assert.equal(catalog.omittedFromBotFather, catalog.commands.length - 100);
   assert.deepEqual(catalog.botFatherLines, [...catalog.botFatherLines].sort((a, b) => a.split(" - ")[0].localeCompare(b.split(" - ")[0])));
-  const reservedCommands = [...listBuiltinTelegramCommands(), ...NATIVE_TELEGRAM_COMMANDS];
+  const reservedCommands = [...listBuiltinTelegramCommands().filter(({ name }) => !["aprovar", "rejeitar"].includes(name)), ...NATIVE_TELEGRAM_COMMANDS];
   assert.equal(reservedCommands.length, 13);
+  assert.equal(catalog.commands.some(({ name }) => name === "aprovar" || name === "rejeitar"), false);
   for (const command of reservedCommands) {
     assert.ok(catalog.botFatherLines.some((line) => line.startsWith(`${command.name} - `)), `${command.name} remains in BotFather menu`);
   }
