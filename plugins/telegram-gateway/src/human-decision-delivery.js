@@ -165,17 +165,16 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
     if (priorCommentId) {
       const published = await ctx.state.get(companyScope(companyId, "published-comment-ids"));
       if (Array.isArray(published) && published.includes(priorCommentId)) {
-        // Missing linkContext means a pre-upgrade record: backfill it without
-        // re-publishing, so the upgrade never double-sends. Only a recorded
-        // context that changed (e.g. a corrected webBaseUrl or issuePrefix)
-        // re-delivers.
+        // A missing linkContext means a pre-upgrade record: backfill it without
+        // re-publishing, so the upgrade never double-sends. We only reach this
+        // point when the recorded context is unchanged (a changed context
+        // bypasses the skip so a corrected link re-delivers).
         if (priorLinkContext === undefined) {
           await rememberHumanDecisionFingerprint(
             ctx, companyId, trackKey, fingerprint, priorRecord.issueId, priorCommentId, linkContext,
           );
-          return { skipped: true };
         }
-        if (priorLinkContext === linkContext) return { skipped: true };
+        return { skipped: true };
       }
     }
   }
