@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  CARD_MARKER,
   INTERACTION_ISSUE_LIMIT_PER_STATUS,
   INTERACTION_ISSUE_STATUSES,
   approvalFingerprint,
@@ -43,13 +42,16 @@ async function humanDecisionFingerprints(ctx, companyId) {
   return asObject(await ctx.state.get(companyScope(companyId, FINGERPRINTS_KEY)));
 }
 
-async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null) {
+async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null, linkContext = null) {
   const key = companyScope(companyId, FINGERPRINTS_KEY);
   const prior = await humanDecisionFingerprints(ctx, companyId);
-  if (issueId || commentId) {
+  // A link context must upgrade even a legacy string record to a structured one,
+  // so a later link correction still re-delivers under publication-disabled.
+  if (issueId || commentId || linkContext !== null) {
     const record = { fingerprint };
     if (issueId) record.issueId = issueId;
     if (commentId) record.commentId = commentId;
+    if (linkContext !== null) record.linkContext = linkContext;
     prior[trackKey] = record;
   } else {
     prior[trackKey] = fingerprint;
@@ -65,10 +67,15 @@ async function clearHumanDecisionFingerprint(ctx, companyId, trackKey) {
   await ctx.state.set(key, prior);
 }
 
+async function resolveIssuePrefix(ctx, companyId) {
+  if (!ctx.companies?.get) return null;
+  const company = await ctx.companies.get(companyId);
+  return stringValue(company?.issuePrefix);
+}
+
 async function ensureHumanDecisionComment(ctx, companyId, conversation, config, deliveryId, cardBody) {
-  if (!stringValue(cardBody)?.includes(CARD_MARKER)) {
-    throw new Error("Invalid founder human decision card marker");
-  }
+  const trimmed = stringValue(cardBody);
+  if (!trimmed) throw new Error("Invalid founder human decision card body");
   const token = createHash("sha256")
     .update(JSON.stringify([companyId, conversation.id, deliveryId]))
     .digest("hex");
@@ -78,23 +85,30 @@ async function ensureHumanDecisionComment(ctx, companyId, conversation, config, 
     return { commentId: prior.commentId, issueId: conversation.id };
   }
 
-  const deliveryLine = `delivery=${token}`;
-  const tagged = cardBody.includes(deliveryLine) ? cardBody : `${cardBody}\n${deliveryLine}`;
+  // The published body carries no internal marker, so idempotency falls back to
+  // an exact body match (deterministic for a given decision + fingerprint)
+  // instead of embedding a delivery token in the Telegram text. The match is
+  // scoped to the intended Liaison author so an unrelated identical comment
+  // cannot be adopted.
+  const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
   const existing = (await ctx.issues.listComments(conversation.id, companyId)).find((comment) =>
     comment.issueId === conversation.id && comment.companyId === companyId && !comment.deletedAt &&
-    typeof comment.body === "string" && comment.body.includes(CARD_MARKER) && comment.body.includes(deliveryLine));
-  const authorAgentId = stringValue(conversation.assigneeAgentId) ?? config.liaisonAgentId;
+    comment.authorAgentId === authorAgentId &&
+    typeof comment.body === "string" && comment.body.trim() === trimmed);
   const created = existing ?? await ctx.issues.createComment(
-    conversation.id, tagged, companyId, { authorAgentId },
+    conversation.id, trimmed, companyId, { authorAgentId },
   );
   const record = { created: true, issueId: conversation.id, commentId: stringValue(created?.id) };
   await ctx.state.set(key, record);
   return record;
 }
 
-async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody, resolveConversation) {
+async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) return { delivered: false, reason: "conversation_not_bound" };
+
+  const cardBody = buildBody({ baseUrl: config.webBaseUrl, issuePrefix });
+  if (!stringValue(cardBody)) return { delivered: false, reason: "empty_card" };
 
   const { commentId } = await ensureHumanDecisionComment(
     ctx, companyId, conversation, config, deliveryId, cardBody,
@@ -127,24 +141,52 @@ async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, card
 }
 
 async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolveConversation) {
-  const { kind, entityId, fingerprint, cardBody, wakeEventId } = delivery;
+  const { kind, entityId, fingerprint, buildBody, wakeEventId, issuePrefix = null } = delivery;
   const trackKey = `${kind}:${entityId}`;
+  // The link identity includes the web base and the company issue prefix, so a
+  // corrected link re-delivers even when the decision fingerprint is unchanged.
+  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
   const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;
-  if (stringValue(priorFingerprint) === fingerprint) {
-    if (!config.publicationEnabled) return { skipped: true };
+  const priorLinkContext = priorRecord.linkContext;
+  const fingerprintUnchanged = stringValue(priorFingerprint) === fingerprint;
+  const contextUnchanged = priorLinkContext === undefined || priorLinkContext === linkContext;
+  if (fingerprintUnchanged && contextUnchanged) {
+    if (!config.publicationEnabled) {
+      // Backfill pre-upgrade records so a later link correction is detected,
+      // without re-publishing during the upgrade itself.
+      if (priorLinkContext === undefined) {
+        await rememberHumanDecisionFingerprint(
+          ctx, companyId, trackKey, fingerprint, priorRecord.issueId, priorRecord.commentId, linkContext,
+        );
+      }
+      return { skipped: true };
+    }
     const priorCommentId = stringValue(priorRecord.commentId);
     if (priorCommentId) {
       const published = await ctx.state.get(companyScope(companyId, "published-comment-ids"));
-      if (Array.isArray(published) && published.includes(priorCommentId)) return { skipped: true };
+      if (Array.isArray(published) && published.includes(priorCommentId)) {
+        // A missing linkContext means a pre-upgrade record: backfill it without
+        // re-publishing, so the upgrade never double-sends. We only reach this
+        // point when the recorded context is unchanged (a changed context
+        // bypasses the skip so a corrected link re-delivers).
+        if (priorLinkContext === undefined) {
+          await rememberHumanDecisionFingerprint(
+            ctx, companyId, trackKey, fingerprint, priorRecord.issueId, priorCommentId, linkContext,
+          );
+        }
+        return { skipped: true };
+      }
     }
   }
 
-  const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, fingerprint);
-  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, cardBody, resolveConversation);
+  const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, `${fingerprint}|${linkContext}`);
+  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation);
   if (result.delivered !== false) {
-    await rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId);
+    await rememberHumanDecisionFingerprint(
+      ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId, linkContext,
+    );
   }
   return result;
 }
@@ -152,6 +194,7 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
 async function reconcilePendingApprovals(ctx, companyId, config, resolveConversation) {
   if (!config.immediateEnabled || !ctx.approvals?.list) return;
   const list = await ctx.approvals.list({ companyId, status: "pending" });
+  const issuePrefix = await resolveIssuePrefix(ctx, companyId);
   const pendingIds = new Set();
   for (const approval of Array.isArray(list) ? list : []) {
     if (!approval?.id || approval.companyId !== companyId || approval.status !== "pending") continue;
@@ -162,7 +205,8 @@ async function reconcilePendingApprovals(ctx, companyId, config, resolveConversa
         kind: "approval",
         entityId: approval.id,
         fingerprint,
-        cardBody: buildApprovalCardBody(approval, null, companyId),
+        issuePrefix,
+        buildBody: (link) => buildApprovalCardBody(approval, link),
       }, resolveConversation);
     } catch {
       logDeliveryFailure(ctx, companyId, "approval", approval.id);
@@ -197,6 +241,7 @@ async function listOpenIssuesForInteractionPoll(ctx, companyId) {
 async function reconcilePendingInteractions(ctx, companyId, config, resolveConversation) {
   if (!config.immediateEnabled || !ctx.issues?.listInteractions) return;
   const issues = await listOpenIssuesForInteractionPoll(ctx, companyId);
+  const issuePrefix = await resolveIssuePrefix(ctx, companyId);
   const pendingKeys = new Set();
   const visitedIssueIds = new Set(issues.map((issue) => issue.id));
 
@@ -222,7 +267,8 @@ async function reconcilePendingInteractions(ctx, companyId, config, resolveConve
           entityId: interaction.id,
           issueId: issue.id,
           fingerprint,
-          cardBody: buildInteractionCardBody(interaction, issue, companyId),
+          issuePrefix,
+          buildBody: (link) => buildInteractionCardBody(interaction, issue, link),
         }, resolveConversation);
       } catch {
         logDeliveryFailure(ctx, companyId, "interaction", interaction.id);
@@ -278,11 +324,13 @@ async function handleApproval(ctx, event, config, resolveConversation) {
     const approval = await ctx.approvals.get(event.entityId, event.companyId);
     if (!approval || approval.companyId !== event.companyId || approval.status !== "pending") return;
     const fingerprint = approvalFingerprint(approval);
+    const issuePrefix = await resolveIssuePrefix(ctx, event.companyId);
     await deliverHumanDecisionCard(ctx, event.companyId, config, {
       kind: "approval",
       entityId: approval.id,
       fingerprint,
-      cardBody: buildApprovalCardBody(approval, null, event.companyId),
+      issuePrefix,
+      buildBody: (link) => buildApprovalCardBody(approval, link),
     }, resolveConversation);
   } catch {
     throw new Error("Human decision delivery failed");

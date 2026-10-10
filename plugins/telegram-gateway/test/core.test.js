@@ -64,7 +64,7 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
         .map(([, entry]) => entry),
     },
     companies: {
-      get: async (companyId) => overrides.company ? overrides.company(companyId) : (configs[companyId] ? { id: companyId } : null),
+      get: async (companyId) => overrides.company ? overrides.company(companyId) : (configs[companyId] ? { id: companyId, issuePrefix: "JOU" } : null),
     },
     agents: {
       get: async (id, companyId) => overrides.agent ? overrides.agent(id, companyId) :
@@ -101,6 +101,8 @@ function makeContext(configs, issues = {}, approvals = {}, overrides = {}) {
 const chat = (id, originId, projectId = "project-a") => ({
   id,
   companyId: "companyA",
+  identifier: "JOU-1",
+  title: "Founder chat",
   originKind: "chat_channel",
   originId,
   assigneeAgentId: "liaison-a",
@@ -185,8 +187,9 @@ test("routes immediate events to the configured company conversation and ignores
   assert.equal(ctx.inspect.publications.length, 1);
   assert.equal(ctx.inspect.publications[0].companyId, "companyA");
   assert.equal(ctx.inspect.comments[0].authorAgentId, "liaison-a");
-  assert.match(ctx.inspect.comments[0].body, /kind=approval/);
-  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+  assert.match(ctx.inspect.comments[0].body, /Ação necessária · Aprovação/);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/paper\.journeystudios\.com\.br\/JOU\/approvals\/approval-a/);
+  assert.doesNotMatch(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD|kind=|companyId=|fingerprint=|delivery=|Coverage note/);
 });
 
 test("publication disabled records and deduplicates the Paperclip card without calling the bridge", async () => {
@@ -203,7 +206,8 @@ test("publication disabled records and deduplicates the Paperclip card without c
   await processEvent(ctx, event);
   assert.equal(ctx.inspect.comments.length, 1);
   assert.equal(ctx.inspect.publications.length, 0);
-  assert.match(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD/);
+  assert.match(ctx.inspect.comments[0].body, /Ação necessária · Aprovação/);
+  assert.doesNotMatch(ctx.inspect.comments[0].body, /FOUNDER_HUMAN_DECISION_CARD|delivery=/);
   settings.publicationEnabled = true;
   await reconcilePendingApprovals(ctx, "companyA", await companyConfig(ctx, "companyA"));
   assert.equal(ctx.inspect.comments.length, 1);
@@ -324,8 +328,8 @@ test("published unchanged interactions skip conversation resolution", async () =
     },
   });
   let resolutionChecks = 0;
-  const getCompany = ctx.companies.get;
-  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const getIssue = ctx.issues.get;
+  ctx.issues.get = async (...args) => { resolutionChecks++; return getIssue(...args); };
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingInteractions(ctx, "companyA", config);
@@ -449,8 +453,8 @@ test("published human decision cards skip conversation resolution until their fi
     "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
   });
   let resolutionChecks = 0;
-  const getCompany = ctx.companies.get;
-  ctx.companies.get = async (...args) => { resolutionChecks++; return getCompany(...args); };
+  const getIssue = ctx.issues.get;
+  ctx.issues.get = async (...args) => { resolutionChecks++; return getIssue(...args); };
   const config = await companyConfig(ctx, "companyA");
 
   await reconcilePendingApprovals(ctx, "companyA", config);
@@ -463,10 +467,105 @@ test("published human decision cards skip conversation resolution until their fi
 
   ctx.approvals.list = async () => [{
     id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+    payload: { summary: "Budget bump v2" },
   }];
   await reconcilePendingApprovals(ctx, "companyA", config);
   assert.equal(resolutionChecks, 2);
   assert.equal(ctx.inspect.publications.length, 2);
+});
+
+test("correcting webBaseUrl re-delivers a corrected-link card", async () => {
+  const settings = {
+    liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a",
+    publicationEnabled: true, webBaseUrl: "https://a.example.com",
+  };
+  const ctx = makeContext({ companyA: settings }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  });
+  let config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/a\.example\.com\/JOU\/approvals\/approval-a/);
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+
+  config = { ...config, webBaseUrl: "https://b.example.com" };
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 2);
+  assert.match(ctx.inspect.comments.at(-1).body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
+});
+
+test("backfills a legacy string fingerprint with link context so a later link fix re-delivers", async () => {
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a",
+      webBaseUrl: "https://a.example.com",
+    },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  });
+  // Simulate a pre-upgrade record: the fingerprint map stored a bare string and
+  // no link context, with native publication disabled.
+  ctx.inspect.state.set(
+    JSON.stringify({ scopeKind: "company", scopeId: "companyA", stateKey: "human-decision-fingerprints" }),
+    { "approval:approval-a": "pending:v1:budget" },
+  );
+  const config = await companyConfig(ctx, "companyA");
+
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 0);
+  assert.equal(ctx.inspect.publications.length, 0);
+
+  await reconcilePendingApprovals(ctx, "companyA", { ...config, webBaseUrl: "https://b.example.com" });
+  assert.equal(ctx.inspect.comments.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /https:\/\/b\.example\.com\/JOU\/approvals\/approval-a/);
+});
+
+test("correcting the company issue prefix re-delivers a corrected-link card", async () => {
+  let prefix = "JOU";
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+  }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1", payload: { summary: "A" } },
+  }, {
+    company: (companyId) => (companyId === "companyA" ? { id: companyId, issuePrefix: prefix } : null),
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 1);
+  assert.match(ctx.inspect.comments[0].body, /\/JOU\/approvals\/approval-a/);
+
+  prefix = "NEW";
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.publications.length, 2);
+  assert.match(ctx.inspect.comments.at(-1).body, /\/NEW\/approvals\/approval-a/);
+});
+
+test("card idempotency does not adopt an identical comment authored by another agent", async () => {
+  const conversation = chat("chat-a", "source:telegram:room-a");
+  const ctx = makeContext({
+    companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a", publicationEnabled: true },
+  }, { "companyA:chat-a": conversation }, {
+    "companyA:approval-a": { id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v1" },
+  });
+  const config = await companyConfig(ctx, "companyA");
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 1);
+
+  conversation.comments[0].authorAgentId = "some-other-agent";
+  ctx.approvals.list = async () => [{
+    id: "approval-a", companyId: "companyA", status: "pending", type: "budget", updatedAt: "v2",
+  }];
+  await reconcilePendingApprovals(ctx, "companyA", config);
+  assert.equal(ctx.inspect.comments.length, 2);
+  assert.equal(ctx.inspect.comments[1].authorAgentId, "liaison-a");
 });
 
 test("enabling publication later publishes the existing canonical comment", async () => {

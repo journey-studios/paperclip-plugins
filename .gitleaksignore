@@ -1,3 +1,6 @@
 # Synthetic inline PEM fixture: Gitleaks 8.18.4 spans its escaped block across this file diff.
 # Scope the exception to that committed path, rule, and line; later matches keep distinct fingerprints.
 ad739a1828da9dba4e91b1e5ed01cc11845add83:tests/snapshot-safety.test.mjs:private-key:35
+# Synthetic API-key fixture introduced and corrected within the JOU-90 branch; scoped to the
+# one intermediate commit so any later match on the same path/rule/line is still reported.
+7c7a3ceb5e80364241a322c33d5a158804daf6e7:plugins/telegram-gateway/test/human-decisions.test.js:generic-api-key:122
