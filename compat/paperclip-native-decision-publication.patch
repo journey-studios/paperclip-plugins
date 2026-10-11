@@ -121,18 +121,24 @@ diff --git a/packages/plugins/sdk/src/host-client-factory.ts b/packages/plugins/
 diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
 --- a/packages/plugins/sdk/src/worker-rpc-host.ts
 +++ b/packages/plugins/sdk/src/worker-rpc-host.ts
-@@ -1132,6 +1132,16 @@
+@@ -1132,6 +1132,22 @@
        },
  
        chat: {
 +        async getDecisionCardContext(input, companyId) {
 +          const capability = 'chat.publications.publish_decision_card';
 +          if (!manifest?.capabilities.includes(capability)) throw new CapabilityDeniedError(manifest?.id ?? 'unknown', 'chat.getDecisionCardContext', capability);
++          if (typeof companyId !== 'string' || !companyId.trim()) throw new Error('Native decision companyId required');
++          const boundCompany = invocationContextStorage.getStore()?.scope?.companyId;
++          if (boundCompany && boundCompany !== companyId) throw new Error('Native decision company scope mismatch');
 +          return callHost('chat.getDecisionCardContext', { companyId, input });
 +        },
 +        async publishDecisionCard(input, companyId) {
 +          const capability = 'chat.publications.publish_decision_card';
 +          if (!manifest?.capabilities.includes(capability)) throw new CapabilityDeniedError(manifest?.id ?? 'unknown', 'chat.publishDecisionCard', capability);
++          if (typeof companyId !== 'string' || !companyId.trim()) throw new Error('Native decision companyId required');
++          const boundCompany = invocationContextStorage.getStore()?.scope?.companyId;
++          if (boundCompany && boundCompany !== companyId) throw new Error('Native decision company scope mismatch');
 +          return callHost('chat.publishDecisionCard', { companyId, input });
 +        },
          async publishComment(commentId: string, companyId: string) {

@@ -12,6 +12,6 @@ test("native publication compatibility is SDK-only and declares one narrow capab
 
 test("client compatibility cannot add human impersonation, voting or raw bot transport", () => {
   for (const field of ["actorUserId", "botToken", "approvals.decide", "respondInteraction", "callback_query"]) {
-    assert.throws(() => assertNativeDecisionPublicationPatch(patch + "\n+// " + field + "\n"), /vote or callback/);
+    assert.throws(() => assertNativeDecisionPublicationPatch(patch + "\n+// " + field + "\n"), /votes, callback/);
   }
 });

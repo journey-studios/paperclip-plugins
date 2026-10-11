@@ -16,7 +16,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "pnpm build && node --test",
-    "typecheck": "node --check src/native-decision-publication.js && node --check src/human-decisions.js && node --check src/human-decision-delivery.js && node --check src/publication-policy.js && node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/command-catalog.js && node --check src/settings-data.js && node --check src/manifest.js && tsc --project tsconfig.json"
+    "typecheck": "node --check src/native-decision-client.js && node --check src/human-decisions.js && node --check src/human-decision-delivery.js && node --check src/publication-policy.js && node --check src/core.js && node --check src/worker.js && node --check src/commands.js && node --check src/command-registry.js && node --check src/command-catalog.js && node --check src/settings-data.js && node --check src/manifest.js && tsc --project tsconfig.json"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

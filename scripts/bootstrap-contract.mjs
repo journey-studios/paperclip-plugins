@@ -112,12 +112,17 @@ export function assertNativeDecisionPublicationPatch(text) {
     "packages/plugins/sdk/src/host-client-factory.ts", "packages/plugins/sdk/src/worker-rpc-host.ts",
     "packages/plugins/sdk/src/testing.ts",
   ]);
+  const headers = [...text.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  if (headers.length !== allowed.size || headers.some((path) => !allowed.has(path)) || new Set(headers).size !== allowed.size ||
+      /^-(?!-)/m.test(text) || /^(?:old mode|new mode|rename from|rename to|GIT binary patch)/m.test(text)) {
+    throw new Error("Native decision compatibility must be additive with matching SDK/shared headers");
+  }
   const files = [...text.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
   if (files.length !== allowed.size || files.some(([, a, b]) => a !== b || !allowed.has(a)) ||
       new Set(files.map(([,a]) => a)).size !== allowed.size || /server\/src|packages\/db\//.test(text)) {
     throw new Error("Native decision compatibility may modify only the declared SDK/shared surface");
   }
-  for (const required of ["chat.getDecisionCardContext", "chat.publishDecisionCard", "chat.publications.publish_decision_card", "destinationIssueId", "expectedRevision"]) {
+  for (const required of ["chat.getDecisionCardContext", "chat.publishDecisionCard", "chat.publications.publish_decision_card", "destinationIssueId", "expectedRevision", "invocationContextStorage", "CapabilityDeniedError"]) {
     if (!text.includes(required)) throw new Error("Native decision SDK contract is incomplete");
   }
   const block = text.match(/diff --git a\/packages\/shared\/src\/constants\.ts[\s\S]*?(?=diff --git|$)/)?.[0] ?? "";
@@ -127,7 +132,7 @@ export function assertNativeDecisionPublicationPatch(text) {
     throw new Error("Native decision compatibility may add only its publication capability");
   }
   const additions = [...text.matchAll(/^\+(?!\+)(.*)$/gm)].map((m)=>m[1]).join("\n");
-  if (/actorUserId|botToken|approvals\.decide|respondInteraction|callback_query/.test(additions)) {
-    throw new Error("Native publication clients must not add vote or callback authority");
+  if (/actorUserId|botToken|approvals\.decide|respondInteraction|callback_query|getUpdates|setWebhook|fetch\(/.test(additions)) {
+    throw new Error("Native publication clients must not add votes, callback authority or transport");
   }
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nativeDecisionPublicationEnabled, publishNativeDecision } from "../src/native-decision-publication.js";
+import { nativeDecisionPublicationEnabled, publishNativeDecision } from "../src/native-decision-client.js";
 import { createHumanDecisionDelivery } from "../src/human-decision-delivery.js";
 import { companyConfig, validateConfig } from "../src/core.js";
 import manifest from "../src/manifest.js";

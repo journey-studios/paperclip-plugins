@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { nativeDecisionPublicationEnabled, publishNativeDecision } from "./native-decision-publication.js";
+import { nativeDecisionPublicationEnabled, publishNativeDecision } from "./native-decision-client.js";
 import {
   INTERACTION_ISSUE_LIMIT_PER_STATUS,
   INTERACTION_ISSUE_STATUSES,

@@ -16,3 +16,6 @@ credentials/
 secrets/
 
 **/.test-output/
+
+.native-test-output/
+.pnpm-store/
