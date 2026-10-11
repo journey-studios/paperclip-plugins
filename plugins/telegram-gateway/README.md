@@ -30,9 +30,9 @@ to a second legacy comment. Disabled mode and clients without native methods
 retain the original read-only path; method presence alone is not evidence of a
 qualified host deployment.
 
-Verified in an isolated Node24 environment: **111 Gateway tests**, **16 SDK /
+Verified in an isolated Node24 environment: **112 Gateway tests**, **17 SDK /
 bootstrap checks**, bundled shared/SDK build and Gateway typecheck passed. The
-host companion separately passed **16 real PostgreSQL/native integration tests**
+host companion separately passed **17 real PostgreSQL/native integration tests**
 with the actual installed Telegram adapter and a stubbed HTTP provider. These
 are not a real Telegram DM/click canary and do not authorize production rollout.
 
@@ -139,3 +139,10 @@ The Gateway accepts authorized read-only commands contributed by other installed
 - **Rollback:** soft-uninstall without purge and reinstall the archived `0.3.0` package with the same manifest ID, restoring the previous label and package while retaining configuration/state. Roll back if health, command authorization or publications regress.
 
 The existing custom host already has the command ingress required by JOU-86; the remaining gate is installing and validating the new plugin packages. No Caddy, webhook, bot, upstream Paperclip core or custom runtime image change is required for these read-only commands.
+
+The SDK worker rejects unknown input fields and malformed top-level decision
+selectors before RPC; the host independently repeats authorization and schema
+checks. Bootstrap forbidden-token scanning is a heuristic tripwire, not a
+security boundary. Native transport failures are exercised through the delivery
+pipeline with actual legacy-call counters; cached legacy records cannot suppress
+the first native publication.

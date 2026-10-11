@@ -131,8 +131,9 @@ export function assertNativeDecisionPublicationPatch(text) {
   if (removed.length || added.length !== 1 || added[0] !== '\"chat.publications.publish_decision_card\",') {
     throw new Error("Native decision compatibility may add only its publication capability");
   }
+  // Heuristic tripwire only: code review and host authorization are the real boundary.
   const additions = [...text.matchAll(/^\+(?!\+)(.*)$/gm)].map((m)=>m[1]).join("\n");
-  if (/actorUserId|botToken|approvals\.decide|respondInteraction|callback_query|getUpdates|setWebhook|fetch\(/.test(additions)) {
+  if (/actorUserId|botToken|approvals\.decide|respondInteraction|callback_query|getUpdates|setWebhook|\bfetch\s*\(/.test(additions)) {
     throw new Error("Native publication clients must not add votes, callback authority or transport");
   }
 }

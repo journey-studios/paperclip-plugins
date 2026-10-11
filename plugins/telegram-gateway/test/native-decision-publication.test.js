@@ -1,3 +1,4 @@
+import { approvalFingerprint } from "../src/human-decisions.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nativeDecisionPublicationEnabled, publishNativeDecision } from "../src/native-decision-client.js";
@@ -108,4 +109,17 @@ test("closed decisions, stale contexts and failed acknowledgments never fall bac
   ctx.chat.getDecisionCardContext = async () => ({ status: "pending", destinationConversationId: conversationId });
   await assert.rejects(publishNativeDecision(ctx, companyId, { kind: "approval", id: approvalId }, issueId), /incomplete/);
   assert.equal(calls.length, 0);
+});
+
+
+test("legacy published-comment records cannot suppress the first native decision card", async () => {
+  const { ctx, delivery, approval, calls, comments } = fixture();
+  await ctx.state.set({ scopeKind: "company", scopeId: companyId, stateKey: "human-decision-fingerprints" }, {
+    ["approval:" + approvalId]: { fingerprint: approvalFingerprint(approval), issueId, commentId: "old-comment" },
+  });
+  await ctx.state.set({ scopeKind: "company", scopeId: companyId, stateKey: "published-comment-ids" }, ["old-comment"]);
+  await delivery.reconcilePendingApprovals(ctx, companyId, config);
+  assert.equal(calls.filter((call) => call.method === "native").length, 1);
+  assert.equal(calls.filter((call) => call.method === "legacy").length, 0);
+  assert.equal(comments.length, 0);
 });

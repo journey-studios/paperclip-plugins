@@ -17,7 +17,7 @@ function fixture() {
     chat: {
       getDecisionCardContext: async (input, company) => { calls.push({ type: "context", input, company }); return context; },
       publishDecisionCard: async (input, company) => { calls.push({ type: "native", input, company }); return { cardId, linkOnly: false }; },
-      publishComment: async () => { throw new Error("Legacy transport must not be called"); },
+      publishComment: async () => { calls.push({ type: "legacy" }); throw new Error("Legacy transport must not be called"); },
     },
     state: { get: async (key) => state.get(JSON.stringify(key)), set: async (key, value) => state.set(JSON.stringify(key), value), delete: async (key) => state.delete(JSON.stringify(key)) },
     approvals: { list: async () => [{ id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Synthetic native card" } }] },
@@ -43,6 +43,8 @@ test("missing host or ambiguous RPC failure never falls back to a duplicate comm
   await assert.rejects(() => publishNativeDecisionCard({ chat: {} }, companyId, issueId, { kind: "approval", id: approvalId }), /SDK\/host/);
   f.ctx.chat.publishDecisionCard = async () => { throw new Error("response_lost"); };
   await assert.rejects(() => publishNativeDecisionCard(f.ctx, companyId, issueId, { kind: "approval", id: approvalId }), /response_lost/);
+  const delivery = createHumanDecisionDelivery({ companyConfig, resolveConversation: async () => ({ id: issueId, companyId, assigneeAgentId: "liaison" }) });
+  await delivery.reconcilePendingApprovals(f.ctx, companyId, await companyConfig(f.ctx, companyId));
   assert.equal(f.calls.filter((x) => x.type === "legacy").length, 0);
 });
 
