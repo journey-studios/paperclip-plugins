@@ -8,6 +8,7 @@ import {
   assertDeliveryQualityCompatibilityPatch,
   assertPublicCompatibilityPatch,
   assertTelegramChatPublicationPatch,
+  assertNativeDecisionPublicationPatch,
   assertRepository,
   assertWorkspaceAlias,
   checkoutNeedsPin,
@@ -21,6 +22,7 @@ const artifactPatch = resolve(root, "compat/paperclip-artifacts-read.patch");
 const evolutionPatch = resolve(root, "compat/paperclip-evolution.patch");
 const deliveryQualityPatch = resolve(root, "compat/paperclip-delivery-quality-read.patch");
 const telegramChatPatch = resolve(root, "compat/paperclip-telegram-chat-publication.patch");
+const nativeDecisionPatch = resolve(root, "compat/paperclip-native-decision-publication.patch");
 const repository = "https://github.com/paperclipai/paperclip.git";
 const commit = "8f8a0ab7effbd6a0584107d8038736c134ee5047";
 
@@ -58,6 +60,7 @@ const compatibilityPatches = [
   { path: evolutionPatch, validate: assertEvolutionCompatibilityPatch },
   { path: telegramChatPatch, validate: assertTelegramChatPublicationPatch },
   { path: deliveryQualityPatch, validate: assertDeliveryQualityCompatibilityPatch },
+  { path: nativeDecisionPatch, validate: assertNativeDecisionPublicationPatch },
 ];
 
 for (const compatibilityPatch of compatibilityPatches) {

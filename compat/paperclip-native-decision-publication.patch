@@ -1,0 +1,152 @@
+diff --git a/packages/shared/src/types/native-decision-cards.ts b/packages/shared/src/types/native-decision-cards.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/shared/src/types/native-decision-cards.ts
+@@ -0,0 +1,17 @@
++/** Declarative publication only; human identity and buttons are host-owned. */
++export type NativeDecisionRef = { kind: 'approval'; id: string } | { kind: 'interaction'; id: string; issueId: string };
++export interface NativeDecisionCardInput {
++  decision: NativeDecisionRef;
++  destinationConversationId: string;
++  expectedRevision: string;
++}
++export type NativeDecisionCardContextInput = { decision: NativeDecisionRef } & (
++  { destinationConversationId: string; destinationIssueId?: never } |
++  { destinationIssueId: string; destinationConversationId?: never }
++);
++export interface NativeDecisionCardContext { destinationConversationId: string; expectedRevision: string; status: string; eligible: boolean }
++export interface NativeDecisionCardResult { cardId: string; linkOnly: boolean }
++export interface NativeDecisionPublication {
++  version: 1; cardId: string; effectKey: string;
++  kind: 'publish_card' | 'replace_card' | 'request_reason'; promptId?: string;
++}
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -2774,3 +2774,5 @@
+ export { REMOTE_MCP_CONNECTOR_METHODS, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod, type RemoteMcpConnectorId } from "./remote-mcp-connectors.js";
+ 
+ export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
++
++export type * from './types/native-decision-cards.js';
+diff --git a/packages/shared/src/types/chat-channels.ts b/packages/shared/src/types/chat-channels.ts
+--- a/packages/shared/src/types/chat-channels.ts
++++ b/packages/shared/src/types/chat-channels.ts
+@@ -373,6 +373,8 @@
+ }
+ 
+ export interface SafeChatPublicationPayload {
++  /** Closed metadata minted only by the native decision publisher. */
++  nativeDecision?: import("./native-decision-cards.js").NativeDecisionPublication;
+   text: string;
+   attachmentIds?: string[];
+   interactionId?: string;
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1361,6 +1361,7 @@
+   "issue.comments.create",
+   "issue.comments.create_human_attributed",
+   "chat.publications.publish_existing_comment",
++  "chat.publications.publish_decision_card",
+   "issue.interactions.create",
+   // Respond to (accept/reject) an issue-thread interaction on behalf of a
+   // paired board user. Impersonation surface: the host independently
+diff --git a/packages/plugins/sdk/src/types.ts b/packages/plugins/sdk/src/types.ts
+--- a/packages/plugins/sdk/src/types.ts
++++ b/packages/plugins/sdk/src/types.ts
+@@ -1654,6 +1654,8 @@
+  * comment author, company, and active bound conversation before publication.
+  */
+ export interface PluginChatClient {
++  getDecisionCardContext(input: import('@paperclipai/shared').NativeDecisionCardContextInput, companyId: string): Promise<import('@paperclipai/shared').NativeDecisionCardContext>;
++  publishDecisionCard(input: import('@paperclipai/shared').NativeDecisionCardInput, companyId: string): Promise<import('@paperclipai/shared').NativeDecisionCardResult>;
+   publishComment(commentId: string, companyId: string): Promise<ChatPublication>;
+ }
+ 
+diff --git a/packages/plugins/sdk/src/protocol.ts b/packages/plugins/sdk/src/protocol.ts
+--- a/packages/plugins/sdk/src/protocol.ts
++++ b/packages/plugins/sdk/src/protocol.ts
+@@ -1518,6 +1518,14 @@
+   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
+ 
+   // Native chat publication
++  "chat.getDecisionCardContext": [
++    params: { companyId: string; input: import('@paperclipai/shared').NativeDecisionCardContextInput },
++    result: import('@paperclipai/shared').NativeDecisionCardContext,
++  ];
++  "chat.publishDecisionCard": [
++    params: { companyId: string; input: import('@paperclipai/shared').NativeDecisionCardInput },
++    result: import('@paperclipai/shared').NativeDecisionCardResult,
++  ];
+   "chat.publishComment": [
+     params: { commentId: string; companyId: string },
+     result: ChatPublication,
+diff --git a/packages/plugins/sdk/src/host-client-factory.ts b/packages/plugins/sdk/src/host-client-factory.ts
+--- a/packages/plugins/sdk/src/host-client-factory.ts
++++ b/packages/plugins/sdk/src/host-client-factory.ts
+@@ -108,6 +108,8 @@
+ 
+   /** Optional native chat publication adapter. The running Paperclip host owns validation and transport. */
+   chat?: {
++    getDecisionCardContext?(params: WorkerToHostMethods["chat.getDecisionCardContext"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["chat.getDecisionCardContext"][1]>;
++    publishDecisionCard?(params: WorkerToHostMethods["chat.publishDecisionCard"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["chat.publishDecisionCard"][1]>;
+     publishComment(
+       params: WorkerToHostMethods["chat.publishComment"][0],
+       context?: WorkerHostCallContext,
+@@ -393,6 +395,8 @@
+   // Config — always allowed
+   "config.get": null,
+   "chat.publishComment": "chat.publications.publish_existing_comment",
++  "chat.getDecisionCardContext": "chat.publications.publish_decision_card",
++  "chat.publishDecisionCard": "chat.publications.publish_decision_card",
+ 
+   // Trusted local folders
+   "localFolders.declarations": null,
+@@ -727,6 +731,14 @@
+       return services.config.get({ ...params, companyId }, context);
+     }),
+ 
++    "chat.getDecisionCardContext": gated("chat.getDecisionCardContext", async (params, context) => {
++      if (!services.chat?.getDecisionCardContext) throw new Error('Native decision publication is unavailable');
++      return services.chat.getDecisionCardContext(params, context);
++    }),
++    "chat.publishDecisionCard": gated("chat.publishDecisionCard", async (params, context) => {
++      if (!services.chat?.publishDecisionCard) throw new Error('Native decision publication is unavailable');
++      return services.chat.publishDecisionCard(params, context);
++    }),
+     "chat.publishComment": gated("chat.publishComment", async (params, context) => {
+       if (!services.chat?.publishComment) {
+         throw new Error("Native chat publication service is unavailable");
+diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
+--- a/packages/plugins/sdk/src/worker-rpc-host.ts
++++ b/packages/plugins/sdk/src/worker-rpc-host.ts
+@@ -1132,6 +1132,16 @@
+       },
+ 
+       chat: {
++        async getDecisionCardContext(input, companyId) {
++          const capability = 'chat.publications.publish_decision_card';
++          if (!manifest?.capabilities.includes(capability)) throw new CapabilityDeniedError(manifest?.id ?? 'unknown', 'chat.getDecisionCardContext', capability);
++          return callHost('chat.getDecisionCardContext', { companyId, input });
++        },
++        async publishDecisionCard(input, companyId) {
++          const capability = 'chat.publications.publish_decision_card';
++          if (!manifest?.capabilities.includes(capability)) throw new CapabilityDeniedError(manifest?.id ?? 'unknown', 'chat.publishDecisionCard', capability);
++          return callHost('chat.publishDecisionCard', { companyId, input });
++        },
+         async publishComment(commentId: string, companyId: string) {
+           const capability = "chat.publications.publish_existing_comment";
+           if (!manifest?.capabilities.includes(capability)) {
+diff --git a/packages/plugins/sdk/src/testing.ts b/packages/plugins/sdk/src/testing.ts
+--- a/packages/plugins/sdk/src/testing.ts
++++ b/packages/plugins/sdk/src/testing.ts
+@@ -2090,6 +2090,8 @@
+       },
+     },
+     chat: {
++      async getDecisionCardContext() { throw new Error('Native decision-card host fixture required'); },
++      async publishDecisionCard() { throw new Error('Native decision-card host fixture required'); },
+       async publishComment(commentId, companyId) {
+         requireCapability(
+           manifest,

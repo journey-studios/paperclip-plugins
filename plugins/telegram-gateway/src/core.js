@@ -41,6 +41,7 @@ async function companyConfig(ctx, companyId) {
     immediateEnabled: raw.immediateEnabled !== false,
     digestEnabled: raw.digestEnabled !== false,
     publicationEnabled: raw.publicationEnabled === true,
+    nativeDecisionCardsEnabled: raw.nativeDecisionCardsEnabled === true,
     commandsEnabled: raw.commandsEnabled !== false,
     commandProviderIds: raw.commandProviderIds === undefined ? ["journey-studios.agent-observatory"] : [...new Set(raw.commandProviderIds)],
     conversationIssueId: stringValue(raw.conversationIssueId),
@@ -58,7 +59,7 @@ function validateConfig(value) {
   const errors = [];
   const knownKeys = new Set([
     "liaisonAgentId", "founderUserId", "conversationIssueId", "chatChannels", "projectId", "webBaseUrl",
-    "immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays", "commandProviderIds",
+    "immediateEnabled", "digestEnabled", "publicationEnabled", "nativeDecisionCardsEnabled", "commandsEnabled", "digestTimezone", "digestTimes", "digestWeekdays", "commandProviderIds",
   ]);
   for (const key of Object.keys(config)) {
     if (!knownKeys.has(key)) errors.push(`Unknown setting: ${key}`);
@@ -69,7 +70,7 @@ function validateConfig(value) {
   for (const key of ["conversationIssueId", "projectId", "webBaseUrl"]) {
     if (config[key] !== undefined && !stringValue(config[key])) errors.push(`${key} must be a non-empty string`);
   }
-  for (const key of ["immediateEnabled", "digestEnabled", "publicationEnabled", "commandsEnabled"]) {
+  for (const key of ["immediateEnabled", "digestEnabled", "publicationEnabled", "nativeDecisionCardsEnabled", "commandsEnabled"]) {
     if (config[key] !== undefined && typeof config[key] !== "boolean") errors.push(`${key} must be a boolean`);
   }
   if (config.commandProviderIds !== undefined && (!Array.isArray(config.commandProviderIds) || config.commandProviderIds.length > 12 || config.commandProviderIds.some((id) => typeof id !== "string" || !/^[a-z0-9][a-z0-9._-]{2,127}$/.test(id)))) {

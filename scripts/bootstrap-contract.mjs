@@ -102,3 +102,32 @@ export function assertTelegramChatPublicationPatch(patchText) {
     throw new Error("Telegram chat publication patch may add only its single capability to shared constants");
   }
 }
+
+
+export function assertNativeDecisionPublicationPatch(text) {
+  const allowed = new Set([
+    "packages/shared/src/types/native-decision-cards.ts", "packages/shared/src/index.ts",
+    "packages/shared/src/types/chat-channels.ts", "packages/shared/src/constants.ts",
+    "packages/plugins/sdk/src/types.ts", "packages/plugins/sdk/src/protocol.ts",
+    "packages/plugins/sdk/src/host-client-factory.ts", "packages/plugins/sdk/src/worker-rpc-host.ts",
+    "packages/plugins/sdk/src/testing.ts",
+  ]);
+  const files = [...text.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
+  if (files.length !== allowed.size || files.some(([, a, b]) => a !== b || !allowed.has(a)) ||
+      new Set(files.map(([,a]) => a)).size !== allowed.size || /server\/src|packages\/db\//.test(text)) {
+    throw new Error("Native decision compatibility may modify only the declared SDK/shared surface");
+  }
+  for (const required of ["chat.getDecisionCardContext", "chat.publishDecisionCard", "chat.publications.publish_decision_card", "destinationIssueId", "expectedRevision"]) {
+    if (!text.includes(required)) throw new Error("Native decision SDK contract is incomplete");
+  }
+  const block = text.match(/diff --git a\/packages\/shared\/src\/constants\.ts[\s\S]*?(?=diff --git|$)/)?.[0] ?? "";
+  const added = [...block.matchAll(/^\+(?!\+)(.*)$/gm)].map((m)=>m[1].trim());
+  const removed = [...block.matchAll(/^-(?!-)(.*)$/gm)];
+  if (removed.length || added.length !== 1 || added[0] !== '\"chat.publications.publish_decision_card\",') {
+    throw new Error("Native decision compatibility may add only its publication capability");
+  }
+  const additions = [...text.matchAll(/^\+(?!\+)(.*)$/gm)].map((m)=>m[1]).join("\n");
+  if (/actorUserId|botToken|approvals\.decide|respondInteraction|callback_query/.test(additions)) {
+    throw new Error("Native publication clients must not add vote or callback authority");
+  }
+}
