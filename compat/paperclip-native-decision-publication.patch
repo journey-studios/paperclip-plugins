@@ -121,8 +121,7 @@ diff --git a/packages/plugins/sdk/src/host-client-factory.ts b/packages/plugins/
 diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/src/worker-rpc-host.ts
 --- a/packages/plugins/sdk/src/worker-rpc-host.ts
 +++ b/packages/plugins/sdk/src/worker-rpc-host.ts
-@@ -1132,6 +1132,37 @@
-       },
+@@ -1132,5 +1132,41 @@       },
  
        chat: {
 +        async getDecisionCardContext(input, companyId) {
@@ -130,6 +129,9 @@ diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/
 +          const inputKeys = Object.keys(input);
 +          if (inputKeys.length !== 2 || inputKeys.some((key) => !['decision', 'destinationIssueId', 'destinationConversationId'].includes(key)) ||
 +              Object.hasOwn(input, 'destinationIssueId') === Object.hasOwn(input, 'destinationConversationId')) throw new Error('Native decision context input shape invalid');
++          if (Object.hasOwn(input, 'destinationIssueId')
++              ? typeof input.destinationIssueId !== 'string'
++              : typeof input.destinationConversationId !== 'string') throw new Error('Native decision context input values invalid');
 +          if (typeof input.decision !== 'object' || input.decision === null || Array.isArray(input.decision) ||
 +              !['approval', 'interaction'].includes(input.decision.kind) || typeof input.decision.id !== 'string' ||
 +              Object.keys(input.decision).some((key) => !(input.decision.kind === 'interaction' ? ['kind', 'id', 'issueId'] : ['kind', 'id']).includes(key)) ||
@@ -145,6 +147,8 @@ diff --git a/packages/plugins/sdk/src/worker-rpc-host.ts b/packages/plugins/sdk/
 +          if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error('Native decision input shape invalid');
 +          const inputKeys = Object.keys(input);
 +          if (inputKeys.length !== 3 || inputKeys.some((key) => !['decision', 'destinationConversationId', 'expectedRevision'].includes(key))) throw new Error('Native decision publication input shape invalid');
++          if (typeof input.destinationConversationId !== 'string' ||
++              typeof input.expectedRevision !== 'string') throw new Error('Native decision publication input values invalid');
 +          if (typeof input.decision !== 'object' || input.decision === null || Array.isArray(input.decision) ||
 +              !['approval', 'interaction'].includes(input.decision.kind) || typeof input.decision.id !== 'string' ||
 +              Object.keys(input.decision).some((key) => !(input.decision.kind === 'interaction' ? ['kind', 'id', 'issueId'] : ['kind', 'id']).includes(key)) ||

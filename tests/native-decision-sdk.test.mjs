@@ -36,6 +36,17 @@ test("SDK worker publication guards reject unknown serialized input fields befor
     if (name === "getDecisionCardContext") {
       assert.throws(() => validate({ ...valid, destinationConversationId: "other" }), /shape invalid/);
       assert.doesNotThrow(() => validate({ decision: approval, destinationConversationId: "conversation" }));
+      assert.doesNotThrow(() => validate({ decision: approval, destinationIssueId: "" }));
+      for (const bad of [null, 42, true, [], {}, ["id"]]) {
+        assert.throws(() => validate({ ...valid, destinationIssueId: bad }), /values invalid/);
+        assert.throws(() => validate({ decision: approval, destinationConversationId: bad }), /values invalid/);
+      }
+    } else {
+      assert.doesNotThrow(() => validate({ decision: approval, destinationConversationId: "", expectedRevision: "" }));
+      for (const bad of [null, 42, false, [], {}, ["revision"]]) {
+        assert.throws(() => validate({ ...valid, destinationConversationId: bad }), /values invalid/);
+        assert.throws(() => validate({ ...valid, expectedRevision: bad }), /values invalid/);
+      }
     }
   }
 });
