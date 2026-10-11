@@ -9,6 +9,7 @@ import {
   assertPublicCompatibilityPatch,
   assertRepository,
   assertTelegramChatPublicationPatch,
+  assertNativeDecisionPublicationPatch as assertNativeDecisionSdkPatch,
   assertWorkspaceAlias,
   checkoutNeedsPin,
 } from "../scripts/bootstrap-contract.mjs";
@@ -104,4 +105,13 @@ test("rejects Evolution patches that omit a required read table or Audit forward
 test("rejects a workspace alias that points away from the requested host checkout", () => {
   assert.doesNotThrow(() => assertWorkspaceAlias("/workspace/host", "/workspace/host"));
   assert.throws(() => assertWorkspaceAlias("/workspace/other", "/workspace/host"), /exact checkout/);
+});
+
+test("native decision compatibility is additive SDK publication only", () => {
+  const patch = readFileSync(resolve(repositoryRoot, "compat/paperclip-native-decision-publication.patch"), "utf8");
+  assert.doesNotThrow(() => assertNativeDecisionSdkPatch(patch));
+  assert.throws(() => assertNativeDecisionSdkPatch(patch.replace('+++ b/packages/plugins/sdk/src/types.ts', '+++ b/server/src/app.ts')), /matching SDK|SDK\/shared/);
+  assert.throws(() => assertNativeDecisionSdkPatch(patch + '\n+approvals.decide(input)\n'), /votes/);
+  assert.throws(() => assertNativeDecisionSdkPatch(patch + '\n+setWebhook(input)\n'), /transport/);
+  assert.throws(() => assertNativeDecisionSdkPatch(patch + '\n-oldCode\n'), /additive/);
 });

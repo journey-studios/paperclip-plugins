@@ -1,5 +1,49 @@
 # Telegram Gateway
 
+## Native decision buttons — 0.4.0 candidate (JOU-91)
+
+Companion to [runtime PR55](https://github.com/journey-studios/paperclip-runtime/pull/55)
+and [client PR32](https://github.com/journey-studios/paperclip-plugins/pull/32).
+**Not deployed.** The live 0.3.7 readable-message flow remains in use until the
+reviewed host and client are promoted. Slash-command PR31 is not this delivery.
+
+The new per-company `nativeDecisionCardsEnabled` setting is **false by default**.
+With it and `publicationEnabled=true`, the Gateway uses host-owned
+`getDecisionCardContext({decision,destinationIssueId},companyId)` followed by
+`publishDecisionCard({decision,destinationConversationId,expectedRevision},companyId)`.
+The host resolves the private Founder conversation, canonical source revision,
+text, buttons, human identity, reason collection and audit. The plugin provides
+no user identity, callback body, button definition, bot token, Board token or vote.
+
+Only `chat.publications.publish_decision_card` is added to the manifest; there is
+no `approvals.respond` or `issue.interactions.respond` permission. Install and
+validate the host capability **before** this client. The additive nine-file SDK
+compatibility patch changes only its declared SDK/shared contract and is checked
+for path, header, capability and authority expansion. It never changes a server,
+webhook or database implementation.
+
+Native mode re-reads the current host revision/destination on reconciliation,
+even if the interaction's own timestamp has not changed: Issue policy and chat
+generation can change independently. Durable transport idempotency belongs to
+the host. A native timeout or error after a possible write **never** falls back
+to a second legacy comment. Disabled mode and clients without native methods
+retain the original read-only path; method presence alone is not evidence of a
+qualified host deployment.
+
+Verified in an isolated Node24 environment: **112 Gateway tests**, **17 SDK /
+bootstrap checks**, bundled shared/SDK build and Gateway typecheck passed. The
+host companion separately passed **17 real PostgreSQL/native integration tests**
+with the actual installed Telegram adapter and a stubbed HTTP provider. These
+are not a real Telegram DM/click canary and do not authorize production rollout.
+
+Before promotion, qualify the exact custom runtime/overlays, review both PRs,
+retain backups and test synthetic buttons with the linked Founder. Rollback
+requires draining/cancelling native publications and invalidating outstanding
+buttons while the capable host still runs. Restore the prior plugin's exact
+configuration as well as its package; old releases do not recognize the new flag.
+The historical 0.3.x transport and command notes below describe the preserved
+fallback, not a claim that this new host capability is already in production.
+
 ## Telegram command menu
 
 Open **Company settings → Telegram commands** (`/:companyPrefix/company/settings/telegram-commands`) to review the commands available for that company and copy the BotFather menu text. The page reads the existing company configuration and allowlisted provider registry; it never asks for or displays a bot token.
@@ -95,3 +139,10 @@ The Gateway accepts authorized read-only commands contributed by other installed
 - **Rollback:** soft-uninstall without purge and reinstall the archived `0.3.0` package with the same manifest ID, restoring the previous label and package while retaining configuration/state. Roll back if health, command authorization or publications regress.
 
 The existing custom host already has the command ingress required by JOU-86; the remaining gate is installing and validating the new plugin packages. No Caddy, webhook, bot, upstream Paperclip core or custom runtime image change is required for these read-only commands.
+
+The SDK worker rejects unknown input fields and malformed top-level decision
+selectors before RPC; the host independently repeats authorization and schema
+checks. Bootstrap forbidden-token scanning is a heuristic tripwire, not a
+security boundary. Native transport failures are exercised through the delivery
+pipeline with actual legacy-call counters; cached legacy records cannot suppress
+the first native publication.

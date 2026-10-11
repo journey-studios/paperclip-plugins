@@ -1,7 +1,7 @@
 const manifest = {
   id: "journey-studios.founder-comms-router",
   apiVersion: 1,
-  version: "0.3.7",
+  version: "0.4.0",
   displayName: "Telegram Gateway",
   description: "Routes authorized Telegram commands and publishes native chat messages, including Founder Liaison notifications.",
   author: "Journey Studios",
@@ -16,6 +16,7 @@ const manifest = {
     "issue.comments.read",
     "issue.comments.create",
     "chat.publications.publish_existing_comment",
+    "chat.publications.publish_decision_card",
     "issues.wakeup",
     "approvals.read",
     "issue.interactions.read",
@@ -89,6 +90,12 @@ const manifest = {
         type: "boolean",
         title: "Scheduled digests",
         default: true,
+      },
+      nativeDecisionCardsEnabled: {
+        type: "boolean",
+        title: "Native decision buttons (requires reviewed host support)",
+        description: "Publish original approvals/interactions through the host-owned native decision service. Host validates linked human, private chat, revision and rejection reason. No bot token or direct vote permissions.",
+        default: false,
       },
       publicationEnabled: {
         type: "boolean",
