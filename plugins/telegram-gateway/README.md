@@ -1,5 +1,37 @@
 # Telegram Gateway
 
+## Native decision buttons (0.4.0 candidate, JOU-91)
+
+This candidate connects to the **native host extension in paperclip-runtime PR
+#55**. It is not the `/aprovar` command workaround and is not enabled by default.
+The existing Telegram bot, webhook and plugin registry identity remain unchanged.
+
+`nativeDecisionCardsEnabled=true` opts the company into typed native publication
+when `publicationEnabled=true`. The plugin sends only the canonical decision
+reference and destination chat Issue to `ctx.chat.getDecisionCardContext`; the
+host returns the authorized current conversation/revision. The plugin then calls
+`ctx.chat.publishDecisionCard`. Human authentication, private chat verification,
+buttons, tokens, justification replies, canonical mutations, receipts and editing
+remain in Paperclip. The plugin does not receive or send a human voter ID.
+
+The sole new capability is `chat.publications.publish_decision_card`. The Gateway
+**does not request** `approvals.respond` or `issue.interactions.respond`. Sensitive
+or unsupported decisions are classified by the native host and remain link-only.
+
+The typed worker client is bundled using the constrained additive compatibility
+patch `compat/paperclip-native-decision-client.patch`. The patch does not add host
+implementation, Telegram transport or voting APIs. A compatible host is required
+before installation/activation. If a native RPC fails ambiguously, the Gateway
+**does not** fall back to sending a raw comment: retry stays on the same native
+publication path. Existing read-only cards work unchanged while the flag is off.
+
+Validation: 105 Gateway tests, typecheck and bundled SDK build pass in Node24.
+This is not evidence of a message delivered to the Founder's Telegram; runtime
+PR55 must pass its native PostgreSQL/transport/review/canary gates before rollout.
+Enabling the flag changes the delivery context and intentionally refreshes pending
+cards once; assess volume during the canary. Old sent Telegram cards are not
+retroactively converted to interactive buttons.
+
 ## Telegram command menu
 
 Open **Company settings → Telegram commands** (`/:companyPrefix/company/settings/telegram-commands`) to review the commands available for that company and copy the BotFather menu text. The page reads the existing company configuration and allowlisted provider registry; it never asks for or displays a bot token.

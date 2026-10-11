@@ -102,3 +102,21 @@ export function assertTelegramChatPublicationPatch(patchText) {
     throw new Error("Telegram chat publication patch may add only its single capability to shared constants");
   }
 }
+
+export function assertNativeDecisionSdkPatch(patchText) {
+  const allowed = new Set(['packages/plugins/sdk/src/types.ts','packages/plugins/sdk/src/protocol.ts','packages/plugins/sdk/src/worker-rpc-host.ts','packages/plugins/sdk/src/host-client-factory.ts','packages/plugins/sdk/src/testing.ts','packages/shared/src/constants.ts']);
+  const paths = [...patchText.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
+  const added = [...patchText.matchAll(/^\+(?!\+)(.*)$/gm)].map((m) => m[1]).join('\n');
+  const plus = [...patchText.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+  const minus = [...patchText.matchAll(/^--- a\/(.+)$/gm)].map((m) => m[1]);
+  if (plus.length !== allowed.size || minus.length !== allowed.size || plus.some((p) => !allowed.has(p)) || minus.some((p) => !allowed.has(p)) || /^-(?!-)/m.test(patchText) || /^(?:new file mode|old mode|new mode|rename from|rename to|GIT binary patch)/m.test(patchText)) throw new Error('Native decision patch must be additive and keep matching SDK file headers');
+
+  if (paths.length !== allowed.size || paths.some(([,a,b]) => a !== b || !allowed.has(a)) || new Set(paths.map((m) => m[1])).size !== allowed.size) throw new Error('Native decision patch must touch only the six SDK client files');
+  for (const token of ['chat.getDecisionCardContext','chat.publishDecisionCard','chat.publications.publish_decision_card','invocationContextStorage','CapabilityDeniedError']) {
+    if (!added.includes(token)) throw new Error('Native decision client contract is incomplete');
+  }
+  if (/server\/src|packages\/db\/|getUpdates|setWebhook|approvals\.decide|issues\.respondInteraction|actorUserId|fetch\(/.test(added)) throw new Error('Native decision SDK patch cannot implement transport, identity or votes');
+  const constants = patchText.split('diff --git a/packages/shared/src/constants.ts')[1]?.split('diff --git')[0] ?? '';
+  const additions = [...constants.matchAll(/^\+(?!\+)(.*)$/gm)].map((m) => m[1].trim());
+  if (additions.length !== 1 || additions[0] !== '"chat.publications.publish_decision_card",') throw new Error('Native decision client may declare only its publication capability');
+}

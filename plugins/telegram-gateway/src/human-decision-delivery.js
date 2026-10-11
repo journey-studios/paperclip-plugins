@@ -1,3 +1,4 @@
+import { publishNativeDecisionCard } from "./native-decision-client.js";
 import { createHash } from "node:crypto";
 import {
   INTERACTION_ISSUE_LIMIT_PER_STATUS,
@@ -42,7 +43,7 @@ async function humanDecisionFingerprints(ctx, companyId) {
   return asObject(await ctx.state.get(companyScope(companyId, FINGERPRINTS_KEY)));
 }
 
-async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null, linkContext = null) {
+async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, fingerprint, issueId = null, commentId = null, linkContext = null, nativeCardId = null) {
   const key = companyScope(companyId, FINGERPRINTS_KEY);
   const prior = await humanDecisionFingerprints(ctx, companyId);
   // A link context must upgrade even a legacy string record to a structured one,
@@ -52,6 +53,7 @@ async function rememberHumanDecisionFingerprint(ctx, companyId, trackKey, finger
     if (issueId) record.issueId = issueId;
     if (commentId) record.commentId = commentId;
     if (linkContext !== null) record.linkContext = linkContext;
+    if (nativeCardId) record.nativeCardId = nativeCardId;
     prior[trackKey] = record;
   } else {
     prior[trackKey] = fingerprint;
@@ -103,9 +105,12 @@ async function ensureHumanDecisionComment(ctx, companyId, conversation, config, 
   return record;
 }
 
-async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation) {
+async function publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation, decisionRef) {
   const conversation = await resolveConversation(ctx, companyId, config);
   if (!conversation) return { delivered: false, reason: "conversation_not_bound" };
+  if (config.nativeDecisionCardsEnabled === true && config.publicationEnabled === true) {
+    return publishNativeDecisionCard(ctx, companyId, conversation.id, decisionRef);
+  }
 
   const cardBody = buildBody({ baseUrl: config.webBaseUrl, issuePrefix });
   if (!stringValue(cardBody)) return { delivered: false, reason: "empty_card" };
@@ -145,7 +150,7 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   const trackKey = `${kind}:${entityId}`;
   // The link identity includes the web base and the company issue prefix, so a
   // corrected link re-delivers even when the decision fingerprint is unchanged.
-  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}`;
+  const linkContext = `${config.webBaseUrl ?? ""}|${issuePrefix ?? ""}${config.nativeDecisionCardsEnabled === true && config.publicationEnabled === true ? "|native-decisions-v1" : ""}`;
   const prior = await humanDecisionFingerprints(ctx, companyId);
   const priorRecord = asObject(prior[trackKey]);
   const priorFingerprint = typeof prior[trackKey] === "string" ? prior[trackKey] : priorRecord.fingerprint;
@@ -153,6 +158,7 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   const fingerprintUnchanged = stringValue(priorFingerprint) === fingerprint;
   const contextUnchanged = priorLinkContext === undefined || priorLinkContext === linkContext;
   if (fingerprintUnchanged && contextUnchanged) {
+    if (config.nativeDecisionCardsEnabled === true && config.publicationEnabled === true && stringValue(priorRecord.nativeCardId)) return { skipped: true };
     if (!config.publicationEnabled) {
       // Backfill pre-upgrade records so a later link correction is detected,
       // without re-publishing during the upgrade itself.
@@ -182,10 +188,11 @@ async function deliverHumanDecisionCard(ctx, companyId, config, delivery, resolv
   }
 
   const deliveryId = wakeEventId ?? cardDeliveryId(kind, entityId, `${fingerprint}|${linkContext}`);
-  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation);
+  const decisionRef = kind === "approval" ? { kind, id: entityId } : { kind: "interaction", id: entityId, issueId: delivery.issueId };
+  const result = await publishHumanDecisionCard(ctx, companyId, config, deliveryId, issuePrefix, buildBody, resolveConversation, decisionRef);
   if (result.delivered !== false) {
     await rememberHumanDecisionFingerprint(
-      ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId, linkContext,
+      ctx, companyId, trackKey, fingerprint, delivery.issueId, result.commentId, linkContext, result.nativeCardId,
     );
   }
   return result;
