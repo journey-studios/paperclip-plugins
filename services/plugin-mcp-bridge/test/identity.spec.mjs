@@ -4,7 +4,7 @@ import { makeBridge, flush, messages, env } from './helpers.mjs';
 
 const profile = { id: 'human-test-id', name: 'Test User', email: 'test@example.invalid', image: null };
 const stockAgentResult = { content: [{ type: 'text', text: JSON.stringify({ id: 'agent-test-id', companyId: env.PAPERCLIP_COMPANY_ID, role: 'engineer', keyScope: { kind: 'task_bridge' } }) }] };
-const stockBoardError = { isError: true, content: [{ type: 'text', text: JSON.stringify({ status: 401, path: '/agents/me', body: { error: 'Agent authentication required' } }) }] };
+const stockBoardError = { content: [{ type: 'text', text: JSON.stringify({ status: 401, path: '/agents/me', body: { error: 'Agent authentication required' } }) }] };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const invoke = (ctx, id = 'identity-1', args = {}) => ctx.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'paperclipMe', arguments: args } }) + '\n');
 const result = (ctx, id = 'identity-1') => messages(ctx.output).find((message) => message.id === id);
@@ -245,4 +245,15 @@ test('tools/list updates only the existing identity description on every page', 
   }
   assert.equal(result(ctx, 2).result.tools.length, 7);
   assert.equal(result(ctx, 3).result.tools.length, 2);
+});
+
+
+test('legacy native errors without isError remain byte-for-byte unchanged for agents', async () => {
+  const nativeError = { content: [{ type: 'text', text: JSON.stringify({ status: 403, error: 'Low-trust self denied', path: '/agents/me' }) }] };
+  const ctx = makeBridge({ stockCallResult: nativeError, fetchImpl: async () => json({ error: 'Board authentication required' }, 401) });
+  ctx.bridge.initialized = true;
+  invoke(ctx);
+  await settle();
+  assert.deepEqual(result(ctx).result, nativeError);
+  assert.equal(value(result(ctx)).status, 403);
 });

@@ -41,17 +41,20 @@ const data = (result) => {
   assert.equal(value.companyId, env.PAPERCLIP_COMPANY_ID);
   return value;
 };
+let stage = 'initialize';
 try {
   await request('initialize', {
     protocolVersion: '2024-11-05', capabilities: {},
     clientInfo: { name: 'observatory-readonly-smoke', version: '0.1.0' },
   });
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  stage = 'catalog';
   const catalog = await request('tools/list', {});
   const names = new Set(catalog.tools.map((tool) => tool.name));
   const added = ['paperclipAgentHealthOverview', 'paperclipDiagnoseAgent', 'paperclipListRunFailures', 'paperclipFindAgentAnomalies', 'paperclipTraceRun'];
   for (const name of added) assert(names.has(name), `Missing tool: ${name}`);
   assert.equal(names.size, catalog.tools.length, 'Tool names must be unique');
+  stage = 'identity';
   const identity = await call('paperclipMe', {});
   if (env.PAPERCLIP_SMOKE_EXPECT_AUTH_FAILURE === '1') {
     assert.equal(identity.isError, true, 'Invalid credentials must not resolve an identity');
@@ -63,6 +66,7 @@ try {
   const actor = JSON.parse(identity.content.find((item) => item.type === 'text').text);
   assert.equal(typeof actor.id, 'string');
   const isBoard = actor.actorType === 'board';
+  stage = 'native-identity';
   const direct = await call('paperclipApiRequest', { method: 'GET', path: isBoard ? '/auth/profile' : '/agents/me' });
   assert.notEqual(direct.isError, true, 'Native identity endpoint failed');
   const directActor = JSON.parse(direct.content.find((item) => item.type === 'text').text);
@@ -70,17 +74,24 @@ try {
   if (isBoard) {
     assert.equal(actor.email, directActor.email);
     assert.deepEqual(Object.keys(actor).sort(), ['actorType', 'email', 'id', 'image', 'name']);
+    stage = 'agent-only-denial';
     const agentOnly = await call('paperclipApiRequest', { method: 'GET', path: '/agents/me' });
-    assert.equal(agentOnly.isError, true, 'Board must not gain agent-only access');
+    // The native server serializes API errors as text without isError.
+    // Verify the actual HTTP denial, not that optional MCP envelope flag.
     const error = JSON.parse(agentOnly.content.find((item) => item.type === 'text').text);
     assert.equal(error.status, 401);
+    assert.equal(error.body?.error, 'Agent authentication required');
   }
+  stage = 'stock-company-read';
   const stock = await call('paperclipListAgents', { companyId: env.PAPERCLIP_COMPANY_ID });
   assert.notEqual(stock.isError, true, 'Official MCP tool failed');
+  const stockAgents = JSON.parse(stock.content.find((item) => item.type === 'text').text);
+  assert(Array.isArray(stockAgents), 'Official company agent list must be an array, not a textual error');
   if (env.PAPERCLIP_SMOKE_IDENTITY_ONLY === '1') {
     console.log(JSON.stringify({ ok: true, actorType: isBoard ? 'board' : 'agent', toolsTotal: catalog.tools.length,
       checks: ['identity-matches-native', 'no-credential-fields', 'stock-company-read', ...(isBoard ? ['agent-only-denied'] : [])] }));
   } else {
+  stage = 'observatory';
   const overview = data(await call(added[0], { windowHours: 24 }));
   assert(overview.agents.length > 0, 'No agents available for the live check');
   const agent = overview.agents.find((row) => row.lastRunId) ?? overview.agents[0];
@@ -110,7 +121,7 @@ try {
   }
   }
 } catch {
-  console.error('Read-only MCP smoke failed; check identity, plugin and bridge configuration.');
+  console.error(JSON.stringify({ ok: false, stage, error: 'Read-only MCP smoke failed; no credentials or response bodies logged.' }));
   process.exitCode = 1;
 } finally {
   for (const item of pending.values()) clearTimeout(item.timer);
