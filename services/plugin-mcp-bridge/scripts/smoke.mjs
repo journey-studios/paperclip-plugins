@@ -52,8 +52,35 @@ try {
   const added = ['paperclipAgentHealthOverview', 'paperclipDiagnoseAgent', 'paperclipListRunFailures', 'paperclipFindAgentAnomalies', 'paperclipTraceRun'];
   for (const name of added) assert(names.has(name), `Missing tool: ${name}`);
   assert.equal(names.size, catalog.tools.length, 'Tool names must be unique');
+  const identity = await call('paperclipMe', {});
+  if (env.PAPERCLIP_SMOKE_EXPECT_AUTH_FAILURE === '1') {
+    assert.equal(identity.isError, true, 'Invalid credentials must not resolve an identity');
+    const denial = JSON.parse(identity.content.find((item) => item.type === 'text').text);
+    assert.equal(denial.code, 'identity_unauthorized');
+    console.log(JSON.stringify({ ok: true, checks: ['invalid-credential-denied'] }));
+  } else {
+  assert.notEqual(identity.isError, true, 'Actor lookup failed');
+  const actor = JSON.parse(identity.content.find((item) => item.type === 'text').text);
+  assert.equal(typeof actor.id, 'string');
+  const isBoard = actor.actorType === 'board';
+  const direct = await call('paperclipApiRequest', { method: 'GET', path: isBoard ? '/auth/profile' : '/agents/me' });
+  assert.notEqual(direct.isError, true, 'Native identity endpoint failed');
+  const directActor = JSON.parse(direct.content.find((item) => item.type === 'text').text);
+  assert.equal(actor.id, directActor.id, 'Identity must match the authenticated principal');
+  if (isBoard) {
+    assert.equal(actor.email, directActor.email);
+    assert.deepEqual(Object.keys(actor).sort(), ['actorType', 'email', 'id', 'image', 'name']);
+    const agentOnly = await call('paperclipApiRequest', { method: 'GET', path: '/agents/me' });
+    assert.equal(agentOnly.isError, true, 'Board must not gain agent-only access');
+    const error = JSON.parse(agentOnly.content.find((item) => item.type === 'text').text);
+    assert.equal(error.status, 401);
+  }
   const stock = await call('paperclipListAgents', { companyId: env.PAPERCLIP_COMPANY_ID });
   assert.notEqual(stock.isError, true, 'Official MCP tool failed');
+  if (env.PAPERCLIP_SMOKE_IDENTITY_ONLY === '1') {
+    console.log(JSON.stringify({ ok: true, actorType: isBoard ? 'board' : 'agent', toolsTotal: catalog.tools.length,
+      checks: ['identity-matches-native', 'no-credential-fields', 'stock-company-read', ...(isBoard ? ['agent-only-denied'] : [])] }));
+  } else {
   const overview = data(await call(added[0], { windowHours: 24 }));
   assert(overview.agents.length > 0, 'No agents available for the live check');
   const agent = overview.agents.find((row) => row.lastRunId) ?? overview.agents[0];
@@ -80,8 +107,10 @@ try {
     anomaliesReturned: anomalies.anomalies?.length ?? anomalies.items?.length,
     traceEvents, checks: ['official-server', ...added, 'input-bounds', 'company-override', 'unknown-agent'],
   }));
+  }
+  }
 } catch {
-  console.error('Observatory live smoke failed; check the plugin and MCP bridge configuration.');
+  console.error('Read-only MCP smoke failed; check identity, plugin and bridge configuration.');
   process.exitCode = 1;
 } finally {
   for (const item of pending.values()) clearTimeout(item.timer);
