@@ -86,8 +86,8 @@ const REQUEST_CASES = [
   { name: 'paperclipGetDashboard', args: { slug }, method: 'GET', path: `/dashboards/${slug}`, query: {}, reply: { dashboard: { slug, spec } } },
   { name: 'paperclipDashboardStatus', args: { slug }, method: 'GET', path: `/dashboards/${slug}/status`, query: {}, reply: { status: { slug, health: 'fresh' } } },
   {
-    name: 'paperclipUpsertDashboard', args: { slug, title: 'Delivery', projectId: null, spec }, method: 'POST', path: '/dashboards', query: {},
-    body: { slug, title: 'Delivery', projectId: null, spec }, reply: { created: true, dashboard: { slug } },
+    name: 'paperclipUpsertDashboard', args: { slug, title: 'Delivery', projectId, spec }, method: 'POST', path: '/dashboards', query: {},
+    body: { slug, title: 'Delivery', projectId, spec }, reply: { created: true, dashboard: { slug } },
   },
   {
     name: 'paperclipUpsertDashboard', args: { slug, projectId, spec }, method: 'POST', path: '/dashboards', query: {},
@@ -193,8 +193,10 @@ const VALIDATION_CASES = [
   ['paperclipUpsertDashboard', { slug, spec, title: '' }, /title must be/],
   ['paperclipUpsertDashboard', { slug, spec, title: 't'.repeat(201) }, /title must be/],
   ['paperclipUpsertDashboard', { slug, spec, title: 5 }, /title must be/],
-  ['paperclipUpsertDashboard', { slug, spec, projectId: 'nope' }, /projectId must be a UUID or null/],
-  ['paperclipUpsertDashboard', { slug, spec, projectId: 5 }, /projectId must be a UUID or null/],
+  ['paperclipUpsertDashboard', { slug, spec, projectId: 'nope' }, /projectId must be a project UUID/],
+  ['paperclipUpsertDashboard', { slug, spec, projectId: 5 }, /projectId must be a project UUID/],
+  ['paperclipUpsertDashboard', { slug, spec, projectId: '' }, /projectId must be a project UUID/],
+  ['paperclipUpsertDashboard', { slug, spec, projectId: null }, /projectId must be a project UUID \(null is not accepted: every dashboard belongs to a project\)/],
   ['paperclipUpsertDashboard', { slug, spec, delete: true }, /unexpected field/],
   ['paperclipUpdateDashboardDataset', { slug, datasetId: 'd' }, /rows is required/],
   ['paperclipUpdateDashboardDataset', { slug, rows: [] }, /datasetId is required/],
@@ -339,6 +341,59 @@ test('a plugin 404 for a missing dashboard is a normal not_found, not "plugin un
   assert.equal(reply.result.isError, true);
   assert.match(textOf(reply), /HTTP 404\): not_found/);
   assert.doesNotMatch(textOf(reply), /unavailable/);
+});
+
+test('every dashboard belongs to a project: upsert takes a project UUID, optional only for updates, never null', async () => {
+  const ctx = makeBridge();
+  ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+  await flush();
+  ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`);
+  await flush();
+  const byName = new Map(messages(ctx.output).find((entry) => entry.id === 2).result.tools.map((entry) => [entry.name, entry]));
+  const upsert = byName.get('paperclipUpsertDashboard');
+  assert.equal(upsert.inputSchema.properties.projectId.type, 'string');
+  assert.equal(upsert.inputSchema.properties.projectId.format, 'uuid');
+  assert.deepEqual(upsert.inputSchema.required, ['slug', 'spec'], 'projectId stays optional for updates');
+  assert.doesNotMatch(JSON.stringify(upsert.inputSchema), /"null"/);
+  assert.match(upsert.description, /belongs to a Paperclip project/);
+  assert.match(upsert.description, /projectId is required when creating/);
+  assert.match(upsert.description, /omit it to leave it where it is \(in its project, or without one\), or pass a project UUID to move it/);
+  assert.doesNotMatch(upsert.description, /company-level|null/);
+  const list = byName.get('paperclipListDashboards');
+  assert.match(list.description, /projectId and projectName/);
+  assert.match(list.description, /projectId input limits the list to one project/);
+});
+
+test('upsert sends projectId only when given: omitted keeps the dashboard project, a UUID moves it', async () => {
+  const ctx = setup({ respond: () => json({ companyId, created: false, dashboard: { slug } }) });
+  assert.equal((await callTool(ctx, 'paperclipUpsertDashboard', { slug, spec }, 1)).result.isError, undefined);
+  assert.equal((await callTool(ctx, 'paperclipUpsertDashboard', { slug, spec, projectId }, 2)).result.isError, undefined);
+  assert.deepEqual(ctx.requests.map((request) => request.body), [{ slug, spec }, { slug, projectId, spec }]);
+});
+
+test('a null projectId on upsert is refused by the bridge with a clear message and no HTTP call', async () => {
+  const ctx = setup();
+  const reply = await callTool(ctx, 'paperclipUpsertDashboard', { slug, spec, projectId: null });
+  assert.equal(reply.result.isError, true);
+  assert.equal(textOf(reply), 'Invalid input: projectId must be a project UUID (null is not accepted: every dashboard belongs to a project).');
+  assert.equal(ctx.requests.length, 0);
+});
+
+test('the plugin project errors (project_required, project_not_found, project_archived) reach the model as client errors', async () => {
+  for (const code of ['project_required', 'project_not_found', 'project_archived']) {
+    const ctx = setup({ respond: () => json({ companyId, error: code }, 400) });
+    const reply = await callTool(ctx, 'paperclipUpsertDashboard', { slug, spec });
+    assert.equal(reply.result.isError, true, code);
+    assert.equal(textOf(reply), `Project Dashboards rejected the request (HTTP 400): ${code}`);
+    assert.doesNotMatch(textOf(reply), /unavailable|request failed/);
+    assert.equal(ctx.requests.length, 1);
+    noSecrets(ctx);
+  }
+  // Without the company echo the same status is not trusted: it stays a generic failure.
+  const foreign = setup({ respond: () => json({ companyId: otherCompany, error: 'project_not_found' }, 400) });
+  const rejected = await callTool(foreign, 'paperclipUpsertDashboard', { slug, spec, projectId });
+  assert.match(textOf(rejected), /^Project Dashboards request failed/);
+  assert.doesNotMatch(foreign.output.join(''), /project_not_found/);
 });
 
 test('5xx, auth failures, transport errors and malformed bodies stay generic and echo nothing upstream', async () => {

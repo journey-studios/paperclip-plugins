@@ -42,7 +42,7 @@ For trace, the bridge requests `/api/heartbeat-runs/:runId/events?companyId=…&
 
 If the Observatory plugin is absent, ordinary stock Paperclip MCP tools remain available; the five Observatory tools return a generic failure. A stock tool name collision with any of the eleven bridge tool names (five Observatory, six Dashboards) makes `tools/list` fail closed with a generic JSON-RPC error.
 
-## Project Dashboards tools (0.2.0)
+## Project Dashboards tools (0.2.1)
 
 Six tools expose the board REST API of the `journeystudios.project-dashboards` plugin (no hyphen in `journeystudios`, unlike `journey-studios.agent-observatory`). A Project Dashboard is declarative JSON: `datasets` (rows plus title, description, source, `updatedAt`) and `sections` of blocks (`markdown`, `mermaid`, `callout`, `kpis`, `chart`, `table`, `statusList`). Numbers come from datasets, so an agent refreshes a dashboard by updating dataset rows rather than rewriting the spec. The plugin owns the spec schema; the bridge only checks that `spec` is a plain JSON object and relays the plugin's path-precise validation messages.
 
@@ -53,17 +53,26 @@ All paths below are under `/api/plugins/journeystudios.project-dashboards/api`.
 | `paperclipListDashboards` | `GET /dashboards` | `{ projectId?: uuid }` | no |
 | `paperclipGetDashboard` | `GET /dashboards/:slug` | `{ slug }` | no |
 | `paperclipDashboardStatus` | `GET /dashboards/:slug/status` | `{ slug }` | no |
-| `paperclipUpsertDashboard` | `POST /dashboards` | `{ slug, title?, projectId?: uuid \| null, spec }` | yes, idempotent by slug |
+| `paperclipUpsertDashboard` | `POST /dashboards` | `{ slug, title?, projectId?: uuid, spec }` (`projectId` required when creating) | yes, idempotent by slug |
 | `paperclipUpdateDashboardDataset` | `POST /dashboards/:slug/datasets/:datasetId` | `{ slug, datasetId, rows, columns?, description?, source?, updatedAt? }` | yes, idempotent |
 | `paperclipValidateDashboardSpec` | `POST /validate` | `{ spec }` | no (dry run) |
 
-There is deliberately no delete tool; deleting a dashboard stays a board UI action. On upsert, an omitted `projectId` keeps an existing dashboard's project (a new dashboard is company-level), `null` makes it company-level, and a UUID must belong to the company. Read and validate tools are annotated `readOnlyHint: true`; the two writers are `readOnlyHint: false, destructiveHint: false, idempotentHint: true`. All six set `openWorldHint: false`.
+There is deliberately no delete tool; deleting a dashboard stays a board UI action. Every dashboard belongs to a project (see the project rule below). Read and validate tools are annotated `readOnlyHint: true`; the two writers are `readOnlyHint: false, destructiveHint: false, idempotentHint: true`. All six set `openWorldHint: false`.
+
+### Dashboard project rule
+
+Every dashboard belongs to a Paperclip project, and Paperclip groups dashboards by project (plugin 0.3.0 and later). `paperclipUpsertDashboard` takes `projectId` as a UUID only:
+
+- **Creating** a dashboard requires `projectId`; without it the plugin answers 400 `project_required`.
+- **Updating** an existing dashboard may omit `projectId`, which keeps its project; passing a UUID moves it to that project. An existing dashboard that has no project (a legacy one, or one whose project was deleted) can also be updated without `projectId` and stays projectless; the board UI lists all such dashboards together in a separate "No project" area with a move-to-project control. Dataset updates and `paperclipDashboardStatus` work on them too, and the status reports `orphan: true`.
+- `projectId: null` is refused by the bridge itself with `Invalid input: projectId must be a project UUID (null is not accepted: …)` and no HTTP call. The tool schema no longer allows `null`, and `projectId` stays optional in it because updates may omit it.
+- The plugin's 400s `project_required`, `project_not_found` (not a project of this company) and `project_archived` reach the model as plugin client errors, for example `Project Dashboards rejected the request (HTTP 400): project_required`, so it can pick a project and retry. `paperclipListDashboards` results carry `projectId` and `projectName` and can be filtered by `projectId`.
 
 ### Request contract
 
 - Every request (GET and POST) carries `?companyId=<PAPERCLIP_COMPANY_ID>` from deployment configuration, the Bearer key from configuration, and `accept: application/json`; POST adds `content-type: application/json`. A company in the tool input is rejected as an unknown field. Redirects are rejected (the Bearer key is never forwarded elsewhere).
 - Timeouts: 10 s for GET and 25 s for POST. Response bodies are capped at 1 MiB.
-- Input is validated before any HTTP call and unknown keys are rejected: `slug` `^[a-z0-9-]{1,64}$`; `datasetId` `^[A-Za-z0-9_-]{1,64}$`; `projectId` a UUID (or `null` on upsert only); `spec` a plain object; `rows` at most 10,000 plain objects; `columns` at most 200 non-empty strings of at most 200 characters; `title` 1-200 characters; `description` at most 10,000; `source` at most 500; `updatedAt` an ISO 8601 date or timestamp. Path segments are URL-encoded.
+- Input is validated before any HTTP call and unknown keys are rejected: `slug` `^[a-z0-9-]{1,64}$`; `datasetId` `^[A-Za-z0-9_-]{1,64}$`; `projectId` a UUID (`null` is rejected); `spec` a plain object; `rows` at most 10,000 plain objects; `columns` at most 200 non-empty strings of at most 200 characters; `title` 1-200 characters; `description` at most 10,000; `source` at most 500; `updatedAt` an ISO 8601 date or timestamp. Path segments are URL-encoded.
 - The serialized request body must be at most 950,000 bytes (the host limit is 1,000,000). The bridge's existing 1 MiB limit per incoming JSON-RPC line still applies, so the practical ceiling for one call is slightly under 1 MiB; refresh large datasets with several `paperclipUpdateDashboardDataset` calls.
 - Every plugin response body must carry `companyId` equal to the pinned company, otherwise the call fails closed. The echo is then dropped from the result.
 - Dashboard calls share the existing concurrency limit of 8 in-flight bridge-handled tool calls (Observatory, Dashboards and `paperclipMe` together); a ninth gets a "busy; retry shortly" tool error.
@@ -81,7 +90,7 @@ Unlike the Observatory tools, the Dashboards tools surface the plugin's document
 | HTTP 503, or HTTP 404 without a company echo (plugin or route not installed) | `isError`: `Project Dashboards plugin unavailable …` |
 | Anything else: 5xx, 401/403/429, transport error, timeout, oversize or invalid body, missing or different `companyId` (even on 4xx) | `isError`: generic `Project Dashboards request failed …` |
 
-A missing dashboard answers 404 `not_found` with the company echo, so it is reported as a normal client error and not as an unavailable plugin. Stock tools and Observatory tools keep working when the Dashboards plugin is absent.
+A missing dashboard answers 404 `not_found` with the company echo, so it is reported as a normal client error and not as an unavailable plugin. The project rule's 400s (`project_required`, `project_not_found`, `project_archived`) are plugin client errors with the company echo and travel the same way. Stock tools and Observatory tools keep working when the Dashboards plugin is absent.
 
 ## Deploy and rollback
 
@@ -97,7 +106,7 @@ Run `pnpm test`. Tests exercise protocol initialization and tool listing with a 
 
 Run `node scripts/smoke.mjs` in the target MCP container with the existing API URL, company ID, and key environment. A deployment may set `PAPERCLIP_API_KEY_FILE` instead of an inline key; the script reads it into the child environment and never prints it. The check initializes the official server, verifies all eleven added tools, calls one stock tool and all Observatory tools, and rejects invalid bounds, a company override, and an unknown agent. By default it performs no writes or agent wakes.
 
-The Dashboards part of the smoke is read-only by default: it lists dashboards, validates a tiny spec (a dry run, nothing stored), checks the 422, 404 and input-bound error paths, and, when `SMOKE_DASHBOARD_SLUG` is set, reads that dashboard's status and spec. Setting `SMOKE_DASHBOARD_WRITE=1` additionally **writes**: it upserts a company-level dashboard with slug `mcp-bridge-smoke` and title "MCP bridge smoke test", refreshes its `smoke` dataset, reads it back and checks the status. There is no delete tool, so that one dashboard stays until someone removes it in the board UI; leave the variable unset for production checks that must not write.
+The Dashboards part of the smoke is read-only by default: it lists dashboards, validates a tiny spec (a dry run, nothing stored), checks the 422, 404 and input-bound error paths and that `projectId: null` is refused by the bridge before any HTTP call (it is sent with a deliberately invalid spec, so a regression could not store anything), and, when `SMOKE_DASHBOARD_SLUG` is set, reads that dashboard's status and spec. Setting `SMOKE_DASHBOARD_WRITE=1` additionally **writes**: it first reads the `mcp-bridge-smoke` dashboard. If it exists, the smoke upserts it without `projectId` (title "MCP bridge smoke test"), so it stays in its project or stays projectless. If it does not exist, `SMOKE_DASHBOARD_PROJECT_ID` (the UUID of a project in the configured company) is required to create it in that project; without it the script stops with a clear message before writing anything, and a value that is not a UUID is rejected before the bridge starts. It then refreshes the `smoke` dataset, reads it back and checks the status and the project. There is no delete tool, so that one dashboard stays until someone removes it in the board UI; leave the variable unset for production checks that must not write.
 
 When wrapping a tunnel with a baked-in entrypoint script, mount both the service directory and the replacement entrypoint script read-only. Preserve the image, nonroot user, network, existing secret mounts, and the original profile. Back up the Compose file and original script before recreating only the MCP service. Verify tunnel health and run the live check again after activation.
 

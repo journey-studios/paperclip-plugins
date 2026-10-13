@@ -52,7 +52,10 @@ const FIELD_RULES = {
   slug: { check: (value) => typeof value === 'string' && SLUG_RE.test(value), hint: 'must match ^[a-z0-9-]{1,64}$' },
   datasetId: { check: (value) => typeof value === 'string' && DATASET_ID_RE.test(value), hint: 'must match ^[A-Za-z0-9_-]{1,64}$' },
   uuid: { check: (value) => typeof value === 'string' && UUID_RE.test(value), hint: 'must be a UUID' },
-  nullableUuid: { check: (value) => value === null || (typeof value === 'string' && UUID_RE.test(value)), hint: 'must be a UUID or null' },
+  projectId: {
+    check: (value) => typeof value === 'string' && UUID_RE.test(value),
+    hint: 'must be a project UUID (null is not accepted: every dashboard belongs to a project)',
+  },
   title: { check: boundedString(1, 200), hint: 'must be a string of 1-200 characters' },
   description: { check: boundedString(0, 10_000), hint: 'must be a string of at most 10000 characters' },
   source: { check: boundedString(0, 500), hint: 'must be a string of at most 500 characters' },
@@ -94,7 +97,7 @@ const DEFINITIONS = new Map([
     build: (input) => ({ method: 'GET', path: route(input.slug, 'status'), params: {} }),
   }],
   ['paperclipUpsertDashboard', {
-    fields: { slug: 'slug', title: 'title', projectId: 'nullableUuid', spec: 'spec' },
+    fields: { slug: 'slug', title: 'title', projectId: 'projectId', spec: 'spec' },
     required: ['slug', 'spec'],
     build: (input) => ({
       method: 'POST',
@@ -131,7 +134,7 @@ const DEFINITIONS = new Map([
 
 export const DASHBOARD_TOOLS = [
   tool('paperclipListDashboards',
-    'List the Project Dashboards of the configured Paperclip company: id, slug, title, projectId/projectName, revision, updatedAt/updatedBy and viewPath (a path under the Paperclip web origin). Optionally filter by project. Specs are not included; use paperclipGetDashboard for one.',
+    'List the Project Dashboards of the configured Paperclip company. Dashboards are grouped by project: each result carries id, slug, title, projectId and projectName, revision, updatedAt/updatedBy and viewPath (a path under the Paperclip web origin), and the projectId input limits the list to one project. Specs are not included; use paperclipGetDashboard for one.',
     { projectId: { ...uuid, description: 'Only dashboards linked to this Paperclip project.' } },
     [], READ_ONLY),
   tool('paperclipGetDashboard',
@@ -141,11 +144,11 @@ export const DASHBOARD_TOOLS = [
     'Live status of one Project Dashboard: health (fresh, stale or unknown) from dataset freshness, stale dataset count, per-dataset rows, updatedAt, ageMinutes and staleAfterHours, plus section and block counts. Use it to find datasets to refresh with paperclipUpdateDashboardDataset.',
     { slug: slugSchema }, ['slug'], READ_ONLY),
   tool('paperclipUpsertDashboard',
-    'Create or replace a Project Dashboard by slug (idempotent; every save bumps the revision). spec is declarative JSON: {version: 1, title, summary?, datasets: {<id>: {title, description, source, updatedAt (ISO), columns?, rows[]}}, sections: [{id, title?, blocks[]}]}. A block has a type: markdown, mermaid, callout, kpis, chart, table or statusList. Numbers come from datasets, never typed into text, and every dataset needs title, description, source and updatedAt. Dry-run with paperclipValidateDashboardSpec first; refresh numbers later with paperclipUpdateDashboardDataset. projectId: omit to keep the current project (new dashboards are company-level), null for company-level, or a project UUID. Dashboards cannot be deleted here.',
+    'Create or replace a Project Dashboard by slug (idempotent; every save bumps the revision). spec is declarative JSON: {version: 1, title, summary?, datasets: {<id>: {title, description, source, updatedAt (ISO), columns?, rows[]}}, sections: [{id, title?, blocks[]}]}. A block has a type: markdown, mermaid, callout, kpis, chart, table or statusList. Numbers come from datasets, never typed into text, and every dataset needs title, description, source and updatedAt. Dry-run with paperclipValidateDashboardSpec first; refresh numbers later with paperclipUpdateDashboardDataset. Every dashboard belongs to a Paperclip project (Paperclip groups dashboards by project): projectId is required when creating one; for an existing dashboard omit it to leave it where it is (in its project, or without one), or pass a project UUID to move it. Dashboards cannot be deleted here.',
     {
       slug: slugSchema,
       title: { type: 'string', minLength: 1, maxLength: 200, description: 'Optional display title; defaults to the spec title.' },
-      projectId: { type: ['string', 'null'], format: 'uuid', description: 'Project UUID, null for company-level; omit to keep the current project.' },
+      projectId: { ...uuid, description: 'Project UUID. Required when creating a dashboard; on an existing one omit it to leave it where it is, or pass a UUID to move it.' },
       spec: specSchema('Dashboard spec (declarative JSON).'),
     },
     ['slug', 'spec'], IDEMPOTENT_WRITE),

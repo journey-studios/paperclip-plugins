@@ -11,6 +11,16 @@ const env = { ...process.env };
 if (!env.PAPERCLIP_API_KEY && env.PAPERCLIP_API_KEY_FILE) {
   env.PAPERCLIP_API_KEY = readFileSync(env.PAPERCLIP_API_KEY_FILE, 'utf8').trim();
 }
+// A new dashboard needs a project; an existing one is updated in place. So SMOKE_DASHBOARD_PROJECT_ID is
+// optional in write mode and only matters when the smoke dashboard has to be created. If it is set, it must
+// be a UUID; fail before anything starts.
+class SmokeConfigError extends Error {}
+const dashboardProject = env.SMOKE_DASHBOARD_PROJECT_ID || undefined;
+if (env.SMOKE_DASHBOARD_WRITE === '1' && dashboardProject !== undefined
+  && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dashboardProject)) {
+  console.error(JSON.stringify({ ok: false, stage: 'configuration', error: 'SMOKE_DASHBOARD_PROJECT_ID must be the UUID of a project in the configured company.' }));
+  process.exit(1);
+}
 const child = spawn(process.execPath, [fileURLToPath(new URL('../src/bridge.mjs', import.meta.url))], {
   env, stdio: ['pipe', 'pipe', 'ignore'],
 });
@@ -170,17 +180,38 @@ try {
   assert.match(errorText(missing), /HTTP 404\): not_found/);
   assert.equal((await call('paperclipGetDashboard', { slug: 'Not A Slug' })).isError, true);
   assert.equal((await call('paperclipListDashboards', { companyId: randomUUID() })).isError, true);
-  dashboardChecks.push('dashboard-validate', 'dashboard-invalid-spec-422', 'dashboard-not-found-404', 'dashboard-input-bounds', 'dashboard-company-override');
+  // projectId: null is refused by the bridge itself, before any HTTP call. The spec is deliberately
+  // invalid, so even a regression could not store a dashboard.
+  const nullProject = await call('paperclipUpsertDashboard', { slug: 'mcp-bridge-smoke-null-project', projectId: null, spec: { version: 1 } });
+  assert.equal(nullProject.isError, true, 'projectId null must be rejected');
+  assert.match(errorText(nullProject), /^Invalid input: projectId must be a project UUID/);
+  dashboardChecks.push('dashboard-validate', 'dashboard-invalid-spec-422', 'dashboard-not-found-404', 'dashboard-input-bounds', 'dashboard-company-override', 'dashboard-null-project-rejected');
   if (env.SMOKE_DASHBOARD_WRITE === '1') {
-    // Opt-in WRITE mode: upserts one company-level dashboard and refreshes its dataset.
+    // Opt-in WRITE mode: upserts the smoke dashboard and refreshes its dataset. An existing dashboard is
+    // upserted without projectId, so it keeps its project (or stays projectless); a new one is created in
+    // SMOKE_DASHBOARD_PROJECT_ID.
     // There is no delete tool; remove the dashboard from the board UI if unwanted.
     stage = 'dashboards-write';
+    const probe = await call('paperclipGetDashboard', { slug: DASHBOARD_SMOKE_SLUG });
+    let existing = null;
+    if (probe.isError === true) {
+      assert.match(errorText(probe), /HTTP 404\): not_found/, 'Reading the smoke dashboard failed');
+    } else {
+      existing = dashboardData(probe, 'read smoke dashboard').dashboard;
+    }
+    if (!existing && !dashboardProject) {
+      throw new SmokeConfigError(`Dashboard "${DASHBOARD_SMOKE_SLUG}" does not exist yet, so SMOKE_DASHBOARD_PROJECT_ID (the UUID of a project in the configured company) is required to create it: every new dashboard belongs to a project. Nothing was written.`);
+    }
     const created = dashboardData(await call('paperclipUpsertDashboard', {
-      slug: DASHBOARD_SMOKE_SLUG, title: 'MCP bridge smoke test', projectId: null, spec: smokeSpec([{ name: 'check', value: 1 }]),
+      slug: DASHBOARD_SMOKE_SLUG, title: 'MCP bridge smoke test', ...(existing ? {} : { projectId: dashboardProject }), spec: smokeSpec([{ name: 'check', value: 1 }]),
     }), 'upsert dashboard');
-    assert.equal(typeof created.created, 'boolean');
+    assert.equal(created.created, !existing);
     assert.equal(created.dashboard.slug, DASHBOARD_SMOKE_SLUG);
-    assert.equal(created.dashboard.projectId, null, 'Smoke dashboard must be company-level');
+    assert.equal(
+      created.dashboard.projectId,
+      existing ? existing.projectId : dashboardProject,
+      existing ? 'An existing smoke dashboard must keep its project' : 'The new smoke dashboard must belong to the configured project',
+    );
     const value = Date.now();
     const refreshed = dashboardData(await call('paperclipUpdateDashboardDataset', {
       slug: DASHBOARD_SMOKE_SLUG, datasetId: 'smoke', rows: [{ name: 'check', value }], updatedAt: new Date().toISOString(),
@@ -192,7 +223,7 @@ try {
     assert.deepEqual(stored.spec.datasets.smoke.rows, [{ name: 'check', value }]);
     const after = dashboardData(await call('paperclipDashboardStatus', { slug: DASHBOARD_SMOKE_SLUG }), 'dashboard status after write').status;
     assert.equal(after.datasets.find((dataset) => dataset.id === 'smoke')?.stale, false);
-    dashboardChecks.push('dashboard-upsert', 'dashboard-dataset-update', 'dashboard-read-back');
+    dashboardChecks.push(existing ? 'dashboard-updated-in-place' : 'dashboard-created-in-project', 'dashboard-upsert', 'dashboard-dataset-update', 'dashboard-read-back');
   }
   console.log(JSON.stringify({
     ok: true, toolsTotal: catalog.tools.length, addedTools: added.length + dashboardTools.length,
@@ -204,9 +235,12 @@ try {
   }));
   }
   }
-} catch {
+} catch (error) {
   const mode = env.SMOKE_DASHBOARD_WRITE === '1' ? 'MCP smoke (dashboard write mode)' : 'Read-only MCP smoke';
-  console.error(JSON.stringify({ ok: false, stage, error: `${mode} failed; no credentials or response bodies logged.` }));
+  console.error(JSON.stringify({
+    ok: false, stage,
+    error: error instanceof SmokeConfigError ? error.message : `${mode} failed; no credentials or response bodies logged.`,
+  }));
   process.exitCode = 1;
 } finally {
   for (const item of pending.values()) clearTimeout(item.timer);
