@@ -11,6 +11,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import type { DashboardRecord, DashboardSettings, DashboardSummary, LiveStatus, RevisionSummary } from "../contracts.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { GroupedList, ProjectEmpty, ProjectLine } from "./grouping.js";
 import { createTranslator, type Translate } from "./i18n.js";
 import { formatterFor, type Formatter } from "./model.js";
 import { styles } from "./styles.js";
@@ -82,7 +83,7 @@ function LiveIndicator({ seconds, checkedAt, t }: { seconds: number; checkedAt: 
   );
 }
 
-interface Localized {
+export interface Localized {
   settings: DashboardSettings;
   t: Translate;
   fmt: Formatter;
@@ -203,11 +204,13 @@ function DashboardLoader({
   lookup,
   localized,
   onDeleted,
+  onMoved,
 }: {
   companyId: string;
   lookup: { id: string } | { slug: string };
   localized: Localized;
   onDeleted: () => void;
+  onMoved?: () => void;
 }) {
   const { settings, t, fmt } = localized;
   const navigation = useHostNavigation();
@@ -295,14 +298,27 @@ function DashboardLoader({
       updatedAt={record.updatedAt}
       updatedBy={record.updatedBy}
       headerExtra={
-        <div className="jpd-live">
+        <>
+          <ProjectLine
+            record={record}
+            companyId={companyId}
+            localized={localized}
+            projectLink={(path) => navigation.linkProps(path)}
+            onMoved={() => {
+              query.refresh();
+              status.refresh();
+              onMoved?.();
+            }}
+          />
+          <div className="jpd-live">
           <LiveIndicator seconds={settings.refreshIntervalSeconds} checkedAt={checkedAt} t={t} />
           {notice !== null ? (
             <span className="jpd-notice" role="status">
               {t("updatedNotice", { revision: notice })}
             </span>
           ) : null}
-        </div>
+          </div>
+        </>
       }
       footer={
         <>
@@ -325,37 +341,6 @@ function DashboardLoader({
         </>
       }
     />
-  );
-}
-
-function ListView({ items, localized, hrefFor }: { items: DashboardSummary[]; localized: Localized; hrefFor: (item: DashboardSummary) => ReturnType<ReturnType<typeof useHostNavigation>["linkProps"]> }) {
-  const { t, fmt } = localized;
-  const groups = useMemo(() => {
-    const map = new Map<string, DashboardSummary[]>();
-    for (const item of items) {
-      const key = item.projectName ?? "";
-      map.set(key, [...(map.get(key) ?? []), item]);
-    }
-    return [...map];
-  }, [items]);
-  return (
-    <div className="jpd-list">
-      {groups.map(([project, entries]) => (
-        <section className="jpd-group" key={project || "__company"}>
-          <h2 className="jpd-group-title">{project || t("companyLevel")}</h2>
-          <div className="jpd-items">
-            {entries.map((item) => (
-              <a key={item.id} className="jpd-item" {...hrefFor(item)}>
-                <span className="jpd-item-title">{item.title}</span>
-                <span className="jpd-item-sub">
-                  {t("metaLine", { revision: item.revision, when: fmt.relative(item.updatedAt), who: actorLabel(item.updatedBy, t) })}
-                </span>
-              </a>
-            ))}
-          </div>
-        </section>
-      ))}
-    </div>
   );
 }
 
@@ -398,10 +383,13 @@ export function DashboardsPage({ context }: PluginPageProps) {
     body = <State title={t("emptyTitle")} body={t("emptyBody")} />;
   } else {
     body = (
-      <ListView
+      <GroupedList
         items={list.data ?? []}
+        companyId={context.companyId}
         localized={localized}
-        hrefFor={(item) => navigation.linkProps(`/dashboards?d=${encodeURIComponent(item.slug)}`)}
+        dashboardLink={(item) => navigation.linkProps(`/dashboards?d=${encodeURIComponent(item.slug)}`)}
+        projectLink={(path) => navigation.linkProps(path)}
+        onMoved={list.refresh}
       />
     );
   }
@@ -434,7 +422,7 @@ export function ProjectDashboardTab({ context }: PluginDetailTabProps) {
   } else if (list.loading && !list.data) {
     body = <State title={t("loading")} />;
   } else if (!current) {
-    body = <State title={t("emptyTitle")} body={t("emptyProject")} />;
+    body = <ProjectEmpty projectId={context.entityId} localized={localized} />;
   } else {
     body = (
       <>
@@ -459,6 +447,7 @@ export function ProjectDashboardTab({ context }: PluginDetailTabProps) {
             setSelected(null);
             list.refresh();
           }}
+          onMoved={list.refresh}
         />
       </>
     );

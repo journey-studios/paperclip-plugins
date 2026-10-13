@@ -167,6 +167,10 @@ export interface DashboardSummary {
   title: string;
   projectId: string | null;
   projectName: string | null;
+  /** The host's project route segment, for links. */
+  projectUrlKey: string | null;
+  /** True when the dashboard has no project (its project was deleted). */
+  orphan: boolean;
   revision: number;
   updatedAt: string;
   updatedBy: Actor;
@@ -224,14 +228,20 @@ export interface Freshness {
 }
 
 /** Summary plus the viewPath used by the REST API. */
-export interface ApiSummary extends DashboardSummary {
+export interface ApiSummary extends Omit<DashboardSummary, "projectUrlKey" | "orphan"> {
   viewPath: string;
 }
 
-export interface DashboardStatus extends ApiSummary, Freshness {}
+export interface DashboardStatus extends ApiSummary, Freshness {
+  orphan: boolean;
+}
 
 /** Cheap poll result: no spec, only what the viewer needs to decide on a refetch. */
 export interface LiveStatus {
+  projectId: string | null;
+  projectName: string | null;
+  projectUrlKey: string | null;
+  orphan: boolean;
   revision: number;
   updatedAt: string;
   health: Health;

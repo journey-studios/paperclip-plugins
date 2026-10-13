@@ -9,6 +9,7 @@ export const OTHER_COMPANY = "22222222-2222-4222-8222-222222222222";
 export const PROJECT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const OTHER_PROJECT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const SECOND_PROJECT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+export const ARCHIVED_PROJECT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 export const EXPLODING_PROJECT = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 export const AGENT = "44444444-4444-4444-8444-444444444444";
 
@@ -48,7 +49,7 @@ export async function createHarness(): Promise<Harness> {
   await db.exec(migration);
   await db.exec(
     `INSERT INTO public.companies VALUES ('${COMPANY}'), ('${OTHER_COMPANY}');
-     INSERT INTO public.projects VALUES ('${PROJECT}', '${COMPANY}', 'Acme Web App'), ('${SECOND_PROJECT}', '${COMPANY}', 'Internal Tools'), ('${OTHER_PROJECT}', '${OTHER_COMPANY}', 'Other Co Project');`,
+     INSERT INTO public.projects VALUES ('${PROJECT}', '${COMPANY}', 'Acme Web App'), ('${SECOND_PROJECT}', '${COMPANY}', 'Internal Tools'), ('${OTHER_PROJECT}', '${OTHER_COMPANY}', 'Other Co Project'), ('${ARCHIVED_PROJECT}', '${COMPANY}', 'Old Project');`,
   );
   const dataHandlers = new Map<string, Handler>();
   const actionHandlers = new Map<string, Handler>();
@@ -61,6 +62,13 @@ export async function createHarness(): Promise<Harness> {
     [PROJECT, COMPANY],
     [SECOND_PROJECT, COMPANY],
     [OTHER_PROJECT, OTHER_COMPANY],
+    [ARCHIVED_PROJECT, COMPANY],
+  ]);
+  const projectNames = new Map([
+    [PROJECT, "Acme Web App"],
+    [SECOND_PROJECT, "Internal Tools"],
+    [OTHER_PROJECT, "Other Co Project"],
+    [ARCHIVED_PROJECT, "Old Project"],
   ]);
   // The worker only touches this subset of the host context; the cast is confined to the test double.
   const ctx = {
@@ -75,7 +83,11 @@ export async function createHarness(): Promise<Harness> {
         if (id === EXPLODING_PROJECT) {
           throw new Error("boom: select * from secrets");
         }
-        return projects.get(id) === companyId ? { id } : null;
+        if (projects.get(id) !== companyId) {
+          return null;
+        }
+        const name = projectNames.get(id) ?? "";
+        return { id, name, urlKey: name.toLowerCase().replaceAll(" ", "-"), archivedAt: id === ARCHIVED_PROJECT ? "2026-01-01T00:00:00Z" : null };
       },
     },
     companies: {

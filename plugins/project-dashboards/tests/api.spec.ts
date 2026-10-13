@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { DashboardSpec } from "../src/contracts.js";
 import manifest from "../src/manifest.js";
 import { API_ROUTES } from "../src/routes.js";
-import { COMPANY, EXPLODING_PROJECT, OTHER_COMPANY, OTHER_PROJECT, PROJECT, createHarness, type Harness } from "./harness.js";
+import { ARCHIVED_PROJECT, COMPANY, EXPLODING_PROJECT, OTHER_COMPANY, OTHER_PROJECT, PROJECT, SECOND_PROJECT, createHarness, type ApiCall, type Harness } from "./harness.js";
 import { DATABASE_NAMESPACE } from "../src/manifest.js";
 
 function spec(title = "Demo", value = 1, extra: object = {}): DashboardSpec {
@@ -26,12 +26,20 @@ afterAll(async () => {
 });
 
 type Json = Record<string, any>;
+const rowsOf = async () => (await h.db.query(`SELECT 1 FROM ${DATABASE_NAMESPACE}.dashboards`)).rows;
 const body = (response: { body?: unknown }): Json => (response.body ?? {}) as Json;
-const post = (path: string, payload: unknown, extra: object = {}) => h.api("dashboard-upsert", { method: "POST", body: payload, ...extra });
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+// Every dashboard needs a project: default to one of the company's, unless the test sets projectId itself.
+const post = (_path: string, payload: unknown, extra: ApiCall = {}) => {
+  const withProject = isObject(payload) && !("projectId" in payload)
+    ? { ...payload, projectId: extra.companyId === OTHER_COMPANY ? OTHER_PROJECT : PROJECT }
+    : payload;
+  return h.api("dashboard-upsert", { method: "POST", body: withProject, ...extra });
+};
 
 describe("manifest declarations", () => {
   it("declares the six board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.2.1");
+    expect(manifest.version).toBe("0.3.0");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
@@ -101,20 +109,55 @@ describe("REST API", () => {
     expect(status).not.toHaveProperty("spec");
   });
 
-  it("applies projectId semantics: omitted, null, explicit, foreign, malformed", async () => {
-    await post("", { slug: "p1", spec: spec() });
-    expect(body(await h.api("dashboard-get", { params: { slug: "p1" } })).dashboard.projectId).toBeNull();
-    await post("", { slug: "p1", spec: spec("x"), projectId: PROJECT });
-    await post("", { slug: "p1", spec: spec("y") });
-    expect(body(await h.api("dashboard-get", { params: { slug: "p1" } })).dashboard.projectId).toBe(PROJECT);
-    await post("", { slug: "p1", spec: spec("z"), projectId: null });
-    expect(body(await h.api("dashboard-get", { params: { slug: "p1" } })).dashboard.projectId).toBeNull();
+  it("requires a project for new dashboards and rejects null", async () => {
+    const missing = await post("", { slug: "p1", spec: spec(), projectId: undefined });
+    expect(missing.status).toBe(400);
+    expect(body(missing)).toEqual({ companyId: COMPANY, error: "project_required" });
+    const nulled = await post("", { slug: "p1", spec: spec(), projectId: null });
+    expect(nulled.status).toBe(400);
+    expect(body(nulled).companyId).toBe(COMPANY);
+    expect(typeof body(nulled).error).toBe("string");
+    expect((await post("", { slug: "p1", spec: spec(), projectId: "nope" })).status).toBe(400);
+    expect((await post("", { slug: "p1", spec: spec(), projectId: 5 })).status).toBe(400);
+    expect(await rowsOf()).toHaveLength(0);
+  });
 
+  it("keeps the project when omitted on an existing dashboard and moves it with a uuid", async () => {
+    await post("", { slug: "p1", spec: spec(), projectId: PROJECT });
+    await post("", { slug: "p1", spec: spec("y"), projectId: undefined });
+    expect(body(await h.api("dashboard-get", { params: { slug: "p1" } })).dashboard.projectId).toBe(PROJECT);
+    await post("", { slug: "p1", spec: spec("z"), projectId: SECOND_PROJECT });
+    expect(body(await h.api("dashboard-get", { params: { slug: "p1" } })).dashboard).toMatchObject({ projectId: SECOND_PROJECT, projectName: "Internal Tools" });
+  });
+
+  it("lets an existing projectless dashboard be updated without a project, or moved with one", async () => {
+    await post("", { slug: "orphan", spec: spec(), projectId: PROJECT });
+    await h.db.exec(`DELETE FROM public.projects WHERE id = '${PROJECT}'`);
+    const stayed = await post("", { slug: "orphan", spec: spec("again"), projectId: undefined });
+    expect(stayed.status).toBe(200);
+    expect(body(stayed)).toMatchObject({ created: false, dashboard: { revision: 2, projectId: null, projectName: null } });
+    expect(body(await h.api("dashboard-status", { params: { slug: "orphan" } })).status).toMatchObject({ orphan: true, revision: 2 });
+    const dataset = await h.api("dataset-update", { method: "POST", params: { slug: "orphan", datasetId: "d" }, body: { rows: [{ name: "a", n: 3 }] } });
+    expect(dataset.status).toBe(200);
+    expect(body(dataset).dashboard.projectId).toBeNull();
+    const moved = await post("", { slug: "orphan", spec: spec("again"), projectId: SECOND_PROJECT });
+    expect(body(moved).dashboard).toMatchObject({ projectId: SECOND_PROJECT, revision: 4 });
+    expect(body(await h.api("dashboard-status", { params: { slug: "orphan" } })).status.orphan).toBe(false);
+  });
+
+  it("rejects projects of another company, unknown and archived projects with contract codes", async () => {
     const foreign = await post("", { slug: "p2", spec: spec(), projectId: OTHER_PROJECT });
     expect(foreign.status).toBe(400);
-    expect(body(foreign)).toEqual({ companyId: COMPANY, error: "Project not found in this company" });
-    expect((await post("", { slug: "p2", spec: spec(), projectId: "nope" })).status).toBe(400);
-    expect((await post("", { slug: "p2", spec: spec(), projectId: 5 })).status).toBe(400);
+    expect(body(foreign)).toEqual({ companyId: COMPANY, error: "project_not_found" });
+    const unknown = await post("", { slug: "p2", spec: spec(), projectId: "99999999-9999-4999-8999-999999999999" });
+    expect(body(unknown)).toEqual({ companyId: COMPANY, error: "project_not_found" });
+    const archived = await post("", { slug: "p2", spec: spec(), projectId: ARCHIVED_PROJECT });
+    expect(archived.status).toBe(400);
+    expect(body(archived)).toEqual({ companyId: COMPANY, error: "project_archived" });
+    expect(await rowsOf()).toHaveLength(0);
+    // Moving into an archived project is rejected too; staying in a project that later gets archived is not.
+    await post("", { slug: "p3", spec: spec(), projectId: PROJECT });
+    expect(body(await post("", { slug: "p3", spec: spec(), projectId: ARCHIVED_PROJECT })).error).toBe("project_archived");
   });
 
   it("maps errors to the contract and always includes companyId", async () => {

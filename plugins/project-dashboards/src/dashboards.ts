@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, Project } from "@paperclipai/plugin-sdk";
 import type {
   Actor,
   DashboardRecord,
@@ -10,6 +10,7 @@ import type {
   RevisionSummary,
 } from "./contracts.js";
 import { getOwn } from "./keys.js";
+import { projectUrlKeys } from "./project-lookup.js";
 import { normalizeSettings } from "./settings.js";
 import { validateSpec } from "./spec.js";
 
@@ -18,6 +19,16 @@ const SLUG = /^[a-z0-9-]{1,64}$/;
 
 /** A user-correctable failure whose message is safe to show to agents and board users. */
 export class DashboardError extends Error {}
+
+/** Every dashboard belongs to a project; these codes are part of the REST contract. */
+export class ProjectError extends DashboardError {
+  constructor(
+    readonly code: "project_required" | "project_not_found" | "project_archived",
+    detail: string,
+  ) {
+    super(`${code}: ${detail}`);
+  }
+}
 
 /** The dashboard, dataset or revision does not exist in this company. */
 export class NotFoundError extends DashboardError {}
@@ -130,13 +141,15 @@ async function agentNames(ctx: PluginContext, companyId: string, rows: Dashboard
   return names;
 }
 
-function summarize(row: DashboardRow, names: Map<string, string>): DashboardSummary {
+function summarize(row: DashboardRow, names: Map<string, string>, urlKeys: Map<string, string | null>): DashboardSummary {
   return {
     id: row.id,
     slug: row.slug,
     title: row.title,
     projectId: row.project_id,
     projectName: row.project_name ?? null,
+    projectUrlKey: row.project_id ? (urlKeys.get(row.project_id) ?? null) : null,
+    orphan: row.project_id === null,
     revision: Number(row.revision),
     updatedAt: iso(row.updated_at),
     updatedBy: {
@@ -175,8 +188,11 @@ export async function listDashboards(
     `SELECT ${COLUMNS} FROM ${FROM(ctx)} WHERE d.company_id = $1${filter} ORDER BY lower(p.name) NULLS FIRST, lower(d.title), d.id`,
     args,
   );
-  const names = await agentNames(ctx, companyId, rows);
-  return rows.map((row) => summarize(row, names));
+  const [names, urlKeys] = await Promise.all([
+    agentNames(ctx, companyId, rows),
+    projectUrlKeys(ctx, companyId, rows.map((row) => row.project_id)),
+  ]);
+  return rows.map((row) => summarize(row, names, urlKeys));
 }
 
 export async function getDashboard(
@@ -197,10 +213,13 @@ export async function getDashboard(
   if (!row) {
     return null;
   }
-  const names = await agentNames(ctx, companyId, [row]);
+  const [names, urlKeys] = await Promise.all([
+    agentNames(ctx, companyId, [row]),
+    projectUrlKeys(ctx, companyId, [row.project_id]),
+  ]);
   const { spec, errors } = parseStoredSpec(row.spec);
   return {
-    ...summarize(row, names),
+    ...summarize(row, names, urlKeys),
     companyId,
     createdAt: iso(row.created_at),
     spec,
@@ -262,18 +281,27 @@ export function validateDashboardSpec(input: unknown, settings: DashboardSetting
   return parseSpecOrThrow(input, settings);
 }
 
-async function requireProject(ctx: PluginContext, companyId: string, projectId: string): Promise<void> {
-  if (!(await ctx.projects.get(projectId, companyId))) {
-    throw new DashboardError("Project not found in this company");
+/**
+ * A project a dashboard may be assigned to: it must exist in the company and
+ * must not be archived.
+ */
+export async function requireAssignableProject(ctx: PluginContext, companyId: string, projectId: string): Promise<Project> {
+  const project = await ctx.projects.get(projectId, companyId);
+  if (!project) {
+    throw new ProjectError("project_not_found", `project ${projectId} does not exist in this company`);
   }
+  if (project.archivedAt) {
+    throw new ProjectError("project_archived", `project "${project.name}" is archived; choose an active project`);
+  }
+  return project;
 }
 
 export interface UpsertInput {
   companyId: string;
   slug: string;
   title?: string;
-  /** undefined keeps the current project (or none for a new dashboard); null is company-level. */
-  projectId?: string | null;
+  /** Required for a new dashboard; undefined keeps an existing dashboard's project (or lack of one). */
+  projectId?: string;
   spec: unknown;
   actor: Actor;
   settings: DashboardSettings;
@@ -292,14 +320,19 @@ export async function upsertDashboard(
   if (title.length < 1 || title.length > 200) {
     throw new DashboardError("title must contain 1 to 200 characters");
   }
-  if (typeof input.projectId === "string") {
-    await requireProject(ctx, companyId, uuid(input.projectId, "projectId"));
-  }
   const existing = await ctx.db.query<{ id: string; revision: number; project_id: string | null }>(
     `SELECT id, revision, project_id FROM ${table(ctx, "dashboards")} WHERE company_id = $1 AND slug = $2`,
     [companyId, slug],
   );
   const current = existing[0];
+  const requested = input.projectId === undefined ? undefined : uuid(input.projectId, "projectId");
+  if (!current && requested === undefined) {
+    throw new ProjectError("project_required", "a new dashboard needs projectId (a project UUID of this company)");
+  }
+  // Keeping the current project never re-checks it, so archiving a project does not block updates.
+  if (requested !== undefined && requested !== current?.project_id) {
+    await requireAssignableProject(ctx, companyId, requested);
+  }
   let id: string;
   let revision: number;
   // The dashboard row, its revision row and the prune are ONE statement (a
@@ -308,7 +341,7 @@ export async function upsertDashboard(
   if (current) {
     id = current.id;
     revision = Number(current.revision) + 1;
-    const projectId = input.projectId === undefined ? current.project_id : input.projectId;
+    const projectId = requested ?? current.project_id;
     await ctx.db.execute(
       `WITH upd AS (
          UPDATE ${table(ctx, "dashboards")}
@@ -350,7 +383,7 @@ export async function upsertDashboard(
        )
        INSERT INTO ${table(ctx, "dashboard_revisions")} (dashboard_id, revision, spec, updated_by_kind, updated_by_id)
        SELECT id, revision, spec, updated_by_kind, updated_by_id FROM ins`,
-      [id, companyId, input.projectId ?? null, slug, title, JSON.stringify(spec), actor.kind, actor.id],
+      [id, companyId, requested ?? null, slug, title, JSON.stringify(spec), actor.kind, actor.id],
     );
   }
   const record = await getDashboard(ctx, { companyId, id });
@@ -471,4 +504,42 @@ export async function restoreRevision(
     activityMessage: `Restored dashboard "${record.title}" from revision ${revision}`,
   });
   return restored;
+}
+
+/**
+ * Move a dashboard (orphans included) to another project of the company. The
+ * spec is unchanged but the move is written as a new revision so it shows in
+ * the history.
+ */
+export async function setDashboardProject(
+  ctx: PluginContext,
+  params: { companyId: string; id: unknown; projectId: unknown; actor: Actor; settings: DashboardSettings },
+): Promise<DashboardRecord> {
+  const id = uuid(params.id, "id");
+  if (typeof params.projectId !== "string") {
+    throw new ProjectError("project_required", "projectId must be a project UUID of this company");
+  }
+  const projectId = uuid(params.projectId, "projectId");
+  const record = await getDashboard(ctx, { companyId: params.companyId, id });
+  if (!record) {
+    throw new NotFoundError("Dashboard not found");
+  }
+  if (record.projectId === projectId) {
+    return record;
+  }
+  if (!record.spec) {
+    throw new DashboardError(`Dashboard "${record.slug}" has a stored spec that no longer validates; resend it with upsert_dashboard`);
+  }
+  const project = await requireAssignableProject(ctx, params.companyId, projectId);
+  const { record: moved } = await upsertDashboard(ctx, {
+    companyId: params.companyId,
+    slug: record.slug,
+    title: record.title,
+    projectId,
+    spec: record.spec,
+    actor: params.actor,
+    settings: params.settings,
+    activityMessage: `Moved dashboard "${record.title}" to project "${project.name}"`,
+  });
+  return moved;
 }

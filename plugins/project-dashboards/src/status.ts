@@ -50,13 +50,17 @@ export function computeFreshness(spec: DashboardSpec | null, settings: Pick<Dash
 }
 
 export function computeStatus(record: DashboardRecord, settings: Pick<DashboardSettings, "defaultStaleAfterHours">, now: Date, viewPath: string): DashboardStatus {
-  const { spec: _spec, specErrors: _errors, companyId: _companyId, createdAt: _createdAt, ...summary } = record;
+  const { spec: _spec, specErrors: _errors, companyId: _companyId, createdAt: _createdAt, projectUrlKey: _urlKey, ...summary } = record;
   return { ...summary, viewPath, ...computeFreshness(record.spec, settings, now) };
 }
 
 export function computeLiveStatus(record: DashboardRecord, settings: Pick<DashboardSettings, "defaultStaleAfterHours">, now: Date): LiveStatus {
   const freshness = computeFreshness(record.spec, settings, now);
   return {
+    projectId: record.projectId,
+    projectName: record.projectName,
+    projectUrlKey: record.projectUrlKey,
+    orphan: record.orphan,
     revision: record.revision,
     updatedAt: record.updatedAt,
     health: freshness.health,

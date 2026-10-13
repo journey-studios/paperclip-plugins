@@ -60,10 +60,10 @@ const spec = (stale = false): DashboardSpec => ({
   sections: [{ id: "s", blocks: [{ type: "markdown", content: "hello" }] }],
 });
 const record = (revision: number, updatedAt: string, withStale = false): DashboardRecord => ({
-  id: "d1", companyId: COMPANY, slug: "acme", title: "Live board", projectId: null, projectName: null, revision, updatedAt,
+  id: "d1", companyId: COMPANY, slug: "acme", title: "Live board", projectId: "p1", projectName: "Acme Web App", projectUrlKey: "acme-web-app", orphan: false, revision, updatedAt,
   createdAt: updatedAt, updatedBy: { kind: "agent", id: "a", name: "Tracker" }, spec: spec(withStale), specErrors: [],
 });
-const live = (revision: number, updatedAt: string): LiveStatus => ({ revision, updatedAt, health: "unknown", staleCount: 0, datasetCount: 1 });
+const live = (revision: number, updatedAt: string): LiveStatus => ({ projectId: "p1", projectName: "Acme Web App", projectUrlKey: "acme-web-app", orphan: false, revision, updatedAt, health: "unknown", staleCount: 0, datasetCount: 1 });
 const T0 = "2026-10-11T10:00:00.000Z";
 const T1 = "2026-10-11T10:05:00.000Z";
 const context = { companyId: COMPANY, companyPrefix: "ACME", projectId: null, entityId: null, entityType: null, userId: null };

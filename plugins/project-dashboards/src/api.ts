@@ -4,6 +4,7 @@ import {
   DashboardError,
   InvalidSpecError,
   NotFoundError,
+  ProjectError,
   SpecTooLargeError,
   getDashboard,
   getSettings,
@@ -132,12 +133,10 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
         if (body.spec === undefined) {
           throw new BadRequest("spec is required");
         }
-        let projectId: string | null | undefined;
-        if (body.projectId === null) {
-          projectId = null;
-        } else if (body.projectId !== undefined) {
+        let projectId: string | undefined;
+        if (body.projectId !== undefined) {
           if (typeof body.projectId !== "string") {
-            throw new BadRequest("projectId must be a UUID string or null");
+            throw new BadRequest("projectId must be a project UUID string (null is not accepted)");
           }
           projectId = uuid(body.projectId, "projectId");
         }
@@ -146,7 +145,7 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
             companyId,
             slug,
             title: optionalString(body, "title"),
-            // Omitted: new dashboards are company-level and existing ones keep their project.
+            // Required for a new dashboard; omitted keeps an existing dashboard's project (or lack of one).
             projectId,
             spec: body.spec,
             actor: actorOf(input),
@@ -211,6 +210,9 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
       }
       if (error instanceof NotFoundError) {
         return reply(companyId, 404, { error: "not_found" });
+      }
+      if (error instanceof ProjectError) {
+        return reply(companyId, 400, { error: error.code });
       }
       if (error instanceof DashboardError) {
         return reply(companyId, 400, { error: error.message });

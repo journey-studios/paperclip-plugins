@@ -1,7 +1,7 @@
 import type { PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 
 export const AUTHORING_GUIDE = [
-  "Publish a project-tracking dashboard as a declarative JSON spec (never HTML or scripts).",
+  "Publish a project-tracking dashboard as a declarative JSON spec (never HTML or scripts). Every dashboard belongs to a project: a new dashboard uses projectId, else the current run's project; an existing dashboard keeps its project unless projectId moves it; archived projects are rejected (project_archived).",
   'Shape: {version:1, title, summary?:markdown, meta?:markdown, datasets:{id:{title, description?, source?, updatedAt?:ISO, staleAfterHours?:number, columns?:[...], rows:[{field:string|number|boolean|null}]}}, statusTones?:{value:"ok|warn|bad|muted|info"}, sections:[{id, title?, note?, columns?:1-4, blocks:[...]}]}.',
   "Blocks (all accept id?, title?, note?, span?:1-4): {type:'markdown',content} | {type:'mermaid',code} | {type:'callout',tone,content} | {type:'kpis',items:[{label,value,of?,caption?,format?,tone?}]} | {type:'chart',chart:'bar|horizontalBar|stackedBar|line|area|donut|progress',dataset,x,y:field|[fields],seriesLabels?,seriesColors?:{field:tone|#rrggbb},format?,tooltip?:[fields],goal?} | {type:'table',dataset,rowKey,columns:[{field,label,format?,wide?}],filters?:{chips?,selects?:[],search?},sort?:{field,dir},emptyText?} | {type:'statusList',dataset,labelField,valueField,statusField,detailField?,format?}.",
   "A value is a number, a string, or {dataset,field,where?:{field:value},row?:n,agg?:'sum|count|avg|min|max'} computed from a dataset, so numbers live in one place.",
@@ -12,8 +12,10 @@ export const AUTHORING_GUIDE = [
 ].join("\n");
 
 const projectIdSchema = {
-  type: ["string", "null"],
-  description: "Project UUID. Omit to use the current run's project (a new dashboard) or keep the current one (an existing dashboard). null makes it company-level.",
+  type: "string",
+  pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+  description:
+    "Project UUID of this company (not archived). Every dashboard belongs to a project. Optional: a new dashboard defaults to the current run's project (error project_required if the run has none); an existing dashboard keeps its project (or lack of one) when omitted, and a UUID moves it.",
 };
 
 export const TOOL_DECLARATIONS: PluginToolDeclaration[] = [

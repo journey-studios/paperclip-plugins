@@ -11,6 +11,7 @@ import { createLinkResolver } from "./links.js";
 import { computeLiveStatus, computeStatus } from "./status.js";
 import {
   DashboardError,
+  ProjectError,
   companySerialQueue,
   deleteDashboard,
   getDashboard,
@@ -18,6 +19,7 @@ import {
   listDashboards,
   listRevisions,
   restoreRevision,
+  setDashboardProject,
   slugOf,
   updateDataset,
   upsertDashboard,
@@ -76,25 +78,33 @@ function registerTools(
       serial(runCtx.companyId, async () => {
         const params = asParams(raw);
         const settings = await getSettings(ctx, runCtx.companyId);
-        let projectId: string | null | undefined;
         if (params.projectId === null) {
-          projectId = null;
-        } else if (typeof params.projectId === "string") {
-          projectId = params.projectId;
-        } else if (params.projectId !== undefined) {
-          throw new DashboardError("projectId must be a UUID string or null");
-        } else {
-          // Omitted: new dashboards follow the current run's project; existing ones keep theirs.
-          const slug = slugOf(params.slug);
+          throw new ProjectError("project_required", "projectId cannot be null; every dashboard belongs to a project");
+        }
+        if (params.projectId !== undefined && typeof params.projectId !== "string") {
+          throw new DashboardError("projectId must be a project UUID string");
+        }
+        const slug = slugOf(params.slug);
+        let projectId = params.projectId;
+        if (projectId === undefined) {
+          // Omitted: an existing dashboard keeps its project (or lack of one); a new one follows the run's project.
           const existing = await getDashboard(ctx, { companyId: runCtx.companyId, slug });
-          projectId = existing ? undefined : runCtx.projectId || null;
+          if (!existing) {
+            if (!runCtx.projectId) {
+              throw new ProjectError(
+                "project_required",
+                "projectId is required to create a dashboard because this run has no project; pass projectId (a project UUID of this company)",
+              );
+            }
+            projectId = runCtx.projectId;
+          }
         }
         if (params.title !== undefined && typeof params.title !== "string") {
           throw new DashboardError("title must be a string");
         }
         const { record, created } = await upsertDashboard(ctx, {
           companyId: runCtx.companyId,
-          slug: slugOf(params.slug),
+          slug,
           title: params.title,
           projectId,
           spec: params.spec,
@@ -233,6 +243,19 @@ const plugin = definePlugin({
           companyId,
           id: params.id,
           revision: params.revision,
+          actor: actionActor(context),
+          settings: await getSettings(ctx, companyId),
+        }),
+      );
+    });
+
+    ctx.actions.register("dashboard.setProject", (params, context) => {
+      const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+      return serial(companyId, async () =>
+        setDashboardProject(ctx, {
+          companyId,
+          id: params.id,
+          projectId: params.projectId,
           actor: actionActor(context),
           settings: await getSettings(ctx, companyId),
         }),

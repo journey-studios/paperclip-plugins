@@ -24,6 +24,7 @@ const host = vi.hoisted(() => ({
 
 vi.mock("@paperclipai/plugin-sdk/ui", () => ({
   MarkdownBlock: ({ content }: { content: string }) => (globalThis as { __md?: (c: string) => unknown }).__md?.(content),
+  ProjectPicker: ({ placeholder }: { placeholder: string }) => (globalThis as { __picker?: (p: string) => unknown }).__picker?.(placeholder),
   useHostLocation: () => ({ pathname: "/ACME/dashboards", search: host.search, hash: "" }),
   useHostNavigation: () => ({
     resolveHref: (to: string) => `/ACME${to}`,
@@ -62,6 +63,7 @@ beforeEach(() => {
   Object.assign(globalThis, {
     __md: (content: string) => createElement("div", { "data-md": "" }, content),
   });
+  Object.assign(globalThis, { __picker: (placeholder: string) => createElement("button", { type: "button", "data-picker": "" }, placeholder) });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div");
   document.body.append(container);
@@ -322,6 +324,8 @@ describe("slots", () => {
     title: spec.title,
     projectId,
     projectName: projectId ? "Acme Web App" : null,
+    projectUrlKey: projectId ? "acme-web-app" : null,
+    orphan: projectId === null,
     revision: 2,
     updatedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
@@ -335,6 +339,8 @@ describe("slots", () => {
     title,
     projectId: projectName ? "p1" : null,
     projectName,
+    projectUrlKey: projectName ? projectName.toLowerCase().replaceAll(" ", "-") : null,
+    orphan: projectName === null,
     revision: 1,
     updatedAt: new Date().toISOString(),
     updatedBy: { kind: "system", id: null },
@@ -356,7 +362,7 @@ describe("slots", () => {
 
     host.data.set("dashboards.list", [summary("Alpha", "Acme Web App"), summary("Beta", null)]);
     act(() => root.render(createElement(DashboardsPage, props)));
-    expect([...container.querySelectorAll(".jpd-group-title")].map((n) => n.textContent)).toEqual(["Acme Web App", "Company-level"]);
+    expect([...container.querySelectorAll(".jpd-group-title")].map((n) => n.querySelector("a")?.textContent ?? n.textContent)).toEqual(["Acme Web App", "No project"]);
     expect(container.querySelector("a.jpd-item")?.getAttribute("href")).toBe("/ACME/dashboards?d=alpha");
   });
 
@@ -373,6 +379,8 @@ describe("slots", () => {
     const props: PluginDetailTabProps = { context };
     act(() => root.render(createElement(ProjectDashboardTab, props)));
     expect(text()).toContain("This project has no dashboard yet");
+    expect(text()).toContain("paperclipUpsertDashboard");
+    expect(container.querySelector("code.jpd-code")?.textContent).toBe("p1");
     expect(host.calls.find((call) => call.key === "dashboards.list")?.params).toEqual({ companyId: COMPANY, projectId: "p1" });
 
     host.data.set("dashboards.list", [summary("Alpha", "Acme Web App"), summary("Beta", "Acme Web App")]);

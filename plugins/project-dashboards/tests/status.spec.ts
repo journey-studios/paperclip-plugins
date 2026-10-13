@@ -78,14 +78,15 @@ describe("computeFreshness", () => {
   it("builds the REST status and the cheap live status from a record", () => {
     const spec = specWith({ a: { updatedAt: hoursAgo(10), staleAfterHours: 5 } });
     const record: DashboardRecord = {
-      id: "i", companyId: "c", slug: "s", title: "T", projectId: null, projectName: null, revision: 3,
+      id: "i", companyId: "c", slug: "s", title: "T", projectId: null, projectName: null, projectUrlKey: null, orphan: true, revision: 3,
       updatedAt: hoursAgo(1), createdAt: hoursAgo(9), updatedBy: { kind: "agent", id: "x", name: "N" }, spec, specErrors: [],
     };
     const status = computeStatus(record, DEFAULT_SETTINGS, NOW, "/ACME/dashboards?d=s");
-    expect(status).toMatchObject({ id: "i", slug: "s", revision: 3, viewPath: "/ACME/dashboards?d=s", health: "stale", staleCount: 1 });
+    expect(status).toMatchObject({ id: "i", slug: "s", revision: 3, viewPath: "/ACME/dashboards?d=s", health: "stale", staleCount: 1, orphan: true });
     expect(status).not.toHaveProperty("spec");
+    expect(status).not.toHaveProperty("projectUrlKey");
     expect(status).not.toHaveProperty("companyId");
-    expect(computeLiveStatus(record, DEFAULT_SETTINGS, NOW)).toEqual({ revision: 3, updatedAt: record.updatedAt, health: "stale", staleCount: 1, datasetCount: 1 });
+    expect(computeLiveStatus(record, DEFAULT_SETTINGS, NOW)).toEqual({ projectId: null, projectName: null, projectUrlKey: null, orphan: true, revision: 3, updatedAt: record.updatedAt, health: "stale", staleCount: 1, datasetCount: 1 });
   });
 
   it("validates staleAfterHours in specs", () => {

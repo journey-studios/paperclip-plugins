@@ -1,5 +1,6 @@
 import type {
   Aggregation,
+  DashboardSummary,
   Dataset,
   DashboardSettings,
   DashboardSpec,
@@ -298,6 +299,50 @@ export function safeHref(value: Primitive | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/* ---------------------------------------------------------------- grouping */
+
+export interface ProjectGroup {
+  projectId: string;
+  name: string;
+  urlKey: string | null;
+  items: DashboardSummary[];
+}
+
+export interface DashboardGroups {
+  projects: ProjectGroup[];
+  orphans: DashboardSummary[];
+}
+
+/** Project groups ordered by project name, titles sorted within each; projectless dashboards apart. */
+export function groupDashboards(items: readonly DashboardSummary[], locale: string): DashboardGroups {
+  const byProject = new Map<string, ProjectGroup>();
+  const orphans: DashboardSummary[] = [];
+  for (const item of items) {
+    if (item.projectId === null) {
+      orphans.push(item);
+      continue;
+    }
+    const group = byProject.get(item.projectId);
+    if (group) {
+      group.items.push(item);
+    } else {
+      byProject.set(item.projectId, {
+        projectId: item.projectId,
+        name: item.projectName ?? item.projectId,
+        urlKey: item.projectUrlKey,
+        items: [item],
+      });
+    }
+  }
+  const collator = new Intl.Collator(locale, { numeric: true, sensitivity: "base" });
+  const byTitle = (a: DashboardSummary, b: DashboardSummary) => collator.compare(a.title, b.title) || a.slug.localeCompare(b.slug);
+  const projects = [...byProject.values()].sort((a, b) => collator.compare(a.name, b.name) || a.projectId.localeCompare(b.projectId));
+  for (const group of projects) {
+    group.items.sort(byTitle);
+  }
+  return { projects, orphans: orphans.sort(byTitle) };
 }
 
 /* ----------------------------------------------------------------- charts */

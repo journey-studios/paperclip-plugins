@@ -6,6 +6,7 @@ import {
   AGENT,
   COMPANY,
   OTHER_COMPANY,
+  ARCHIVED_PROJECT,
   OTHER_PROJECT,
   PROJECT,
   SECOND_PROJECT,
@@ -92,22 +93,55 @@ describe("upsert_dashboard", () => {
     expect((await upsert({ slug: "str", spec: JSON.stringify(spec()) })).error).toBeUndefined();
   });
 
-  it("handles projectId: explicit null is company-level, explicit id wins, update keeps the project", async () => {
-    await upsert({ slug: "co", spec: spec(), projectId: null });
+  it("defaults a new dashboard to the run's project; explicit ids win; updates keep the project", async () => {
     await upsert({ slug: "other", spec: spec(), projectId: SECOND_PROJECT });
     await upsert({ slug: "keep", spec: spec() });
     await upsert({ slug: "keep", spec: spec("again") }, { projectId: SECOND_PROJECT });
     const list = (await h.data("dashboards.list", { companyId: COMPANY })) as DashboardSummary[];
     const bySlug = Object.fromEntries(list.map((item) => [item.slug, item.projectId]));
-    expect(bySlug).toEqual({ co: null, other: SECOND_PROJECT, keep: PROJECT });
+    expect(bySlug).toEqual({ other: SECOND_PROJECT, keep: PROJECT });
+    expect(list.find((item) => item.slug === "keep")).toMatchObject({ projectName: "Acme Web App", projectUrlKey: "acme-web-app", orphan: false });
     const filtered = (await h.data("dashboards.list", { companyId: COMPANY, projectId: SECOND_PROJECT })) as DashboardSummary[];
     expect(filtered.map((item) => item.slug)).toEqual(["other"]);
   });
 
-  it("rejects projects of another company", async () => {
+  it("requires a project: no run project and no projectId is a tool error, null is rejected", async () => {
+    const noProject = await upsert({ slug: "np", spec: spec() }, { projectId: "" });
+    expect(noProject.error).toContain("project_required");
+    expect(noProject.error).toContain("this run has no project");
+    const withId = await upsert({ slug: "np", spec: spec(), projectId: SECOND_PROJECT }, { projectId: "" });
+    expect(withId.error).toBeUndefined();
+    const nulled = await upsert({ slug: "nn", spec: spec(), projectId: null });
+    expect(nulled.error).toContain("project_required");
+    expect(nulled.error).toContain("cannot be null");
+    expect((await upsert({ slug: "nn", spec: spec(), projectId: 7 })).error).toContain("must be a project UUID string");
+    expect(await rows(`SELECT slug FROM ${DATABASE_NAMESPACE}.dashboards`)).toEqual([{ slug: "np" }]);
+  });
+
+  it("keeps a projectless dashboard projectless when projectId is omitted, and moves it with a uuid", async () => {
+    await upsert({ slug: "lost", spec: spec() });
+    await h.db.exec(`DELETE FROM public.projects WHERE id = '${PROJECT}'`);
+    const list = (await h.data("dashboards.list", { companyId: COMPANY })) as DashboardSummary[];
+    expect(list[0]).toMatchObject({ projectId: null, projectName: null, projectUrlKey: null, orphan: true });
+    // The run still has a project, but an existing orphan is not adopted silently.
+    const stayed = await upsert({ slug: "lost", spec: spec("kept") });
+    expect(stayed.error).toBeUndefined();
+    expect(((await h.data("dashboard.get", { companyId: COMPANY, slug: "lost" })) as DashboardRecord).projectId).toBeNull();
+    expect((await h.tool("update_dataset", { slug: "lost", datasetId: "d", rows: [{ name: "a", n: 5 }] })).error).toBeUndefined();
+    const moved = await upsert({ slug: "lost", spec: spec("moved"), projectId: SECOND_PROJECT });
+    expect(moved.error).toBeUndefined();
+    expect(((await h.data("dashboard.get", { companyId: COMPANY, slug: "lost" })) as DashboardRecord)).toMatchObject({ projectId: SECOND_PROJECT, orphan: false });
+  });
+
+  it("rejects projects of another company and archived projects", async () => {
     const result = await upsert({ slug: "x", spec: spec(), projectId: OTHER_PROJECT });
-    expect(result.error).toBe("Project not found in this company");
+    expect(result.error).toContain("project_not_found");
+    const archived = await upsert({ slug: "x", spec: spec(), projectId: ARCHIVED_PROJECT });
+    expect(archived.error).toContain("project_archived");
+    expect(archived.error).toContain("Old Project");
     expect(await rows(`SELECT 1 FROM ${DATABASE_NAMESPACE}.dashboards`)).toHaveLength(0);
+    // The run's own (archived) project cannot be used to create either.
+    expect((await upsert({ slug: "y", spec: spec() }, { projectId: ARCHIVED_PROJECT })).error).toContain("project_archived");
   });
 
   it("validates slugs", async () => {
@@ -327,5 +361,43 @@ describe("atomic writes", () => {
     const record = (await h.data("dashboard.get", { companyId: COMPANY, slug: "prune" })) as DashboardRecord;
     expect(record.revision).toBe(1);
     expect(await rows(`SELECT revision FROM ${DATABASE_NAMESPACE}.dashboard_revisions`)).toEqual([{ revision: 1 }]);
+  });
+});
+
+describe("dashboard.setProject", () => {
+  const create = async (slug = "mv") => {
+    await upsert({ slug, spec: spec("Movable", 1) });
+    return (await h.data("dashboard.get", { companyId: COMPANY, slug })) as DashboardRecord;
+  };
+
+  it("moves a dashboard, writing a new revision with an unchanged spec and logging activity", async () => {
+    const before = await create();
+    const moved = (await h.action("dashboard.setProject", { id: before.id, projectId: SECOND_PROJECT })) as DashboardRecord;
+    expect(moved).toMatchObject({ projectId: SECOND_PROJECT, projectName: "Internal Tools", projectUrlKey: "internal-tools", orphan: false, revision: 2, title: "Movable" });
+    expect(moved.spec).toEqual(before.spec);
+    expect(moved.updatedBy).toEqual({ kind: "user", id: "user-1", name: null });
+    const revisions = (await h.data("dashboard.revisions", { companyId: COMPANY, id: before.id })) as RevisionSummary[];
+    expect(revisions.map((r) => r.revision)).toEqual([2, 1]);
+    expect(h.activity.at(-1)?.message).toBe('Moved dashboard "Movable" to project "Internal Tools"');
+  });
+
+  it("moves projectless dashboards and is a no-op for the same project", async () => {
+    const before = await create("orph");
+    await h.db.exec(`DELETE FROM public.projects WHERE id = '${PROJECT}'`);
+    const moved = (await h.action("dashboard.setProject", { id: before.id, projectId: SECOND_PROJECT })) as DashboardRecord;
+    expect(moved).toMatchObject({ projectId: SECOND_PROJECT, revision: 2 });
+    const again = (await h.action("dashboard.setProject", { id: before.id, projectId: SECOND_PROJECT })) as DashboardRecord;
+    expect(again.revision).toBe(2);
+  });
+
+  it("validates the project and the dashboard and respects company isolation", async () => {
+    const before = await create("iso");
+    await expect(h.action("dashboard.setProject", { id: before.id, projectId: OTHER_PROJECT })).rejects.toThrow("project_not_found");
+    await expect(h.action("dashboard.setProject", { id: before.id, projectId: ARCHIVED_PROJECT })).rejects.toThrow("project_archived");
+    await expect(h.action("dashboard.setProject", { id: before.id, projectId: null })).rejects.toThrow("project_required");
+    await expect(h.action("dashboard.setProject", { id: before.id, projectId: "nope" })).rejects.toThrow("projectId must be a UUID");
+    await expect(h.action("dashboard.setProject", { id: "99999999-9999-4999-8999-999999999999", projectId: SECOND_PROJECT })).rejects.toThrow("Dashboard not found");
+    await expect(h.action("dashboard.setProject", { id: before.id, projectId: OTHER_PROJECT }, undefined, OTHER_COMPANY)).rejects.toThrow("Dashboard not found");
+    expect(((await h.data("dashboard.get", { companyId: COMPANY, id: before.id })) as DashboardRecord).revision).toBe(1);
   });
 });

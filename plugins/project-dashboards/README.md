@@ -4,7 +4,8 @@ Agents (and board users) publish **project tracking dashboards** for any system,
 
 An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpec**; the plugin validates it with path-precise errors and the Paperclip UI renders it.
 
-- Sidebar entry and a `dashboards` page that lists dashboards grouped by project.
+- Every dashboard belongs to a Paperclip project (see [Projects](#projects)).
+- Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in their own area.
 - A **Dashboard** tab on every project page.
 - Six agent tools: `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`.
 - A board REST API for external clients (and the MCP bridge), with data-freshness reporting.
@@ -43,7 +44,7 @@ Tools run inside an agent run. The company always comes from the run, never from
 
 | Tool | Parameters | Effect |
 | --- | --- | --- |
-| `upsert_dashboard` | `slug`, `spec`, `title?`, `projectId?` | Create or replace the dashboard `slug`; each call stores a new revision. `projectId` omitted: a new dashboard uses the run's project and an existing one keeps its project. `null`: company-level. |
+| `upsert_dashboard` | `slug`, `spec`, `title?`, `projectId?` | Create or replace the dashboard `slug`; each call stores a new revision. `projectId` is a project UUID of the company. Omitted: a new dashboard uses the run's project (a tool error `project_required` if the run has none) and an existing dashboard keeps its project, or stays projectless. A UUID moves it. `null` is rejected. |
 | `get_dashboard` | `slug` | Returns the stored record and spec. |
 | `list_dashboards` | `projectId?` | Lists dashboards in the company. |
 | `get_dashboard_status` | `slug` | One-line freshness summary plus the full status (see below). |
@@ -105,6 +106,17 @@ Chart notes: `stackedBar` stacks the `y` fields; `bar` and `horizontalBar` group
 
 A complete example, with every block type, lives in [`examples/project-dashboard.example.json`](examples/project-dashboard.example.json) and is validated by the test suite.
 
+## Projects
+
+Every dashboard belongs to a Paperclip project, and dashboards are grouped by project in the UI.
+
+- **New dashboards need a project.** REST: `projectId` is required, otherwise `400 project_required`. Agent tool: `projectId`, else the run's project, else a tool error `project_required` that says the run has no project. `null` is not accepted anywhere.
+- **Existing dashboards keep their project** when `projectId` is omitted; a UUID moves them.
+- **Projectless dashboards** can still exist, because deleting a project only detaches its dashboards (the database foreign key is `ON DELETE SET NULL`). An existing projectless dashboard can be updated without `projectId` and stays projectless; `update_dataset` and status work on it, and `status.orphan` is `true`. A UUID moves it into a project.
+- The project must exist in the company (`project_not_found`, also for projects of another company) and must not be archived (`project_archived`). The archived check applies when a dashboard is created or moved; a dashboard that stays in a project that is archived later can still be updated.
+- **Board action `dashboard.setProject`** `{ id, projectId }` moves any dashboard, projectless ones included, to an active project of the company. It writes a new revision with an unchanged spec, so the move shows in the history, and logs activity. A move to the current project does nothing.
+- **UI.** The Dashboards page has one section per project ordered by name, each titled with a link to the project page and a dashboard count, dashboards sorted by title. Projectless dashboards are grouped apart in a collapsible "No project" area below a divider, each with a "Move to project" control (the host project picker). The viewer header shows "Project: <link>", or a warning with the same control. The project tab lists only that project's dashboards (a selector when there are several); when there are none it explains how to create one and shows the project ID to copy.
+
 ## Data freshness
 
 Each dataset can declare `staleAfterHours`; otherwise the `defaultStaleAfterHours` setting applies (`0` or unset means "never stale"). A dataset is **stale** when a threshold applies and its `updatedAt` is missing or older than that many hours. A dashboard's **health** is `stale` if any dataset is stale, `unknown` if no dataset has an `updatedAt`, and `fresh` otherwise. The same rules feed the REST `status` route, the `get_dashboard_status` tool and the UI (a "N stale sources" warning plus a stale badge per dataset in the Sources panel). `update_dataset` stamps `updatedAt` with the current time unless you pass one.
@@ -124,14 +136,14 @@ Board-authenticated routes mounted by the host under `/api/plugins/journeystudio
 | `GET /dashboards` (`?projectId=`) | none | `{ companyId, dashboards: Summary[] }` |
 | `GET /dashboards/:slug` | none | `{ companyId, dashboard: Summary & { spec } }` |
 | `GET /dashboards/:slug/status` | none | `{ companyId, status: Status }` |
-| `POST /dashboards` | `{ slug, title?, projectId?: uuid \| null, spec }` | `{ companyId, created, dashboard: Summary }` |
+| `POST /dashboards` | `{ slug, title?, projectId?: uuid, spec }` | `{ companyId, created, dashboard: Summary }` |
 | `POST /dashboards/:slug/datasets/:datasetId` | `{ rows, columns?, description?, source?, updatedAt? }` | `{ companyId, dashboard: Summary, dataset: DatasetStatus }` |
 | `POST /validate` | `{ spec }` | `{ companyId, valid: true, datasets, sections }` |
 
-- `Summary` is `{ id, slug, title, projectId, projectName, revision, updatedAt, updatedBy, viewPath }`; `viewPath` is `/<COMPANY_PREFIX>/dashboards?d=<slug>`, relative to the web origin.
-- `DatasetStatus` is `{ id, title, rows, updatedAt, ageMinutes, staleAfterHours, stale }`. `Status` is a `Summary` plus `{ checkedAt, health, staleCount, datasets, sections, blocks }`.
-- `projectId` on upsert: omitted means a new dashboard is company-level and an existing one keeps its project; `null` makes it company-level; a UUID must belong to the company.
-- Errors: `400 { error: "<message>" }` (bad slug, dataset id, project or body shape), `404 { error: "not_found" }` (dashboard, dataset or route), `413 { error: "spec_too_large", limitBytes }`, `422 { error: "invalid_spec", details: string[] }` (at most 50 path-precise messages, each at most 300 characters), `500 { error: "internal_error" }` (details are logged, never returned).
+- `Summary` is `{ id, slug, title, projectId, projectName, revision, updatedAt, updatedBy, viewPath }` (`projectId` and `projectName` are `null` only for projectless dashboards); `viewPath` is `/<COMPANY_PREFIX>/dashboards?d=<slug>`, relative to the web origin.
+- `DatasetStatus` is `{ id, title, rows, updatedAt, ageMinutes, staleAfterHours, stale }`. `Status` is a `Summary` plus `{ orphan, checkedAt, health, staleCount, datasets, sections, blocks }`.
+- `projectId` on upsert is required for a new dashboard (`400 project_required`); omitted on an existing dashboard keeps its project, or its lack of one; a UUID moves it. `null` is rejected with a 400. The project must belong to the company (`400 project_not_found`) and must not be archived (`400 project_archived`).
+- Errors: `400 { error: "<message>" }` (bad slug, dataset id, project or body shape; `project_required`, `project_not_found` and `project_archived` are the project codes), `404 { error: "not_found" }` (dashboard, dataset or route), `413 { error: "spec_too_large", limitBytes }`, `422 { error: "invalid_spec", details: string[] }` (at most 50 path-precise messages, each at most 300 characters), `500 { error: "internal_error" }` (details are logged, never returned).
 
 ## Using from MCP
 
@@ -144,7 +156,7 @@ The companion `plugin-mcp-bridge` service in this repository exposes these route
 - Markdown goes only through the host `MarkdownBlock`. In the pinned host (`MarkdownBody` on `react-markdown` with `remark-gfm` and no `rehype-raw`), raw HTML in Markdown is not rendered, URLs are filtered by the library's default transform, and Mermaid runs with `securityLevel: "strict"`. Mermaid blocks are wrapped in a fence longer than any backtick run in the code, so a diagram cannot break out into Markdown.
 - Table links render only absolute `http`/`https` URLs with `rel="noopener noreferrer"`; anything else is shown as text.
 - REST routes use board authentication; the company comes from the host-authorized query value, never from the body. Every query is scoped by `company_id`.
-- Agent tools take the company from the run context; every query is scoped by `company_id`; `projectId` must belong to the company.
+- Agent tools take the company from the run context; every query is scoped by `company_id`; `projectId` must belong to the company and not be archived.
 - Writes are serialized per company and recorded in the activity log.
 
 ## Limits
