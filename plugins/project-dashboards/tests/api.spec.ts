@@ -38,8 +38,8 @@ const post = (_path: string, payload: unknown, extra: ApiCall = {}) => {
 };
 
 describe("manifest declarations", () => {
-  it("declares the six board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.3.0");
+  it("declares the ten board routes with company resolution from the query", () => {
+    expect(manifest.version).toBe("0.4.0");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
@@ -48,8 +48,12 @@ describe("manifest declarations", () => {
       ["dashboard-upsert", "POST", "/dashboards"],
       ["dataset-update", "POST", "/dashboards/:slug/datasets/:datasetId"],
       ["spec-validate", "POST", "/validate"],
+      ["changelog-list", "GET", "/changelog"],
+      ["changelog-add", "POST", "/changelog"],
+      ["changelog-import", "POST", "/changelog/import"],
+      ["changelog-update", "POST", "/changelog/:entryId"],
     ]);
-    expect(API_ROUTES).toHaveLength(6);
+    expect(API_ROUTES).toHaveLength(10);
     for (const route of manifest.apiRoutes ?? []) {
       expect(route).toMatchObject({ auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } });
     }

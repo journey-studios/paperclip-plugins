@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Dataset } from "../src/contracts.js";
+import { safeHttpUrl } from "../src/safe-url.js";
 import { createTranslator, dictionaryLocale } from "../src/ui/i18n.js";
 import {
   aggregate,
@@ -14,7 +15,6 @@ import {
   resolvePalette,
   seriesColorsFor,
   resolveValue,
-  safeHref,
   sortRows,
   stackedTotals,
   toneFor,
@@ -153,10 +153,10 @@ describe("filtering, sorting and links", () => {
   });
 
   it("only allows absolute http(s) links", () => {
-    expect(safeHref("https://example.com/a?b=1")).toBe("https://example.com/a?b=1");
-    expect(safeHref("http://example.com")).toBe("http://example.com/");
+    expect(safeHttpUrl("https://example.com/a?b=1")).toBe("https://example.com/a?b=1");
+    expect(safeHttpUrl("http://example.com")).toBe("http://example.com/");
     for (const bad of ["javascript:alert(1)", "data:text/html,x", "//evil.test", "/relative", "ftp://x", "", 5, null]) {
-      expect(safeHref(bad), String(bad)).toBeNull();
+      expect(safeHttpUrl(bad), String(bad)).toBeNull();
     }
   });
 });

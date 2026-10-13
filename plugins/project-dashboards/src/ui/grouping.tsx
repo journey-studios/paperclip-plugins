@@ -2,8 +2,8 @@ import { useState, type ReactNode } from "react";
 import { ProjectPicker, copyTextToClipboard, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import type { DashboardSummary } from "../contracts.js";
 import type { Translate } from "./i18n.js";
-import type { Localized } from "./index.js";
 import { groupDashboards } from "./model.js";
+import type { Localized } from "./shared.js";
 import { actorLabel } from "./view.js";
 
 type LinkProps = ReturnType<ReturnType<typeof useHostNavigation>["linkProps"]>;

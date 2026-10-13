@@ -51,11 +51,18 @@ describe("manifest", () => {
       "get_dashboard_status",
       "update_dataset",
       "validate_dashboard_spec",
+      "add_changelog_entry",
+      "list_changelog",
+      "update_changelog_entry",
     ]);
     const slots = manifest.ui?.slots ?? [];
-    expect(slots.map((slot) => slot.type)).toEqual(["sidebar", "page", "detailTab"]);
+    expect(slots.map((slot) => slot.type)).toEqual(["sidebar", "page", "detailTab", "detailTab"]);
     expect(slots.find((slot) => slot.type === "page")?.routePath).toBe("dashboards");
-    expect(slots.find((slot) => slot.type === "detailTab")?.entityTypes).toEqual(["project"]);
+    const tabs = slots.filter((slot) => slot.type === "detailTab");
+    expect(tabs.map((tab) => [tab.id, tab.exportName, tab.entityTypes])).toEqual([
+      ["project-dashboards-tab", "ProjectDashboardTab", ["project"]],
+      ["project-changelog-tab", "ProjectChangelogTab", ["project"]],
+    ]);
     expect(DATABASE_NAMESPACE).toBe("plugin_project_dashboards_54173784c0");
   });
 });

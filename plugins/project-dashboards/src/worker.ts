@@ -1,21 +1,14 @@
-import {
-  definePlugin,
-  runWorker,
-  type PluginContext,
-  type ToolResult,
-  type ToolRunContext,
-} from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createApi } from "./api.js";
-import type { Actor, DashboardRecord } from "./contracts.js";
+import { registerChangelogHost } from "./changelog-host.js";
+import { registerChangelogTools } from "./changelog-tools.js";
+import type { DashboardRecord } from "./contracts.js";
 import { createLinkResolver } from "./links.js";
 import { computeLiveStatus, computeStatus } from "./status.js";
 import {
-  DashboardError,
   ProjectError,
-  companySerialQueue,
   deleteDashboard,
   getDashboard,
-  getSettings,
   listDashboards,
   listRevisions,
   restoreRevision,
@@ -23,49 +16,16 @@ import {
   slugOf,
   updateDataset,
   upsertDashboard,
-  uuid,
   validateDashboardSpec,
 } from "./dashboards.js";
-import { TOOL_DECLARATIONS } from "./tools.js";
-
-type Params = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asParams(value: unknown): Params {
-  return isRecord(value) ? value : {};
-}
-
-function declaration(name: string) {
-  const found = TOOL_DECLARATIONS.find((tool) => tool.name === name);
-  if (!found) {
-    throw new Error(`Unknown tool declaration ${name}`);
-  }
-  return { displayName: found.displayName, description: found.description, parametersSchema: found.parametersSchema };
-}
+import { DashboardError } from "./errors.js";
+import { companySerialQueue, getSettings, uuid } from "./store-util.js";
+import { actionActor, agentActor, asParams, declaration, guarded } from "./tool-helpers.js";
 
 function describe(record: DashboardRecord): string {
   const datasets = record.spec ? Object.keys(record.spec.datasets).length : 0;
   const sections = record.spec ? record.spec.sections.length : 0;
   return `"${record.slug}" revision ${record.revision}: ${datasets} dataset(s), ${sections} section(s)`;
-}
-
-export function agentActor(runCtx: ToolRunContext): Actor {
-  return { kind: "agent", id: runCtx.agentId };
-}
-
-/** Run a tool body, turning user-correctable failures into tool errors the agent can act on. */
-async function guarded(body: () => Promise<ToolResult>): Promise<ToolResult> {
-  try {
-    return await body();
-  } catch (error) {
-    if (error instanceof DashboardError) {
-      return { error: error.message };
-    }
-    throw error;
-  }
 }
 
 function registerTools(
@@ -197,17 +157,6 @@ function registerTools(
   );
 }
 
-function actionActor(context: { actor: { type: "user" | "agent" | "system"; userId: string | null; agentId: string | null } }): Actor {
-  const { actor } = context;
-  if (actor.type === "agent") {
-    return { kind: "agent", id: actor.agentId };
-  }
-  if (actor.type === "user") {
-    return { kind: "user", id: actor.userId };
-  }
-  return { kind: "system", id: null };
-}
-
 let handleApi: ReturnType<typeof createApi> | null = null;
 
 const plugin = definePlugin({
@@ -263,6 +212,8 @@ const plugin = definePlugin({
     });
 
     registerTools(ctx, serial, links);
+    registerChangelogTools(ctx, serial);
+    registerChangelogHost(ctx, serial);
   },
   async onHealth() {
     return { status: "ok", message: "Project Dashboards worker is ready" };

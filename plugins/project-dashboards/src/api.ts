@@ -1,23 +1,23 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext } from "@paperclipai/plugin-sdk";
+import { addEntry, listChangelog, updateEntry } from "./changelog.js";
+import { importDoneIssues } from "./changelog-issues.js";
+import { InvalidEntryError, parseEntryPatch, parseNewEntry } from "./changelog-input.js";
 import type { Actor, ApiSummary, DashboardRecord, DashboardSummary, DatasetStatus } from "./contracts.js";
 import {
-  DashboardError,
   InvalidSpecError,
-  NotFoundError,
   ProjectError,
   SpecTooLargeError,
   getDashboard,
-  getSettings,
   listDashboards,
   slugOf,
   updateDataset,
   upsertDashboard,
-  uuid,
   validateDashboardSpec,
-  type companySerialQueue,
 } from "./dashboards.js";
+import { DashboardError, NotFoundError } from "./errors.js";
 import type { LinkResolver } from "./links.js";
 import { computeFreshness, computeStatus } from "./status.js";
+import { getSettings, uuid, type companySerialQueue } from "./store-util.js";
 
 type Serial = ReturnType<typeof companySerialQueue>;
 type Body = Record<string, unknown>;
@@ -27,6 +27,10 @@ const MAX_DETAIL_LENGTH = 300;
 
 function isRecord(value: unknown): value is Body {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cappedDetails(details: string[]): string[] {
+  return details.slice(0, MAX_DETAILS).map((detail) => detail.slice(0, MAX_DETAIL_LENGTH));
 }
 
 function reply(companyId: string, status: number, body: Body): PluginApiResponse {
@@ -190,6 +194,39 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
           sections: spec.sections.length,
         });
       }
+      case "changelog-list": {
+        const { query } = input;
+        const page = await listChangelog(ctx, companyId, {
+          projectId: oneParam(query.projectId, "projectId"),
+          kinds: oneParam(query.kind, "kind"),
+          includeIssues: oneParam(query.includeIssues, "includeIssues"),
+          before: oneParam(query.before, "before"),
+          limit: oneParam(query.limit, "limit"),
+        });
+        return ok(companyId, { entries: page.entries, nextCursor: page.nextCursor });
+      }
+      case "changelog-add": {
+        const body = requireBody(input.body);
+        const projectId = uuid(body.projectId, "projectId");
+        const fields = parseNewEntry(body, ["projectId"], new Date());
+        const entry = await serial(companyId, () => addEntry(ctx, { companyId, projectId, fields, actor: actorOf(input) }));
+        return ok(companyId, { entry });
+      }
+      case "changelog-import": {
+        const body = requireBody(input.body);
+        const settings = await getSettings(ctx, companyId);
+        const result = await serial(companyId, () =>
+          importDoneIssues(ctx, { companyId, projectId: body.projectId, settings, actor: actorOf(input) }),
+        );
+        return ok(companyId, { ...result });
+      }
+      case "changelog-update": {
+        const patch = parseEntryPatch(requireBody(input.body), []);
+        const entry = await serial(companyId, () =>
+          updateEntry(ctx, { companyId, entryId: input.params.entryId, patch, actor: actorOf(input) }),
+        );
+        return ok(companyId, { entry });
+      }
       default:
         throw new NotFoundError("not_found");
     }
@@ -205,8 +242,10 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
         return reply(companyId, 413, { error: "spec_too_large", limitBytes: error.limitBytes });
       }
       if (error instanceof InvalidSpecError) {
-        const details = error.details.slice(0, MAX_DETAILS).map((detail) => detail.slice(0, MAX_DETAIL_LENGTH));
-        return reply(companyId, 422, { error: "invalid_spec", details });
+        return reply(companyId, 422, { error: "invalid_spec", details: cappedDetails(error.details) });
+      }
+      if (error instanceof InvalidEntryError) {
+        return reply(companyId, 422, { error: "invalid_entry", details: cappedDetails(error.details) });
       }
       if (error instanceof NotFoundError) {
         return reply(companyId, 404, { error: "not_found" });
