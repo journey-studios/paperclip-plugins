@@ -25,6 +25,7 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 - [`@journey-studios/paperclip-s3-storage`](plugins/s3-storage/README.md): company-scoped S3-compatible media uploads and private object access for AWS S3, Cloudflare R2 and Backblaze B2.
 - [`@journey-studios/paperclip-evolution`](plugins/evolution/README.md): Change Intelligence for agent/skill diffs, Audit provenance, evidence, metrics, and conclusions.
 - [`@journey-studios/paperclip-storage-manager`](plugins/storage-manager/README.md): read-only VPS disk, Docker storage, growth and operator-configured warnings via the native local-folder API and a [separate host collector](services/storage-collector/README.md).
+- [`@journey-studios/paperclip-plugin-project-dashboards`](plugins/project-dashboards/README.md): agents publish project tracking dashboards (KPIs, charts, filterable tables, Markdown, Mermaid) from a declarative spec, rendered natively, with provenance and revision history.
 
 ## Administrative MCP tools
 
