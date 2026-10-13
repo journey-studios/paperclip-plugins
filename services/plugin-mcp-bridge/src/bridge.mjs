@@ -3,6 +3,13 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readBounded } from './bounded-response.mjs';
 import { IDENTITY_DESCRIPTION, resolveBoardIdentity, identityToolError } from './identity.mjs';
+import { tool, uuid, UUID_RE } from './tool-schema.mjs';
+import {
+  DASHBOARD_TOOLS, buildDashboardRequest, dashboardBusyResult, dashboardFailureResult,
+  dashboardInputErrorResult, dashboardToolResult, isDashboardTool, DashboardInputError,
+} from './dashboards.mjs';
+
+export { DASHBOARD_TOOLS };
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STOCK_LINE_BYTES = 16 * 1024 * 1024;
@@ -10,23 +17,11 @@ const MAX_PENDING = 128;
 const MAX_OWN_CONCURRENCY = 8;
 const STOCK_TIMEOUT_MS = 5 * 60_000;
 const API_TIMEOUT_MS = 10_000;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const API_POST_TIMEOUT_MS = 25_000;
 const EVENT_FIELDS = new Set(['seq', 'eventType', 'type', 'stream', 'timestamp']);
 const SAFE_TOOL_META = new Set(['toolName', 'name', 'status', 'durationMs']);
 
-const tool = (name, description, properties, required = []) => ({
-  name,
-  description,
-  inputSchema: {
-    type: 'object',
-    properties,
-    required,
-    additionalProperties: false,
-  },
-});
-
 const integer = (minimum, maximum) => ({ type: 'integer', minimum, maximum });
-const uuid = { type: 'string', format: 'uuid' };
 
 export const OBSERVATORY_TOOLS = [
   tool('paperclipAgentHealthOverview', 'Summarize agent health for the configured Paperclip company.', {
@@ -290,6 +285,19 @@ export class McpBridge {
       } finally { this.ownActive--; }
       return;
     }
+    if (message.method === 'tools/call' && isDashboardTool(message.params?.name)) {
+      if (!hasId) return;
+      if (!this.initialized) return this.writeJson(rpcError(id, -32002, 'Initialize the MCP session first'));
+      if (this.ownActive >= MAX_OWN_CONCURRENCY) return this.writeJson({ jsonrpc: '2.0', id, result: dashboardBusyResult() });
+      this.ownActive++;
+      try {
+        const result = await this.callDashboardTool(message.params.name, message.params.arguments ?? {});
+        this.writeJson({ jsonrpc: '2.0', id, result });
+      } catch {
+        this.writeJson({ jsonrpc: '2.0', id, result: dashboardFailureResult() });
+      } finally { this.ownActive--; }
+      return;
+    }
     if (message.method === 'tools/list' && hasId) {
       if (this.pending.size >= MAX_PENDING) return this.writeJson(rpcError(id, -32000, 'Too many pending MCP requests'));
       const isInitialPage = message.params?.cursor === undefined;
@@ -298,12 +306,13 @@ export class McpBridge {
         const tools = response.result?.tools;
         if (!Array.isArray(tools)) return response;
         const existing = new Set(tools.map((item) => item?.name).filter((name) => typeof name === 'string'));
-        const conflicts = OBSERVATORY_TOOLS.filter((entry) => existing.has(entry.name));
-        if (conflicts.length) return rpcError(id, -32603, 'MCP tool name conflict with Observatory bridge');
+        const ownTools = [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS];
+        const conflicts = ownTools.filter((entry) => existing.has(entry.name));
+        if (conflicts.length) return rpcError(id, -32603, 'MCP tool name conflict with bridge tools');
         const actorAwareTools = tools.map((entry) => entry?.name === 'paperclipMe'
           ? { ...entry, description: IDENTITY_DESCRIPTION } : entry);
         return { ...response, result: { ...response.result, tools: isInitialPage
-          ? [...actorAwareTools, ...OBSERVATORY_TOOLS] : actorAwareTools } };
+          ? [...actorAwareTools, ...ownTools] : actorAwareTools } };
       });
       return;
     }
@@ -334,24 +343,56 @@ export class McpBridge {
     }
   }
 
-  async apiGet(path, params = {}) {
-    const url = path.startsWith('/api/')
-      ? new URL(`${this.config.apiBase}${path}`)
-      : new URL(`${this.config.apiBase}/api/plugins/journey-studios.agent-observatory/api/${path}`);
+  /**
+   * One bounded HTTP exchange with the Paperclip API. The company is always the
+   * configured one; a caller-supplied companyId param is ignored. Returns the
+   * status and raw body text; callers decide how to interpret errors.
+   */
+  async apiRequest(pathname, { method = 'GET', params = {}, body, timeoutMs, redirect } = {}) {
+    const url = new URL(`${this.config.apiBase}${pathname}`);
     url.searchParams.set('companyId', this.config.companyId);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    for (const [key, value] of Object.entries(params)) {
+      if (key !== 'companyId') url.searchParams.set(key, String(value));
+    }
+    const headers = { authorization: `Bearer ${this.config.apiKey}`, accept: 'application/json' };
+    if (body !== undefined) headers['content-type'] = 'application/json';
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs ?? (method === 'GET' ? API_TIMEOUT_MS : API_POST_TIMEOUT_MS));
     try {
       const response = await this.fetchImpl(url, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${this.config.apiKey}`, accept: 'application/json' },
+        method,
+        headers,
+        ...(body === undefined ? {} : { body }),
+        ...(redirect === undefined ? {} : { redirect }),
         signal: controller.signal,
       });
       const text = await readBounded(response);
-      if (!response.ok) throw new Error('upstream error');
-      try { return JSON.parse(text); } catch { throw new Error('invalid upstream response'); }
+      return { status: response.status, ok: response.ok, text };
     } finally { clearTimeout(timer); }
+  }
+
+  async apiGet(path, params = {}) {
+    const pathname = path.startsWith('/api/')
+      ? path
+      : `/api/plugins/journey-studios.agent-observatory/api/${path}`;
+    const response = await this.apiRequest(pathname, { params });
+    if (!response.ok) throw new Error('upstream error');
+    try { return JSON.parse(response.text); } catch { throw new Error('invalid upstream response'); }
+  }
+
+  async callDashboardTool(name, rawInput) {
+    let request;
+    try { request = buildDashboardRequest(name, rawInput); } catch (error) {
+      if (error instanceof DashboardInputError) return dashboardInputErrorResult(error.message);
+      throw error;
+    }
+    let response;
+    try {
+      response = await this.apiRequest(request.path, {
+        method: request.method, params: request.params, body: request.bodyText, redirect: 'error',
+      });
+    } catch { return dashboardFailureResult(); }
+    return dashboardToolResult(name, response, this.config.companyId);
   }
 
   async callOwnTool(name, rawInput) {

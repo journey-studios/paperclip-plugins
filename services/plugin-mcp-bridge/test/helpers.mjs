@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { McpBridge, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { DASHBOARD_TOOLS, McpBridge, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
 
 export const companyId = 'd9f67265-9c8f-4cbe-b91c-b3e0ea26da02';
 export const agentId = '7067603c-5ee4-4db8-87f1-8c16a54f44a2';
@@ -25,7 +25,9 @@ function fakeChild({ stockCallResult, stockTools } = {}) {
     }
     if (message.method === 'initialize') child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } } })}\n`);
     if (message.method === 'tools/list') {
-      const tools = message.params?.cursor === 'collision' ? [{ name: OBSERVATORY_TOOLS[0].name }] : (stockTools ?? [{ name: 'existingTool' }]);
+      const collisions = { collision: OBSERVATORY_TOOLS[0], 'collision-dashboards': DASHBOARD_TOOLS[0] };
+      const collision = collisions[message.params?.cursor];
+      const tools = collision ? [{ name: collision.name }] : (stockTools ?? [{ name: 'existingTool' }]);
       const nextCursor = message.params?.cursor ? 'stock-next-2' : 'stock-next-1';
       child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools, nextCursor } })}\n`);
     }

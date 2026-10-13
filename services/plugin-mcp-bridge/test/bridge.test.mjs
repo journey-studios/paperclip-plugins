@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
 import { companyId, agentId, runId, env, makeBridge, flush, messages } from './helpers.mjs';
 
 test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () => {
@@ -19,7 +19,7 @@ test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () =
   }
 });
 
-test('tools/list forwards stock tools and adds exactly the five fixed tools after initialize', async () => {
+test('tools/list forwards stock tools and adds exactly the five Observatory and six Dashboards tools after initialize', async () => {
   const ctx = makeBridge();
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
   await flush();
@@ -29,7 +29,7 @@ test('tools/list forwards stock tools and adds exactly the five fixed tools afte
   const result = firstPage.tools;
   assert.equal(result[0].name, 'existingTool');
   assert.equal(firstPage.nextCursor, 'stock-next-1');
-  assert.deepEqual(result.slice(1).map((entry) => entry.name), OBSERVATORY_TOOLS.map((entry) => entry.name));
+  assert.deepEqual(result.slice(1).map((entry) => entry.name), [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS].map((entry) => entry.name));
   assert.deepEqual(ctx.child().received.map((entry) => entry.method), ['initialize', 'tools/list']);
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: 'stock-next' } })}\n`);
   await flush();
@@ -39,6 +39,9 @@ test('tools/list forwards stock tools and adds exactly the five fixed tools afte
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list', params: { cursor: 'collision' } })}\n`);
   await flush();
   assert.match(messages(ctx.output).find((entry) => entry.id === 4).error.message, /tool name conflict/);
+  ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: { cursor: 'collision-dashboards' } })}\n`);
+  await flush();
+  assert.match(messages(ctx.output).find((entry) => entry.id === 5).error.message, /tool name conflict/);
 });
 
 test('client responses to stock server-initiated JSON-RPC requests are forwarded unchanged', async () => {
@@ -178,6 +181,6 @@ test('process protocol preserves stock JSON-RPC IDs and notifications while inte
   await waitFor(() => received.some((item) => item.id === 72));
   const listed = received.find((item) => item.id === 72);
   assert.equal(listed.result.tools[0].name, 'stock');
-  assert.equal(listed.result.tools.length, 6);
+  assert.equal(listed.result.tools.length, 1 + OBSERVATORY_TOOLS.length + DASHBOARD_TOOLS.length);
   assert.equal(received.find((item) => item.method === 'notifications/initialized')?.id, undefined);
 });

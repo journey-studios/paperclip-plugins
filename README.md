@@ -28,4 +28,4 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 
 ## Administrative MCP tools
 
-The optional [plugin MCP bridge](services/plugin-mcp-bridge/README.md) adds five Observatory tools to the official Paperclip MCP server through a separate stdio process. It calls company-scoped plugin APIs, preserves the official server's tools and protocol, and requires no change to Paperclip Core or its Tool Gateway. The plugin worker receives no board API key. The bridge and plugin can be disabled independently.
+The optional [plugin MCP bridge](services/plugin-mcp-bridge/README.md) adds five Observatory tools and six Project Dashboards tools (list, read, status, create/update, validate) to the official Paperclip MCP server through a separate stdio process. It calls company-scoped plugin APIs, preserves the official server's tools and protocol, and requires no change to Paperclip Core or its Tool Gateway. The plugin worker receives no board API key. The bridge and plugin can be disabled independently.
