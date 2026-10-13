@@ -273,7 +273,9 @@ test('process protocol preserves stock JSON-RPC IDs and notifications while inte
     }
   });
   const waitFor = async (predicate) => {
-    for (let i = 0; i < 30 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    // Two real node processes start here; under parallel CI load that can take well over 300 ms.
+    const deadline = Date.now() + 5000;
+    while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.ok(predicate(), 'expected protocol response was not received');
   };
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 'init-id', method: 'initialize', params: {} })}\n`);
