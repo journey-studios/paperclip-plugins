@@ -169,7 +169,7 @@ export interface DashboardSummary {
   projectName: string | null;
   /** The host's project route segment, for links. */
   projectUrlKey: string | null;
-  /** True when the dashboard has no project (its project was deleted). */
+  /** True when the dashboard has no project (created before projects were required, or its project was deleted). */
   orphan: boolean;
   revision: number;
   updatedAt: string;

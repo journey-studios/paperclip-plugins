@@ -12,7 +12,7 @@ const en = {
   projectIdCopied: "ID copied",
   noProject: "No project",
   noProjectHint:
-    "These dashboards belong to no project (their project was deleted). Move each one to a project.",
+    "These dashboards do not belong to a project yet. Move each one to a project.",
   moveToProject: "Move to project",
   moveFailed: "Could not move the dashboard: {message}",
   projectLine: "Project:",
@@ -84,7 +84,7 @@ const ptBR: Dictionary = {
   projectIdCopied: "ID copiado",
   noProject: "Sem projeto",
   noProjectHint:
-    "Estes dashboards não pertencem a nenhum projeto (o projeto foi excluído). Mova cada um para um projeto.",
+    "Estes dashboards ainda não pertencem a um projeto. Mova cada um para um projeto.",
   moveToProject: "Mover para projeto",
   moveFailed: "Não foi possível mover o dashboard: {message}",
   projectLine: "Projeto:",
