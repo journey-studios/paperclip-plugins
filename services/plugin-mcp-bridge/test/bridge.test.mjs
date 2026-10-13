@@ -19,7 +19,7 @@ test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () =
   }
 });
 
-test('tools/list forwards stock tools and adds exactly the five Observatory and six Dashboards tools after initialize', async () => {
+test('tools/list forwards stock tools and adds exactly the five Observatory and ten Dashboards tools (six dashboards, four changelog) after initialize', async () => {
   const ctx = makeBridge();
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
   await flush();

@@ -1,10 +1,10 @@
 import { tool, uuid, UUID_RE } from './tool-schema.mjs';
 
 /**
- * Project Dashboards tools: input validation, request construction and result
- * mapping for the board REST API of the journeystudios.project-dashboards plugin.
- * Nothing here performs I/O; the bridge owns transport, timeouts and the
- * concurrency limit.
+ * Project Dashboards tools (dashboards and the per-project changelog): input
+ * validation, request construction and result mapping for the board REST API of the
+ * journeystudios.project-dashboards plugin. Nothing here performs I/O; the bridge owns
+ * transport, timeouts and the concurrency limit.
  */
 
 export const DASHBOARD_PLUGIN_KEY = 'journeystudios.project-dashboards';
@@ -19,6 +19,10 @@ export const MAX_MESSAGE_CHARS = 300;
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
 const DATASET_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+// Kinds written by agents and the board; the plugin generates "issue" entries itself and refuses it on writes.
+export const CURATED_KINDS = ['milestone', 'release', 'feature', 'fix', 'improvement', 'decision', 'incident', 'note'];
+export const ALL_KINDS = [...CURATED_KINDS, 'issue'];
+export const MAX_CHANGELOG_PAGE = 500;
 const CLIENT_ERROR_STATUSES = new Set([400, 404, 413, 422]);
 const HEALTH_VALUES = new Set(['fresh', 'stale', 'unknown']);
 
@@ -35,6 +39,8 @@ export class DashboardInputError extends Error {}
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false };
 const IDEMPOTENT_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+// Adds a new record every call, so repeating it duplicates the entry.
+const ADDITIVE_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
 const slugSchema = {
   type: 'string',
@@ -48,6 +54,20 @@ const datasetIdSchema = {
 };
 const specSchema = (description) => ({ type: 'object', description });
 
+const ISO_DATE_RULE = {
+  check: (value) => typeof value === 'string' && value.length <= 64 && ISO_DATE_RE.test(value) && Number.isFinite(Date.parse(value)),
+  hint: 'must be an ISO 8601 date or timestamp string, e.g. 2026-10-13T12:00:00Z',
+};
+const isHttpUrl = (value) => {
+  if (typeof value !== 'string' || value.length > 2000) return false;
+  try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
+};
+const isLink = (value) => isPlainObject(value)
+  && Object.keys(value).every((key) => key === 'label' || key === 'url')
+  && boundedString(1, 100)(value.label) && isHttpUrl(value.url);
+const changelogText = (max) => ({ check: boundedString(1, max), hint: `must be a string of 1-${max} characters` });
+const nullable = (rule) => ({ check: (value) => value === null || rule.check(value), hint: `${rule.hint}, or null to clear it` });
+
 const FIELD_RULES = {
   slug: { check: (value) => typeof value === 'string' && SLUG_RE.test(value), hint: 'must match ^[a-z0-9-]{1,64}$' },
   datasetId: { check: (value) => typeof value === 'string' && DATASET_ID_RE.test(value), hint: 'must match ^[A-Za-z0-9_-]{1,64}$' },
@@ -59,10 +79,8 @@ const FIELD_RULES = {
   title: { check: boundedString(1, 200), hint: 'must be a string of 1-200 characters' },
   description: { check: boundedString(0, 10_000), hint: 'must be a string of at most 10000 characters' },
   source: { check: boundedString(0, 500), hint: 'must be a string of at most 500 characters' },
-  updatedAt: {
-    check: (value) => typeof value === 'string' && value.length <= 64 && ISO_DATE_RE.test(value) && Number.isFinite(Date.parse(value)),
-    hint: 'must be an ISO 8601 date or timestamp string, e.g. 2026-10-13T12:00:00Z',
-  },
+  updatedAt: ISO_DATE_RULE,
+  occurredAt: ISO_DATE_RULE,
   spec: { check: isPlainObject, hint: 'must be a JSON object' },
   rows: {
     check: (value) => Array.isArray(value) && value.length <= MAX_ROWS && value.every(isPlainObject),
@@ -72,9 +90,38 @@ const FIELD_RULES = {
     check: (value) => Array.isArray(value) && value.length <= MAX_COLUMNS && value.every(boundedString(1, 200)),
     hint: `must be an array of at most ${MAX_COLUMNS} non-empty strings (max 200 characters each)`,
   },
+  curatedKind: {
+    check: (value) => CURATED_KINDS.includes(value),
+    hint: `must be one of ${CURATED_KINDS.join(', ')} (issue entries are created automatically from completed issues)`,
+  },
+  kinds: {
+    check: (value) => Array.isArray(value) && value.length <= ALL_KINDS.length && value.every((kind) => ALL_KINDS.includes(kind)),
+    hint: `must be an array of changelog kinds (${ALL_KINDS.join(', ')})`,
+  },
+  includeIssues: { check: (value) => typeof value === 'boolean', hint: 'must be true or false' },
+  cursor: { check: boundedString(1, 200), hint: 'must be the nextCursor string of a previous response (at most 200 characters)' },
+  pageSize: {
+    check: (value) => Number.isInteger(value) && value >= 1 && value <= MAX_CHANGELOG_PAGE,
+    hint: `must be an integer from 1 to ${MAX_CHANGELOG_PAGE}`,
+  },
+  entryBody: changelogText(20_000),
+  nullableBody: nullable(changelogText(20_000)),
+  entryVersion: changelogText(64),
+  nullableVersion: nullable(changelogText(64)),
+  refs: {
+    check: (value) => Array.isArray(value) && value.length <= 20 && value.every(boundedString(1, 100)),
+    hint: 'must be an array of at most 20 strings of 1-100 characters',
+  },
+  links: {
+    check: (value) => Array.isArray(value) && value.length <= 20 && value.every(isLink),
+    hint: 'must be an array of at most 20 {label, url} objects (label 1-100 characters, url an absolute http or https URL of at most 2000 characters)',
+  },
 };
 
 const route = (...segments) => ['/dashboards', ...segments.map(encodeURIComponent)].join('/');
+const changelogRoute = (...segments) => ['/changelog', ...segments.map(encodeURIComponent)].join('/');
+const pick = (input, keys) => Object.fromEntries(keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+const CHANGELOG_FIELDS = ['kind', 'title', 'body', 'version', 'refs', 'links', 'occurredAt'];
 
 const DEFINITIONS = new Map([
   ['paperclipListDashboards', {
@@ -130,7 +177,59 @@ const DEFINITIONS = new Map([
     required: ['spec'],
     build: (input) => ({ method: 'POST', path: '/validate', params: {}, body: { spec: input.spec } }),
   }],
+  ['paperclipListChangelog', {
+    fields: { projectId: 'uuid', kinds: 'kinds', includeIssues: 'includeIssues', before: 'cursor', limit: 'pageSize' },
+    required: [],
+    build: (input) => ({
+      method: 'GET',
+      path: changelogRoute(),
+      params: {
+        ...pick(input, ['projectId', 'includeIssues', 'before', 'limit']),
+        ...(input.kinds?.length ? { kind: input.kinds.join(',') } : {}),
+      },
+    }),
+  }],
+  ['paperclipAddChangelogEntry', {
+    fields: {
+      projectId: 'uuid', kind: 'curatedKind', title: 'title', body: 'entryBody', version: 'entryVersion',
+      refs: 'refs', links: 'links', occurredAt: 'occurredAt',
+    },
+    required: ['projectId', 'kind', 'title'],
+    build: (input) => ({ method: 'POST', path: changelogRoute(), params: {}, body: pick(input, ['projectId', ...CHANGELOG_FIELDS]) }),
+  }],
+  ['paperclipUpdateChangelogEntry', {
+    fields: {
+      entryId: 'uuid', kind: 'curatedKind', title: 'title', body: 'nullableBody', version: 'nullableVersion',
+      refs: 'refs', links: 'links', occurredAt: 'occurredAt',
+    },
+    required: ['entryId'],
+    atLeastOne: CHANGELOG_FIELDS,
+    build: (input) => ({ method: 'POST', path: changelogRoute(input.entryId), params: {}, body: pick(input, CHANGELOG_FIELDS) }),
+  }],
+  ['paperclipImportChangelogFromIssues', {
+    fields: { projectId: 'uuid' },
+    required: ['projectId'],
+    build: (input) => ({ method: 'POST', path: changelogRoute('import'), params: {}, body: { projectId: input.projectId } }),
+  }],
 ]);
+
+const CHANGELOG_GUIDE = 'Record an entry when something relevant closes (a merged PR, a validated deploy, a milestone, a decision, an incident or a release): one entry per relevant change, not one per run or commit. Title it with the result, put what changed and why in body (Markdown), and put issue identifiers, PR numbers or commit SHAs in refs. Completed issues already enter the changelog on their own, so do not record an entry that only repeats one.';
+const entryFields = {
+  kind: { type: 'string', enum: CURATED_KINDS, description: 'What the entry records.' },
+  title: { type: 'string', minLength: 1, maxLength: 200, description: 'The result, in one line.' },
+  refs: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 }, description: 'Issue identifiers (e.g. ABC-12), PR numbers or commit SHAs.' },
+  links: {
+    type: 'array',
+    maxItems: 20,
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['label', 'url'],
+      properties: { label: { type: 'string', minLength: 1, maxLength: 100 }, url: { type: 'string', maxLength: 2000, description: 'Absolute http or https URL.' } },
+    },
+  },
+  occurredAt: { type: 'string', maxLength: 64, description: 'ISO 8601 date or timestamp of the event; defaults to now.' },
+};
 
 export const DASHBOARD_TOOLS = [
   tool('paperclipListDashboards',
@@ -168,6 +267,38 @@ export const DASHBOARD_TOOLS = [
     'Dry run: validate a Project Dashboard spec and save nothing. Returns {valid: true, datasets, sections} or an error listing up to 50 path-precise problems to fix. Call it before paperclipUpsertDashboard.',
     { spec: specSchema('Dashboard spec (declarative JSON) to validate.') },
     ['spec'], READ_ONLY),
+  tool('paperclipListChangelog',
+    'Read the Project Dashboards changelog, newest first: the dated evolution of one project or of the whole company (entries of kind milestone, release, feature, fix, improvement, decision, incident, note, plus issue entries generated from completed issues). Use it to see what changed in a project or to check what is already recorded before adding an entry. Returns {entries, nextCursor}; pass nextCursor as before for older entries. Optional filters: projectId, kinds, includeIssues (false hides the generated issue entries), limit (1-500, default 50).',
+    {
+      projectId: { ...uuid, description: 'Only this Paperclip project; omit for every project of the company.' },
+      kinds: { type: 'array', maxItems: ALL_KINDS.length, items: { type: 'string', enum: ALL_KINDS }, description: 'Only these kinds.' },
+      includeIssues: { type: 'boolean', description: 'Include entries generated from completed issues (default true).' },
+      before: { type: 'string', maxLength: 200, description: 'The nextCursor of the previous response.' },
+      limit: { type: 'integer', minimum: 1, maximum: MAX_CHANGELOG_PAGE, description: 'Entries to return (default 50).' },
+    },
+    [], READ_ONLY),
+  tool('paperclipAddChangelogEntry',
+    `Add one entry to a project's changelog. NOT idempotent: every call creates a new entry, so call it once per change and do not retry blindly (list the changelog first if unsure). ${CHANGELOG_GUIDE} Entries cannot be deleted here; correct one with paperclipUpdateChangelogEntry.`,
+    {
+      projectId: { ...uuid, description: 'The Paperclip project the entry belongs to.' },
+      ...entryFields,
+      body: { type: 'string', minLength: 1, maxLength: 20_000, description: 'Markdown: what changed and why.' },
+      version: { type: 'string', minLength: 1, maxLength: 64, description: 'Release or version label, such as v1.4.0.' },
+    },
+    ['projectId', 'kind', 'title'], ADDITIVE_WRITE),
+  tool('paperclipUpdateChangelogEntry',
+    'Correct or complete a changelog entry written by hand: send entryId (from paperclipListChangelog) and only the fields to change; null clears body or version. The project cannot be changed, and entries generated from completed issues cannot be edited. Idempotent.',
+    {
+      entryId: { ...uuid, description: 'The changelog entry to update.' },
+      ...entryFields,
+      body: { type: ['string', 'null'], minLength: 1, maxLength: 20_000, description: 'Markdown; null removes it.' },
+      version: { type: ['string', 'null'], minLength: 1, maxLength: 64, description: 'Version label; null removes it.' },
+    },
+    ['entryId'], IDEMPOTENT_WRITE),
+  tool('paperclipImportChangelogFromIssues',
+    'Backfill or reconcile one project: add the completed (done) issues that have no changelog entry yet. Completed issues are normally added automatically, but events can be missed while Paperclip restarts, so run this after downtime or to fill a new project. Idempotent; never duplicates and never brings back an entry the board deleted. Honors the company setting (top-level issues only, or sub-issues too). Returns {scanned, imported, skipped, truncated}; truncated means 1000 issues were read and older ones may be missing.',
+    { projectId: { ...uuid, description: 'The Paperclip project to import into.' } },
+    ['projectId'], IDEMPOTENT_WRITE),
 ];
 
 export const isDashboardTool = (name) => DEFINITIONS.has(name);
@@ -191,6 +322,9 @@ export function buildDashboardRequest(name, rawInput) {
   }
   for (const key of definition.required) {
     if (rawInput[key] === undefined) reject(`${key} is required.`);
+  }
+  if (definition.atLeastOne && !definition.atLeastOne.some((key) => rawInput[key] !== undefined)) {
+    reject(`at least one of ${definition.atLeastOne.join(', ')} is required.`);
   }
   for (const [key, ruleName] of Object.entries(definition.fields)) {
     const value = rawInput[key];

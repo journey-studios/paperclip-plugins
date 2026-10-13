@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import assert from 'node:assert/strict';
 
 // Read-only integration check; credentials never enter argv or test output.
-// Dashboard writes only happen when SMOKE_DASHBOARD_WRITE=1 (see README).
+// Dashboard and changelog writes only happen when SMOKE_DASHBOARD_WRITE=1 (see README).
 const env = { ...process.env };
 if (!env.PAPERCLIP_API_KEY && env.PAPERCLIP_API_KEY_FILE) {
   env.PAPERCLIP_API_KEY = readFileSync(env.PAPERCLIP_API_KEY_FILE, 'utf8').trim();
@@ -19,6 +19,12 @@ const dashboardProject = env.SMOKE_DASHBOARD_PROJECT_ID || undefined;
 if (env.SMOKE_DASHBOARD_WRITE === '1' && dashboardProject !== undefined
   && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dashboardProject)) {
   console.error(JSON.stringify({ ok: false, stage: 'configuration', error: 'SMOKE_DASHBOARD_PROJECT_ID must be the UUID of a project in the configured company.' }));
+  process.exit(1);
+}
+// Optional: scopes the changelog checks (and, in write mode, receives one smoke note).
+const changelogProject = env.SMOKE_CHANGELOG_PROJECT_ID || undefined;
+if (changelogProject !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(changelogProject)) {
+  console.error(JSON.stringify({ ok: false, stage: 'configuration', error: 'SMOKE_CHANGELOG_PROJECT_ID must be the UUID of a project in the configured company.' }));
   process.exit(1);
 }
 const child = spawn(process.execPath, [fileURLToPath(new URL('../src/bridge.mjs', import.meta.url))], {
@@ -54,7 +60,8 @@ const data = (result) => {
 };
 const DASHBOARD_SMOKE_SLUG = 'mcp-bridge-smoke';
 const dashboardTools = ['paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus',
-  'paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipValidateDashboardSpec'];
+  'paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipValidateDashboardSpec',
+  'paperclipListChangelog', 'paperclipAddChangelogEntry', 'paperclipUpdateChangelogEntry', 'paperclipImportChangelogFromIssues'];
 const smokeSpec = (rows, updatedAt = new Date().toISOString()) => ({
   version: 1,
   title: 'MCP bridge smoke test',
@@ -186,6 +193,21 @@ try {
   assert.equal(nullProject.isError, true, 'projectId null must be rejected');
   assert.match(errorText(nullProject), /^Invalid input: projectId must be a project UUID/);
   dashboardChecks.push('dashboard-validate', 'dashboard-invalid-spec-422', 'dashboard-not-found-404', 'dashboard-input-bounds', 'dashboard-company-override', 'dashboard-null-project-rejected');
+  // Changelog reads only. The input checks below are rejected by the bridge itself, before any HTTP call.
+  stage = 'changelog';
+  const changelog = dashboardData(await call('paperclipListChangelog', { limit: 5 }), 'list changelog');
+  assert(Array.isArray(changelog.entries), 'Changelog entries must be an array');
+  assert(changelog.nextCursor === null || typeof changelog.nextCursor === 'string', 'Changelog cursor must be a string or null');
+  if (changelogProject) {
+    const scoped = dashboardData(await call('paperclipListChangelog', { projectId: changelogProject, includeIssues: false, limit: 5 }), 'list project changelog');
+    assert(scoped.entries.every((entry) => entry.projectId === changelogProject && entry.kind !== 'issue'), 'Project changelog must be filtered');
+    dashboardChecks.push('changelog-project-filter');
+  }
+  assert.equal((await call('paperclipListChangelog', { limit: 0 })).isError, true);
+  assert.equal((await call('paperclipListChangelog', { companyId: randomUUID() })).isError, true);
+  assert.equal((await call('paperclipAddChangelogEntry', { projectId: randomUUID(), kind: 'issue', title: 'smoke' })).isError, true, 'The issue kind must be rejected');
+  assert.equal((await call('paperclipUpdateChangelogEntry', { entryId: randomUUID() })).isError, true, 'An update needs at least one field');
+  dashboardChecks.push('changelog-list', 'changelog-input-bounds');
   if (env.SMOKE_DASHBOARD_WRITE === '1') {
     // Opt-in WRITE mode: upserts the smoke dashboard and refreshes its dataset. An existing dashboard is
     // upserted without projectId, so it keeps its project (or stays projectless); a new one is created in
@@ -224,10 +246,31 @@ try {
     const after = dashboardData(await call('paperclipDashboardStatus', { slug: DASHBOARD_SMOKE_SLUG }), 'dashboard status after write').status;
     assert.equal(after.datasets.find((dataset) => dataset.id === 'smoke')?.stale, false);
     dashboardChecks.push(existing ? 'dashboard-updated-in-place' : 'dashboard-created-in-project', 'dashboard-upsert', 'dashboard-dataset-update', 'dashboard-read-back');
+    if (changelogProject) {
+      // Adding an entry is not idempotent: each run leaves one "note" in the project changelog.
+      // There is no delete tool; remove it from the board UI if unwanted. Import is never exercised here.
+      stage = 'changelog-write';
+      const marker = `MCP bridge smoke test ${new Date().toISOString()}`;
+      const added = dashboardData(await call('paperclipAddChangelogEntry', {
+        projectId: changelogProject, kind: 'note', title: marker, body: 'Written by the `plugin-mcp-bridge` smoke test; safe to ignore.',
+      }), 'add changelog entry').entry;
+      assert.equal(added.title, marker);
+      assert.equal(added.kind, 'note');
+      assert.equal(added.projectId, changelogProject);
+      const edited = dashboardData(await call('paperclipUpdateChangelogEntry', { entryId: added.id, version: 'smoke', body: null }), 'update changelog entry').entry;
+      assert.equal(edited.id, added.id);
+      assert.equal(edited.version, 'smoke');
+      assert.equal(edited.body, null);
+      const found = dashboardData(await call('paperclipListChangelog', { projectId: changelogProject, kinds: ['note'], limit: 20 }), 'read back changelog').entries
+        .find((entry) => entry.id === added.id);
+      assert(found, 'The new entry must be listed');
+      assert.equal(found.version, 'smoke');
+      dashboardChecks.push('changelog-add', 'changelog-update', 'changelog-read-back');
+    }
   }
   console.log(JSON.stringify({
     ok: true, toolsTotal: catalog.tools.length, addedTools: added.length + dashboardTools.length,
-    dashboards: listed.dashboards.length, dashboardWrites: env.SMOKE_DASHBOARD_WRITE === '1',
+    dashboards: listed.dashboards.length, changelogEntriesSeen: changelog.entries.length, dashboardWrites: env.SMOKE_DASHBOARD_WRITE === '1',
     agents: overview.agents.length, runs: overview.summary?.runsTotal,
     failuresReturned: failures.failures?.length ?? failures.items?.length,
     anomaliesReturned: anomalies.anomalies?.length ?? anomalies.items?.length,
@@ -236,7 +279,7 @@ try {
   }
   }
 } catch (error) {
-  const mode = env.SMOKE_DASHBOARD_WRITE === '1' ? 'MCP smoke (dashboard write mode)' : 'Read-only MCP smoke';
+  const mode = env.SMOKE_DASHBOARD_WRITE === '1' ? 'MCP smoke (dashboard and changelog write mode)' : 'Read-only MCP smoke';
   console.error(JSON.stringify({
     ok: false, stage,
     error: error instanceof SmokeConfigError ? error.message : `${mode} failed; no credentials or response bodies logged.`,
