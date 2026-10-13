@@ -1,62 +1,9 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { McpBridge, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
-
-const companyId = 'd9f67265-9c8f-4cbe-b91c-b3e0ea26da02';
-const agentId = '7067603c-5ee4-4db8-87f1-8c16a54f44a2';
-const runId = '150c11ef-4863-4a50-b4a3-95c1bf2b6224';
-const env = {
-  PAPERCLIP_API_URL: 'https://paperclip.test',
-  PAPERCLIP_API_KEY: 'secret-test-value',
-  PAPERCLIP_COMPANY_ID: companyId,
-};
-
-function fakeChild() {
-  const child = new EventEmitter();
-  child.stdin = new PassThrough();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.received = [];
-  child.stdin.on('data', (buf) => {
-    const message = JSON.parse(buf.toString());
-    child.received.push(message);
-    if (message.method === 'initialize') child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } } })}\n`);
-    if (message.method === 'tools/list') {
-      const tools = message.params?.cursor === 'collision' ? [{ name: OBSERVATORY_TOOLS[0].name }] : [{ name: 'existingTool' }];
-      const nextCursor = message.params?.cursor ? 'stock-next-2' : 'stock-next-1';
-      child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools, nextCursor } })}\n`);
-    }
-    if (message.method === 'ping') child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { pong: true } })}\n`);
-  });
-  return child;
-}
-
-function makeBridge({ fetchImpl = async () => new Response('{}'), bridgeEnv = env } = {}) {
-  const stdin = new PassThrough();
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  let child;
-  const bridge = new McpBridge({
-    env: bridgeEnv,
-    spawn: (...args) => { child = fakeChild(); child.spawnArgs = args; return child; },
-    fetchImpl,
-    stdin,
-    stdout,
-    stderr,
-  });
-  const output = [];
-  const errors = [];
-  stdout.on('data', (chunk) => output.push(chunk.toString()));
-  stderr.on('data', (chunk) => errors.push(chunk.toString()));
-  return { bridge, stdin, stdout, stderr, child: () => child, output, errors };
-}
-
-const flush = () => new Promise((resolve) => setImmediate(resolve));
-const messages = (items) => items.join('').trim().split('\n').filter(Boolean).map(JSON.parse);
+import { OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { companyId, agentId, runId, env, makeBridge, flush, messages } from './helpers.mjs';
 
 test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () => {
   const accepted = ['https://paperclip.test', 'http://localhost:3100', 'http://127.0.0.1:3100', 'http://[::1]:3100'];

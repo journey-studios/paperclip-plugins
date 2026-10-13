@@ -1,0 +1,33 @@
+name: MCP bridge checks
+
+on:
+  push:
+    paths:
+      - 'services/plugin-mcp-bridge/**'
+      - '.github/workflows/mcp-bridge.yml'
+  pull_request:
+    paths:
+      - 'services/plugin-mcp-bridge/**'
+      - '.github/workflows/mcp-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  actor-aware-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.19.0
+      - name: JavaScript syntax
+        run: |
+          for file in services/plugin-mcp-bridge/src/*.mjs services/plugin-mcp-bridge/scripts/*.mjs; do
+            node --check "$file"
+          done
+      - name: Native protocol, identity and authorization regressions
+        run: pnpm --dir services/plugin-mcp-bridge test:coverage

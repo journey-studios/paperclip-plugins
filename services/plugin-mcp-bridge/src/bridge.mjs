@@ -1,10 +1,11 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { readBounded } from './bounded-response.mjs';
+import { IDENTITY_DESCRIPTION, resolveBoardIdentity, identityToolError } from './identity.mjs';
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STOCK_LINE_BYTES = 16 * 1024 * 1024;
-const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_PENDING = 128;
 const MAX_OWN_CONCURRENCY = 8;
 const STOCK_TIMEOUT_MS = 5 * 60_000;
@@ -95,23 +96,6 @@ function parseToolInput(name, input) {
   return input;
 }
 
-async function readBounded(response, maxBytes = MAX_RESPONSE_BYTES) {
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new Error('response too large');
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks, size).toString('utf8');
-}
 
 function safeEvent(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
@@ -142,6 +126,7 @@ export class McpBridge {
     this.initialized = false;
     this.childUnavailable = false;
     this.pending = new Map();
+    this.identityPending = new Set();
     const command = env.PAPERCLIP_MCP_COMMAND || '/app/node_modules/.bin/paperclip-mcp-server';
     let args = [];
     if (env.PAPERCLIP_MCP_ARGS) {
@@ -259,6 +244,39 @@ export class McpBridge {
     }
     const id = message.id;
     const hasId = Object.hasOwn(message, 'id');
+    if (message.method === 'tools/call' && message.params?.name === 'paperclipMe') {
+      if (!hasId) return;
+      if (!this.initialized) return this.writeJson(rpcError(id, -32002, 'Initialize the MCP session first'));
+      if (this.childUnavailable) return this.writeJson(rpcError(id, -32603, 'MCP subprocess unavailable'));
+      const key = asIdKey(id);
+      if (this.pending.has(key) || this.identityPending.has(key)) return this.writeJson(rpcError(id, -32600, 'Duplicate pending MCP request id'));
+      const input = message.params.arguments === undefined ? {} : message.params.arguments;
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) {
+        return this.writeJson(rpcError(id, -32602, 'paperclipMe accepts no arguments'));
+      }
+      if (this.ownActive >= MAX_OWN_CONCURRENCY) {
+        return this.writeJson({ jsonrpc: '2.0', id, result: identityToolError(new Error()) });
+      }
+      this.identityPending.add(key);
+      this.ownActive++;
+      try {
+        const identity = await resolveBoardIdentity(this.config, this.fetchImpl);
+        if (this.childUnavailable) return this.writeJson(rpcError(id, -32603, 'MCP subprocess unavailable'));
+        if (identity.kind === 'native-agent') {
+          // Keep the entire native agent result, trust filtering and errors.
+          this.identityPending.delete(key);
+          this.forward(message, message.method);
+        } else {
+          this.writeJson({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(identity.actor, null, 2) }] } });
+        }
+      } catch (error) {
+        this.writeJson({ jsonrpc: '2.0', id, result: identityToolError(error) });
+      } finally {
+        this.identityPending.delete(key);
+        this.ownActive--;
+      }
+      return;
+    }
     if (message.method === 'tools/call' && TOOL_ROUTES.has(message.params?.name)) {
       if (!hasId) return;
       if (!this.initialized) return this.writeJson(rpcError(id, -32002, 'Initialize the MCP session first'));
@@ -282,8 +300,10 @@ export class McpBridge {
         const existing = new Set(tools.map((item) => item?.name).filter((name) => typeof name === 'string'));
         const conflicts = OBSERVATORY_TOOLS.filter((entry) => existing.has(entry.name));
         if (conflicts.length) return rpcError(id, -32603, 'MCP tool name conflict with Observatory bridge');
-        if (!isInitialPage) return response;
-        return { ...response, result: { ...response.result, tools: [...tools, ...OBSERVATORY_TOOLS] } };
+        const actorAwareTools = tools.map((entry) => entry?.name === 'paperclipMe'
+          ? { ...entry, description: IDENTITY_DESCRIPTION } : entry);
+        return { ...response, result: { ...response.result, tools: isInitialPage
+          ? [...actorAwareTools, ...OBSERVATORY_TOOLS] : actorAwareTools } };
       });
       return;
     }
@@ -301,7 +321,7 @@ export class McpBridge {
       return;
     }
     const key = asIdKey(message.id);
-    if (this.pending.has(key)) return this.writeJson(rpcError(message.id, -32600, 'Duplicate pending MCP request id'));
+    if (this.pending.has(key) || this.identityPending.has(key)) return this.writeJson(rpcError(message.id, -32600, 'Duplicate pending MCP request id'));
     const timer = setTimeout(() => {
       this.pending.delete(key);
       this.writeJson(rpcError(message.id, -32001, 'MCP subprocess request timed out'));
