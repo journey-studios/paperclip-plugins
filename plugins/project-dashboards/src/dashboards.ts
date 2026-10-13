@@ -9,6 +9,7 @@ import type {
   Dataset,
   RevisionSummary,
 } from "./contracts.js";
+import { getOwn } from "./keys.js";
 import { normalizeSettings } from "./settings.js";
 import { validateSpec } from "./spec.js";
 
@@ -267,27 +268,6 @@ async function requireProject(ctx: PluginContext, companyId: string, projectId: 
   }
 }
 
-async function writeRevision(
-  ctx: PluginContext,
-  dashboardId: string,
-  revision: number,
-  spec: DashboardSpec,
-  actor: Actor,
-  settings: DashboardSettings,
-): Promise<void> {
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "dashboard_revisions")} (dashboard_id, revision, spec, updated_by_kind, updated_by_id)
-     VALUES ($1, $2, $3::jsonb, $4, $5)
-     ON CONFLICT (dashboard_id, revision) DO UPDATE SET spec = EXCLUDED.spec,
-       updated_by_kind = EXCLUDED.updated_by_kind, updated_by_id = EXCLUDED.updated_by_id`,
-    [dashboardId, revision, JSON.stringify(spec), actor.kind, actor.id],
-  );
-  await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "dashboard_revisions")} WHERE dashboard_id = $1 AND revision <= $2`,
-    [dashboardId, revision - settings.maxRevisions],
-  );
-}
-
 export interface UpsertInput {
   companyId: string;
   slug: string;
@@ -322,28 +302,62 @@ export async function upsertDashboard(
   const current = existing[0];
   let id: string;
   let revision: number;
+  // The dashboard row, its revision row and the prune are ONE statement (a
+  // data-modifying CTE): the host offers no transactions, and this way a
+  // failure in any step leaves the previous state untouched.
   if (current) {
     id = current.id;
     revision = Number(current.revision) + 1;
     const projectId = input.projectId === undefined ? current.project_id : input.projectId;
     await ctx.db.execute(
-      `UPDATE ${table(ctx, "dashboards")}
-          SET title = $3, spec = $4::jsonb, revision = $5, project_id = $6,
-              updated_by_kind = $7, updated_by_id = $8, updated_at = now()
-        WHERE company_id = $1 AND id = $2`,
-      [companyId, id, title, JSON.stringify(spec), revision, projectId, actor.kind, actor.id],
+      `WITH upd AS (
+         UPDATE ${table(ctx, "dashboards")}
+            SET title = $3, spec = $4::jsonb, revision = $5, project_id = $6,
+                updated_by_kind = $7, updated_by_id = $8, updated_at = now()
+          WHERE company_id = $1 AND id = $2 AND revision = $9
+          RETURNING id, revision, spec, updated_by_kind, updated_by_id
+       ), ins AS (
+         INSERT INTO ${table(ctx, "dashboard_revisions")} (dashboard_id, revision, spec, updated_by_kind, updated_by_id)
+         SELECT id, revision, spec, updated_by_kind, updated_by_id FROM upd
+         ON CONFLICT (dashboard_id, revision) DO UPDATE SET spec = EXCLUDED.spec,
+           updated_by_kind = EXCLUDED.updated_by_kind, updated_by_id = EXCLUDED.updated_by_id
+         RETURNING dashboard_id
+       )
+       DELETE FROM ${table(ctx, "dashboard_revisions")}
+        WHERE dashboard_id IN (SELECT id FROM upd) AND revision <= $10`,
+      [
+        companyId,
+        id,
+        title,
+        JSON.stringify(spec),
+        revision,
+        projectId,
+        actor.kind,
+        actor.id,
+        Number(current.revision),
+        revision - settings.maxRevisions,
+      ],
     );
   } else {
     id = randomUUID();
     revision = 1;
     await ctx.db.execute(
-      `INSERT INTO ${table(ctx, "dashboards")}
-         (id, company_id, project_id, slug, title, spec, revision, updated_by_kind, updated_by_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 1, $7, $8)`,
+      `WITH ins AS (
+         INSERT INTO ${table(ctx, "dashboards")}
+           (id, company_id, project_id, slug, title, spec, revision, updated_by_kind, updated_by_id)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 1, $7, $8)
+         RETURNING id, revision, spec, updated_by_kind, updated_by_id
+       )
+       INSERT INTO ${table(ctx, "dashboard_revisions")} (dashboard_id, revision, spec, updated_by_kind, updated_by_id)
+       SELECT id, revision, spec, updated_by_kind, updated_by_id FROM ins`,
       [id, companyId, input.projectId ?? null, slug, title, JSON.stringify(spec), actor.kind, actor.id],
     );
   }
-  await writeRevision(ctx, id, revision, spec, actor, settings);
+  const record = await getDashboard(ctx, { companyId, id });
+  if (!record || record.revision !== revision) {
+    // The revision guard matched no row: another writer got there first.
+    throw new Error("Dashboard changed during write; retry");
+  }
   await ctx.activity.log({
     companyId,
     message: input.activityMessage ?? `${current ? "Updated" : "Created"} dashboard "${title}" (revision ${revision})`,
@@ -351,10 +365,6 @@ export async function upsertDashboard(
     entityId: id,
     metadata: { slug, revision, actor: actor.kind },
   });
-  const record = await getDashboard(ctx, { companyId, id });
-  if (!record) {
-    throw new Error("Dashboard disappeared after write");
-  }
   return { record, created: !current };
 }
 
@@ -383,7 +393,7 @@ export async function updateDataset(
   if (!record.spec) {
     throw new DashboardError(`Dashboard "${slug}" has a stored spec that no longer validates; resend it with upsert_dashboard`);
   }
-  const existing = record.spec.datasets[input.datasetId];
+  const existing = getOwn(record.spec.datasets, input.datasetId);
   if (!existing) {
     throw new NotFoundError(
       `datasetId: unknown dataset "${input.datasetId}" (declared: ${Object.keys(record.spec.datasets).join(", ") || "none"})`,

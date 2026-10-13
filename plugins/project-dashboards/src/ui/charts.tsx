@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { getOwn } from "../keys.js";
 import type { ChartBlockSpec, Dataset, Format } from "../contracts.js";
 import type { Translate } from "./i18n.js";
 import { buildSeries, niceScale, stackedTotals, type Formatter, type Series, type SeriesData } from "./model.js";
@@ -89,7 +90,7 @@ function Tooltip({
       {extra.map((field) => (
         <div className="jpd-tooltip-row" key={field}>
           <span>{field}</span>
-          <span>{fmt.format(row?.[field])}</span>
+          <span>{fmt.format(row ? getOwn(row, field) : undefined)}</span>
         </div>
       ))}
     </div>

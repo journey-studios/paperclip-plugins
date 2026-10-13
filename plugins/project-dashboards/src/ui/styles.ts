@@ -14,11 +14,10 @@ export const styles = `
 .jpd-title{margin:0;font-size:clamp(1.5rem,1.1rem + 1.6vw,2.1rem);line-height:1.15;font-weight:650;letter-spacing:-0.02em;font-family:ui-serif,Georgia,"Times New Roman",serif}
 .jpd-summary{max-width:78ch;color:var(--foreground)}
 .jpd-meta{color:var(--jpd-muted);font-size:12.5px}
-.jpd-meta p{margin:0}
+.jpd-meta>p{margin:0}
 .jpd-section{display:grid;gap:12px}
 .jpd-h2{margin:0;font-size:1.15rem;font-weight:600;letter-spacing:-0.01em}
 .jpd-note{color:var(--jpd-muted);font-size:13px;max-width:80ch}
-.jpd-note p{margin:0}
 .jpd-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--jpd-gap);align-items:start}
 .jpd-grid[data-cols="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
 .jpd-grid[data-cols="3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -27,7 +26,6 @@ export const styles = `
 .jpd-card{container-type:inline-size;container-name:jpdcard;background:var(--card);color:var(--card-foreground,var(--foreground));border:1px solid var(--jpd-line);border-radius:var(--radius);padding:16px;min-width:0;display:grid;gap:12px}
 .jpd-card-title{margin:0;font-size:14px;font-weight:600}
 .jpd-card-note{color:var(--jpd-muted);font-size:12.5px}
-.jpd-card-note p{margin:0}
 .jpd-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--jpd-gap)}
 .jpd-kpi{display:grid;gap:4px;align-content:start}
 .jpd-kpi-label{font-size:12px;color:var(--jpd-muted);text-transform:uppercase;letter-spacing:.04em}
@@ -125,6 +123,14 @@ export const styles = `
 .jpd-nav:hover{background:var(--jpd-soft)}
 .jpd-icon{width:16px;height:16px;flex:none}
 .jpd .paperclip-markdown>*:first-child,.jpd-md>*:first-child{margin-top:0}
+/* Small muted text keeps its size and color even when the host Markdown renderer sets its own. */
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown{font-size:inherit;line-height:inherit;color:inherit}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown :is(p,li,ul,ol,blockquote,strong,em,code){font-size:inherit;line-height:inherit;color:inherit}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown :is(p,ul,ol,blockquote){margin-top:.25em;margin-bottom:.25em}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown li{margin:.1em 0}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown code{padding:0 .25em}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown > :is(:first-child){margin-top:0}
+.jpd :is(.jpd-note,.jpd-card-note,.jpd-meta,.jpd-kpi-caption,.jpd-source-line) .paperclip-markdown > :is(:last-child){margin-bottom:0}
 .jpd-md>*:last-child{margin-bottom:0}
 @container jpd (max-width:760px){
   .jpd-grid[data-cols="3"],.jpd-grid[data-cols="4"]{grid-template-columns:repeat(2,minmax(0,1fr))}

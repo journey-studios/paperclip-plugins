@@ -12,6 +12,7 @@ import {
   mermaidFence,
   niceScale,
   resolvePalette,
+  seriesColorsFor,
   resolveValue,
   safeHref,
   sortRows,
@@ -196,3 +197,32 @@ describe("chart helpers", () => {
 function rows() {
   return datasets.t!.rows;
 }
+
+describe("own-property lookups", () => {
+  it("never reads Object.prototype members as data", () => {
+    const tones = buildToneMap({ defaultStatusTones: {} }, { statusTones: { Shipped: "ok" } });
+    for (const status of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect(toneFor(status, tones), status).toBe("muted");
+    }
+    expect(toneFor("shipped", tones)).toBe("ok");
+    expect(resolveValue({ dataset: "constructor", field: "a" }, datasets)).toBeNull();
+    expect(resolveValue({ dataset: "t", field: "toString" }, datasets)).toBeNull();
+    expect(resolveValue({ dataset: "t", field: "name", where: { constructor: "x" } }, datasets)).toBeNull();
+    const data = buildSeries([{ toString: 3 }, { other: 1 }], "toString", ["toString"], { valueOf: "x" });
+    expect(data.series[0]).toEqual({ key: "toString", label: "toString", values: [3, 0] });
+    expect(data.categories).toEqual(["3", ""]);
+    expect(filterRows([{ a: "x" }], { selects: { constructor: "y" } })).toHaveLength(0);
+  });
+
+  it("ignores reserved keys in tone maps and keeps maps prototype-less", () => {
+    const hostile = JSON.parse('{"__proto__":"ok","constructor":"bad","fine":"warn"}');
+    const tones = buildToneMap({ defaultStatusTones: hostile }, { statusTones: hostile });
+    expect(Object.getPrototypeOf(tones)).toBeNull();
+    expect(toneFor("fine", tones)).toBe("warn");
+    expect(Object.keys(tones)).not.toContain("__proto__");
+    expect(toneFor("constructor", tones)).toBe("muted");
+    const palette = seriesColorsFor(["constructor"], undefined, tones, ["#111111"], false);
+    expect(palette).toEqual(["#111111"]);
+    expect(seriesColorsFor(["a"], JSON.parse('{"a":"constructor"}'), tones, ["#111111"], false)).toEqual(["constructor"]);
+  });
+});

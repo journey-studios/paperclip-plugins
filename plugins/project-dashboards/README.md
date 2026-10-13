@@ -83,7 +83,7 @@ Tools run inside an agent run. The company always comes from the run, never from
 }
 ```
 
-Row values are `string | number | boolean | null`. Dataset ids and section/block ids match `[A-Za-z0-9_-]{1,64}`. Unknown properties are rejected. Every dataset and field referenced by a block or value must exist (fields are checked against `columns`, or the union of row keys).
+Row values are `string | number | boolean | null`. Dataset ids and section/block ids match `[A-Za-z0-9_-]{1,64}`. Unknown properties are rejected, and the names `__proto__`, `constructor` and `prototype` are reserved: they are rejected as dataset ids, column or field names, row keys and map keys. Every dataset and field referenced by a block or value must exist (fields are checked against `columns`, or the union of row keys).
 
 Every block accepts `id?`, `title?`, `note?` (Markdown) and `span?` (1 to 4 grid columns within the section).
 

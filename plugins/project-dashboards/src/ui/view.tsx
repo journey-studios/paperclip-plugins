@@ -14,6 +14,7 @@ import type {
   TableColumn,
   Tone,
 } from "../contracts.js";
+import { getOwn } from "../keys.js";
 import { computeFreshness } from "../status.js";
 import { ChartView } from "./charts.js";
 import type { Translate } from "./i18n.js";
@@ -153,7 +154,7 @@ function cellClass(column: TableColumn): string | undefined {
 
 function TableView({ block, env }: { block: TableBlockSpec; env: ViewEnv }) {
   const { spec, t, fmt } = env;
-  const dataset = spec.datasets[block.dataset];
+  const dataset = getOwn(spec.datasets, block.dataset);
   const [chip, setChip] = useState<string | null>(null);
   const [selects, setSelects] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
@@ -246,14 +247,14 @@ function TableView({ block, env }: { block: TableBlockSpec; env: ViewEnv }) {
             </thead>
             <tbody>
               {visible.map((row, index) => (
-                <tr key={`${String(row[block.rowKey])}-${index}`}>
+                <tr key={`${String(getOwn(row, block.rowKey))}-${index}`}>
                   {block.columns.map((column) => (
                     <td
                       key={column.field}
                       data-label={column.label}
                       className={cellClass(column)}
                     >
-                      <Cell column={column} value={row[column.field]} env={env} />
+                      <Cell column={column} value={getOwn(row, column.field)} env={env} />
                     </td>
                   ))}
                 </tr>
@@ -295,19 +296,19 @@ function KpisView({ block, env }: { block: KpisBlockSpec; env: ViewEnv }) {
 
 function StatusListView({ block, env }: { block: StatusListBlockSpec; env: ViewEnv }) {
   const { spec, fmt, tones, t } = env;
-  const rows = spec.datasets[block.dataset]?.rows ?? [];
+  const rows = getOwn(spec.datasets, block.dataset)?.rows ?? [];
   return (
     <ul className="jpd-statuslist">
       {rows.map((row, index) => {
-        const tone = toneFor(row[block.statusField], tones);
+        const tone = toneFor(getOwn(row, block.statusField), tones);
         return (
-          <li className="jpd-statusitem" key={`${String(row[block.labelField])}-${index}`}>
+          <li className="jpd-statusitem" key={`${String(getOwn(row, block.labelField))}-${index}`}>
             <div className="jpd-statusitem-top">
-              <span className="jpd-statusitem-name">{fmt.format(row[block.labelField])}</span>
-              <StatusDot tone={tone} label={`${String(row[block.statusField] ?? "")} (${toneLabel(tone, t)})`} />
+              <span className="jpd-statusitem-name">{fmt.format(getOwn(row, block.labelField))}</span>
+              <StatusDot tone={tone} label={`${String(getOwn(row, block.statusField) ?? "")} (${toneLabel(tone, t)})`} />
             </div>
-            <div className="jpd-statusitem-value">{fmt.format(row[block.valueField], block.format)}</div>
-            {block.detailField ? <div className="jpd-card-note">{fmt.format(row[block.detailField])}</div> : null}
+            <div className="jpd-statusitem-value">{fmt.format(getOwn(row, block.valueField), block.format)}</div>
+            {block.detailField ? <div className="jpd-card-note">{fmt.format(getOwn(row, block.detailField))}</div> : null}
           </li>
         );
       })}
@@ -338,7 +339,7 @@ function BlockBody({ block, env }: { block: Block; env: ViewEnv }) {
     case "statusList":
       return <StatusListView block={block} env={env} />;
     case "chart": {
-      const dataset = env.spec.datasets[block.dataset];
+      const dataset = getOwn(env.spec.datasets, block.dataset);
       const categorical = block.chart === "donut" || block.chart === "progress";
       const colors = categorical
         ? env.palette

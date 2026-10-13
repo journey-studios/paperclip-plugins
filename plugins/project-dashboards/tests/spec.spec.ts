@@ -108,6 +108,41 @@ describe("DashboardSpec validator", () => {
     expect(errors.some((e) => e.startsWith("sections[3].blocks[1].seriesColors.P1: must be one of"))).toBe(true);
   });
 
+  it("rejects reserved names as dataset ids, columns, row keys and map keys with precise paths", () => {
+    const base = (datasets: string, blocks = "[]", extra = "") =>
+      JSON.parse(`{"version":1,"title":"T",${extra}"datasets":${datasets},"sections":[{"id":"s","blocks":${blocks}}]}`);
+    const errors = (value: unknown) => {
+      const result = validateSpec(value);
+      return result.ok ? [] : result.errors;
+    };
+    expect(errors(base('{"__proto__":{"title":"x","rows":[]}}'))).toEqual(['datasets.__proto__: "__proto__" is a reserved name and cannot be a dataset id']);
+    expect(errors(base('{"constructor":{"title":"x","rows":[]}}'))).toEqual(['datasets.constructor: "constructor" is a reserved name and cannot be a dataset id']);
+    expect(errors(base('{"d":{"title":"x","rows":[],"columns":["a","prototype"]}}'))).toEqual(['datasets.d.columns[1]: "prototype" is a reserved name']);
+    expect(errors(base('{"d":{"title":"x","rows":[{"__proto__":1,"a":2}]}}'))).toEqual(['datasets.d.rows[0].__proto__: "__proto__" is a reserved name']);
+    expect(errors(base('{"d":{"title":"x","rows":[{"a":1}]}}', "[]", '"statusTones":{"__PROTO__":"ok","constructor":"bad"},'))).toEqual([
+      'statusTones.__PROTO__: "__PROTO__" is a reserved name',
+      'statusTones.constructor: "constructor" is a reserved name',
+    ]);
+    const chart = '[{"type":"chart","chart":"bar","dataset":"d","x":"a","y":"a","seriesLabels":{"constructor":"x"},"seriesColors":{"__proto__":"ok"}}]';
+    expect(errors(base('{"d":{"title":"x","rows":[{"a":1}]}}', chart))).toEqual([
+      'sections[0].blocks[0].seriesLabels.constructor: "constructor" is a reserved name',
+      'sections[0].blocks[0].seriesColors.__proto__: "__proto__" is a reserved name',
+    ]);
+    const kpi = '[{"type":"kpis","items":[{"label":"L","value":{"dataset":"d","field":"a","where":{"constructor":"x"}}}]}]';
+    expect(errors(base('{"d":{"title":"x","rows":[{"a":1}]}}', kpi))).toEqual(['sections[0].blocks[0].items[0].value.where.constructor: "constructor" is a reserved name']);
+  });
+
+  it("builds outputs without prototypes and never pollutes Object.prototype", () => {
+    const spec = exampleSpec();
+    expect(Object.getPrototypeOf(spec.datasets)).toBeNull();
+    expect(Object.getPrototypeOf(spec.datasets.phases!.rows[0]!)).toBeNull();
+    expect(Object.getPrototypeOf(spec.statusTones!)).toBeNull();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    // Names that exist on Object.prototype but are not reserved stay usable and own.
+    const odd = validateSpec({ version: 1, title: "T", datasets: { toString: { title: "x", rows: [{ valueOf: 1 }] } }, sections: [] });
+    expect(odd.ok).toBe(true);
+  });
+
   it("requires version 1 and an object", () => {
     expect(validateSpec(null)).toEqual({ ok: false, errors: ["spec: must be an object"] });
     expect(errorsOf((spec) => {

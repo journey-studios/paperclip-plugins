@@ -287,3 +287,45 @@ describe("read tools", () => {
     expect((await h.tool("list_dashboards", { projectId: SECOND_PROJECT })).content).toBe("No dashboards yet.");
   });
 });
+
+describe("atomic writes", () => {
+  const failOn = async (event: "INSERT" | "DELETE") => {
+    await h.db.exec(
+      `CREATE FUNCTION public.fail_step() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'step failed'; END $$ LANGUAGE plpgsql;
+       CREATE TRIGGER fail_step BEFORE ${event} ON ${DATABASE_NAMESPACE}.dashboard_revisions FOR EACH ROW EXECUTE FUNCTION public.fail_step();`,
+    );
+  };
+  const clear = () => h.db.exec(`DROP TRIGGER fail_step ON ${DATABASE_NAMESPACE}.dashboard_revisions`);
+
+  it("a failing revision insert leaves an existing dashboard untouched", async () => {
+    await upsert({ slug: "atomic", spec: spec("One", 1) });
+    await failOn("INSERT");
+    await expect(upsert({ slug: "atomic", spec: spec("Two", 2) })).rejects.toThrow("step failed");
+    const record = (await h.data("dashboard.get", { companyId: COMPANY, slug: "atomic" })) as DashboardRecord;
+    expect(record.revision).toBe(1);
+    expect(record.title).toBe("One");
+    expect(record.spec?.datasets.d?.rows[0]?.n).toBe(1);
+    expect(await rows(`SELECT revision FROM ${DATABASE_NAMESPACE}.dashboard_revisions`)).toEqual([{ revision: 1 }]);
+    expect(h.activity).toHaveLength(1);
+    await clear();
+    expect((await upsert({ slug: "atomic", spec: spec("Two", 2) })).error).toBeUndefined();
+    expect(((await h.data("dashboard.get", { companyId: COMPANY, slug: "atomic" })) as DashboardRecord).revision).toBe(2);
+  });
+
+  it("a failing revision insert does not create a dashboard", async () => {
+    await failOn("INSERT");
+    await expect(upsert({ slug: "fresh", spec: spec() })).rejects.toThrow("step failed");
+    expect(await rows(`SELECT 1 FROM ${DATABASE_NAMESPACE}.dashboards`)).toHaveLength(0);
+    expect(h.activity).toHaveLength(0);
+  });
+
+  it("a failing prune rolls back the dashboard update and the new revision", async () => {
+    h.config[COMPANY] = { maxRevisions: 1 };
+    await upsert({ slug: "prune", spec: spec("One", 1) });
+    await failOn("DELETE");
+    await expect(upsert({ slug: "prune", spec: spec("Two", 2) })).rejects.toThrow("step failed");
+    const record = (await h.data("dashboard.get", { companyId: COMPANY, slug: "prune" })) as DashboardRecord;
+    expect(record.revision).toBe(1);
+    expect(await rows(`SELECT revision FROM ${DATABASE_NAMESPACE}.dashboard_revisions`)).toEqual([{ revision: 1 }]);
+  });
+});

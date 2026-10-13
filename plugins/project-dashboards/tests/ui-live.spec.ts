@@ -192,3 +192,29 @@ describe("sharing and freshness", () => {
     expect(container.querySelector("h1")?.textContent).toBe("Live board");
   });
 });
+
+describe("revision history", () => {
+  const revision = (n: number) => ({ revision: n, createdAt: T0, updatedBy: { kind: "agent", id: "a" } });
+  const restoreButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".jpd-history button")].filter((b) => b.textContent === "Restore");
+
+  it("refreshes the revision list after a restore so the current revision loses its button", async () => {
+    window.confirm = () => true;
+    host.data.set("dashboard.revisions", [revision(2), revision(1)]);
+    const details = [...container.querySelectorAll("details.jpd-sources")].find((d) => d.textContent?.startsWith("Revision history"))!;
+    await act(async () => {
+      (details as HTMLDetailsElement).open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    expect(restoreButtons()).toHaveLength(1);
+
+    // The worker would now hold revision 3 (a restore creates a new revision).
+    host.data.set("dashboard.get", record(3, T1));
+    host.data.set("dashboard.status", live(3, T1));
+    host.data.set("dashboard.revisions", [revision(3), revision(2), revision(1)]);
+    await act(async () => restoreButtons()[0]!.click());
+    expect(count("dashboard.revisions")).toBe(1);
+    expect(count("dashboard.get")).toBe(1);
+    expect(restoreButtons()).toHaveLength(2);
+    expect(container.querySelector(".jpd-history")?.textContent).toContain("#3");
+  });
+});

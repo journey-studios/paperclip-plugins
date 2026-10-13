@@ -142,6 +142,7 @@ function History({ record, companyId, t, fmt, onDone }: { record: DashboardRecor
     try {
       await restore({ companyId, id: record.id, revision });
       setError(null);
+      revisions.refresh();
       onDone();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));

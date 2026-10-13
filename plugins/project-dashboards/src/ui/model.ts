@@ -9,6 +9,7 @@ import type {
   Tone,
   Value,
 } from "../contracts.js";
+import { dict, getOwn, isReservedKey } from "../keys.js";
 import { BUILTIN_STATUS_TONES, normalizeToneKey } from "../settings.js";
 
 /* ---------------------------------------------------------------- formatting */
@@ -173,28 +174,40 @@ export function resolveValue(value: Value, datasets: Record<string, Dataset>): P
   if (typeof value === "number" || typeof value === "string") {
     return value;
   }
-  const dataset = datasets[value.dataset];
+  const dataset = getOwn(datasets, value.dataset);
   if (!dataset) {
     return null;
   }
   const where = value.where ? Object.entries(value.where) : [];
-  const rows = dataset.rows.filter((row) => where.every(([key, expected]) => row[key] === expected));
+  const rows = dataset.rows.filter((row) => where.every(([key, expected]) => getOwn(row, key) === expected));
   if (value.agg) {
     if (value.agg === "count") {
       return rows.length;
     }
-    const numbers = rows.map((row) => row[value.field]).filter((cell): cell is number => typeof cell === "number");
+    const numbers = rows.map((row) => getOwn(row, value.field)).filter((cell): cell is number => typeof cell === "number");
     return aggregate(numbers, value.agg);
   }
-  return rows[value.row ?? 0]?.[value.field] ?? null;
+  const picked = rows[value.row ?? 0];
+  return picked ? (getOwn(picked, value.field) ?? null) : null;
 }
 
 /* ------------------------------------------------------------------ tones */
 
 export function buildToneMap(settings: Pick<DashboardSettings, "defaultStatusTones">, spec: Pick<DashboardSpec, "statusTones">): Record<string, Tone> {
-  const merged: Record<string, Tone> = { ...BUILTIN_STATUS_TONES, ...settings.defaultStatusTones };
+  const merged = dict<Tone>();
+  const layers = [BUILTIN_STATUS_TONES, settings.defaultStatusTones];
+  for (const layer of layers) {
+    for (const [key, tone] of Object.entries(layer)) {
+      if (!isReservedKey(key)) {
+        merged[key] = tone;
+      }
+    }
+  }
   for (const [key, tone] of Object.entries(spec.statusTones ?? {})) {
-    merged[normalizeToneKey(key)] = tone;
+    const normalized = normalizeToneKey(key);
+    if (!isReservedKey(normalized)) {
+      merged[normalized] = tone;
+    }
   }
   return merged;
 }
@@ -203,7 +216,7 @@ export function toneFor(value: Primitive | undefined, tones: Record<string, Tone
   if (value === null || value === undefined) {
     return "muted";
   }
-  return tones[normalizeToneKey(String(value))] ?? "muted";
+  return getOwn(tones, normalizeToneKey(String(value))) ?? "muted";
 }
 
 /* --------------------------------------------------------- tables / filters */
@@ -222,17 +235,17 @@ function cellText(value: Primitive | undefined): string {
 export function filterRows(rows: Row[], filter: RowFilter): Row[] {
   const needle = (filter.search ?? "").trim().toLowerCase();
   return rows.filter((row) => {
-    if (filter.chip && cellText(row[filter.chip.field]) !== filter.chip.value) {
+    if (filter.chip && cellText(getOwn(row, filter.chip.field)) !== filter.chip.value) {
       return false;
     }
     for (const [field, selected] of Object.entries(filter.selects ?? {})) {
-      if (selected && cellText(row[field]) !== selected) {
+      if (selected && cellText(getOwn(row, field)) !== selected) {
         return false;
       }
     }
     if (needle) {
       const fields = filter.searchFields ?? Object.keys(row);
-      return fields.some((field) => cellText(row[field]).toLowerCase().includes(needle));
+      return fields.some((field) => cellText(getOwn(row, field)).toLowerCase().includes(needle));
     }
     return true;
   });
@@ -241,14 +254,14 @@ export function filterRows(rows: Row[], filter: RowFilter): Row[] {
 export function countBy(rows: Row[], field: string): { value: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    const key = cellText(row[field]);
+    const key = cellText(getOwn(row, field));
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts].map(([value, count]) => ({ value, count }));
 }
 
 export function distinctValues(rows: Row[], field: string): string[] {
-  return [...new Set(rows.map((row) => cellText(row[field])).filter((v) => v !== ""))].sort((a, b) =>
+  return [...new Set(rows.map((row) => cellText(getOwn(row, field))).filter((v) => v !== ""))].sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true }),
   );
 }
@@ -259,8 +272,8 @@ export function sortRows(rows: Row[], sort: { field: string; dir: "asc" | "desc"
   }
   const factor = sort.dir === "asc" ? 1 : -1;
   return [...rows].sort((a, b) => {
-    const left = a[sort.field];
-    const right = b[sort.field];
+    const left = getOwn(a, sort.field);
+    const right = getOwn(b, sort.field);
     if (left === null || left === undefined) {
       return right === null || right === undefined ? 0 : 1;
     }
@@ -307,7 +320,7 @@ export const TONE_COLORS: Record<"light" | "dark", Record<Tone, string>> = {
 };
 
 function isToneName(value: string): value is Tone {
-  return value in TONE_COLORS.light;
+  return Object.hasOwn(TONE_COLORS.light, value);
 }
 
 /**
@@ -326,14 +339,14 @@ export function seriesColorsFor(
   const fallback = (index: number) => palette[index % palette.length] ?? "#888888";
   if (seriesColors) {
     return keys.map((key, index) => {
-      const chosen = seriesColors[key];
+      const chosen = getOwn(seriesColors, key);
       if (chosen === undefined) {
         return fallback(index);
       }
       return isToneName(chosen) ? toneColors[chosen] : chosen;
     });
   }
-  const known = keys.map((key) => tones[normalizeToneKey(key)]);
+  const known = keys.map((key) => getOwn(tones, normalizeToneKey(key)));
   if (known.length > 0 && known.every((tone) => tone !== undefined)) {
     return known.map((tone) => (tone ? toneColors[tone] : "#888888"));
   }
@@ -363,11 +376,11 @@ export function buildSeries(
 ): SeriesData {
   const keys = typeof y === "string" ? [y] : y;
   return {
-    categories: rows.map((row) => cellText(row[x])),
+    categories: rows.map((row) => cellText(getOwn(row, x))),
     series: keys.map((key) => ({
       key,
-      label: seriesLabels?.[key] ?? key,
-      values: rows.map((row) => num(row[key])),
+      label: getOwn(seriesLabels, key) ?? key,
+      values: rows.map((row) => num(getOwn(row, key))),
     })),
     rows,
   };

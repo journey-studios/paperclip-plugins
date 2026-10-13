@@ -21,6 +21,8 @@ import {
   type Value,
   type Where,
 } from "./contracts.js";
+import { dict, isReservedKey } from "./keys.js";
+import { normalizeToneKey } from "./settings.js";
 
 export type SpecResult = { ok: true; spec: DashboardSpec } | { ok: false; errors: string[] };
 
@@ -103,6 +105,10 @@ class Parser {
       this.c.add(path, "must be a field name string");
       return undefined;
     }
+    if (isReservedKey(field)) {
+      this.c.add(path, `"${field}" is a reserved name`);
+      return undefined;
+    }
     const info = this.datasets.get(datasetId);
     if (info && !info.fields.has(field)) {
       this.c.add(path, `unknown field "${field}" in dataset "${datasetId}" (fields: ${[...info.fields].join(", ") || "none"})`);
@@ -180,6 +186,8 @@ class Parser {
         value.columns.forEach((column: unknown, index: number) => {
           if (typeof column !== "string" || column.length === 0 || column.length > 100) {
             this.c.add(`${path}.columns[${index}]`, "must be a non-empty string (max 100 characters)");
+          } else if (isReservedKey(column)) {
+            this.c.add(`${path}.columns[${index}]`, `"${column}" is a reserved name`);
           } else {
             columns?.push(column);
           }
@@ -196,9 +204,11 @@ class Parser {
           this.c.add(rowPath, "must be an object");
           return;
         }
-        const row: Row = {};
+        const row: Row = dict<Primitive>();
         for (const [key, cell] of Object.entries(raw)) {
-          if (!isPrimitive(cell)) {
+          if (isReservedKey(key)) {
+            this.c.add(`${rowPath}.${key}`, `"${key}" is a reserved name`);
+          } else if (!isPrimitive(cell)) {
             this.c.add(`${rowPath}.${key}`, "must be a string, finite number, boolean or null");
           } else if (columns && !columns.includes(key)) {
             this.c.add(`${rowPath}.${key}`, `field is not declared in columns (${columns.join(", ")})`);
@@ -226,9 +236,12 @@ class Parser {
       this.c.add(path, "must be an object of field to string/number/boolean");
       return undefined;
     }
-    const where: Where = {};
+    const where: Where = dict<string | number | boolean>();
     for (const [key, expected] of Object.entries(value)) {
       this.fieldRef(datasetId, key, `${path}.${key}`);
+      if (isReservedKey(key)) {
+        continue;
+      }
       if (typeof expected === "string" || typeof expected === "number" || typeof expected === "boolean") {
         where[key] = expected;
       } else {
@@ -421,10 +434,12 @@ class Parser {
       if (!isRecord(value.seriesLabels)) {
         this.c.add(`${path}.seriesLabels`, "must be an object of field to label");
       } else {
-        const labels: Record<string, string> = {};
+        const labels = dict<string>();
         const known = typeof y === "string" ? [y] : (y ?? []);
         for (const [key, label] of Object.entries(value.seriesLabels)) {
-          if (!known.includes(key)) {
+          if (isReservedKey(key)) {
+            this.c.add(`${path}.seriesLabels.${key}`, `"${key}" is a reserved name`);
+          } else if (!known.includes(key)) {
             this.c.add(`${path}.seriesLabels.${key}`, "is not one of the y fields");
           } else if (typeof label !== "string" || label.length > MAX_TITLE) {
             this.c.add(`${path}.seriesLabels.${key}`, "must be a string");
@@ -439,10 +454,12 @@ class Parser {
       if (!isRecord(value.seriesColors)) {
         this.c.add(`${path}.seriesColors`, "must be an object of y field to tone or #rrggbb");
       } else {
-        const colors: Record<string, string> = {};
+        const colors = dict<string>();
         const known = typeof y === "string" ? [y] : (y ?? []);
         for (const [key, color] of Object.entries(value.seriesColors)) {
-          if (!known.includes(key)) {
+          if (isReservedKey(key)) {
+            this.c.add(`${path}.seriesColors.${key}`, `"${key}" is a reserved name`);
+          } else if (!known.includes(key)) {
             this.c.add(`${path}.seriesColors.${key}`, "is not one of the y fields");
           } else if (oneOf(TONES, color) || (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color))) {
             colors[key] = color;
@@ -667,7 +684,7 @@ class Parser {
     const summary = this.text(input.summary, "summary", MAX_TEXT, false);
     const meta = this.text(input.meta, "meta", MAX_TEXT, false);
 
-    const datasets: Record<string, Dataset> = {};
+    const datasets = dict<Dataset>();
     if (!isRecord(input.datasets)) {
       this.c.add("datasets", "must be an object keyed by dataset id");
     } else {
@@ -675,6 +692,10 @@ class Parser {
         const path = `datasets.${id}`;
         if (!ID_PATTERN.test(id)) {
           this.c.add(path, "dataset id must match [A-Za-z0-9_-]{1,64}");
+          continue;
+        }
+        if (isReservedKey(id)) {
+          this.c.add(path, `"${id}" is a reserved name and cannot be a dataset id`);
           continue;
         }
         const dataset = this.dataset(raw, path);
@@ -696,10 +717,14 @@ class Parser {
       if (!isRecord(input.statusTones)) {
         this.c.add("statusTones", "must be an object of value to tone");
       } else {
-        statusTones = {};
+        statusTones = dict<Tone>();
         for (const [key, tone] of Object.entries(input.statusTones)) {
           const parsed = this.tone(tone, `statusTones.${key}`);
-          if (parsed !== undefined) statusTones[key] = parsed;
+          if (isReservedKey(key) || isReservedKey(normalizeToneKey(key))) {
+            this.c.add(`statusTones.${key}`, `"${key}" is a reserved name`);
+          } else if (parsed !== undefined) {
+            statusTones[key] = parsed;
+          }
         }
       }
     }

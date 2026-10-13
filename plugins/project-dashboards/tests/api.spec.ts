@@ -31,7 +31,7 @@ const post = (path: string, payload: unknown, extra: object = {}) => h.api("dash
 
 describe("manifest declarations", () => {
   it("declares the six board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.2.0");
+    expect(manifest.version).toBe("0.2.1");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
@@ -231,6 +231,32 @@ describe("REST API", () => {
     expect(results.every((r) => r.status === 200)).toBe(true);
     const status = await h.api("dashboard-status", { params: { slug: "race" } });
     expect(body(status).status.revision).toBe(4);
+  });
+});
+
+describe("reserved names and own-property lookups", () => {
+  it("answers 422 with a clear path for __proto__/constructor dataset ids", async () => {
+    for (const id of ["__proto__", "constructor", "prototype"]) {
+      const payload = JSON.parse(`{"slug":"evil","spec":{"version":1,"title":"T","datasets":{"${id}":{"title":"x","rows":[]}},"sections":[]}}`);
+      const response = await post("", payload);
+      expect(response.status, id).toBe(422);
+      expect(body(response).details, id).toEqual([`datasets.${id}: "${id}" is a reserved name and cannot be a dataset id`]);
+    }
+    expect(({} as Record<string, unknown>).title).toBeUndefined();
+    expect(await h.db.query(`SELECT 1 FROM ${DATABASE_NAMESPACE}.dashboards`)).toMatchObject({ rows: [] });
+  });
+
+  it("treats inherited names as unknown datasets (404 over REST, error from the tool)", async () => {
+    await post("", { slug: "known", spec: spec() });
+    for (const datasetId of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const response = await h.api("dataset-update", { method: "POST", params: { slug: "known", datasetId }, body: { rows: [] } });
+      expect(response.status, datasetId).toBe(404);
+      expect(body(response), datasetId).toEqual({ companyId: COMPANY, error: "not_found" });
+    }
+    const tool = await h.tool("update_dataset", { slug: "known", datasetId: "constructor", rows: [] });
+    expect(tool.error).toContain('unknown dataset "constructor" (declared: d)');
+    const record = body(await h.api("dashboard-get", { params: { slug: "known" } })).dashboard;
+    expect(record.revision).toBe(1);
   });
 });
 

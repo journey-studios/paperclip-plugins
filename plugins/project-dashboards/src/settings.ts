@@ -1,4 +1,5 @@
 import { TONES, type DashboardSettings, type Tone } from "./contracts.js";
+import { dict, isReservedKey } from "./keys.js";
 
 export const SETTINGS_LIMITS = {
   maxRevisions: { min: 1, max: 200, default: 20 },
@@ -150,11 +151,11 @@ export function normalizeSettings(raw: unknown): DashboardSettings {
         .slice(0, SETTINGS_LIMITS.palette.max)
         .map((entry) => (typeof entry === "string" && HEX_COLOR.test(entry.trim()) ? entry.trim() : ""))
     : [];
-  const defaultStatusTones: Record<string, Tone> = {};
+  const defaultStatusTones = dict<Tone>();
   if (isRecord(input.defaultStatusTones)) {
     for (const [key, tone] of Object.entries(input.defaultStatusTones)) {
       const normalized = normalizeToneKey(key);
-      if (normalized && isTone(tone)) {
+      if (normalized && !isReservedKey(normalized) && isTone(tone)) {
         defaultStatusTones[normalized] = tone;
       }
     }

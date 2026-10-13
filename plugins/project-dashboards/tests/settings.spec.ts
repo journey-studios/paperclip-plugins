@@ -62,6 +62,13 @@ describe("settings", () => {
     expect(normalizeSettings({ maxRevisions: 2.5 }).maxRevisions).toBe(20);
   });
 
+  it("skips reserved keys in default status tones", () => {
+    const raw = JSON.parse('{"defaultStatusTones":{"__proto__":"ok","Constructor":"bad","prototype":"warn","fine":"info"}}');
+    const tones = normalizeSettings(raw).defaultStatusTones;
+    expect(Object.keys(tones)).toEqual(["fine"]);
+    expect(Object.getPrototypeOf(tones)).toBeNull();
+  });
+
   it("keeps palette slots, blanking invalid entries and capping at 8", () => {
     expect(normalizeSettings({ palette: ["#fff", "red", 3, "#123456"] }).palette).toEqual(["#fff", "", "", "#123456"]);
     expect(normalizeSettings({ palette: ["red", "blue"] }).palette).toEqual([]);
