@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
-import { MAX_REQUEST_BODY_BYTES } from '../src/dashboards.mjs';
+import { ALL_KINDS, CURATED_KINDS, MAX_REQUEST_BODY_BYTES } from '../src/dashboards.mjs';
 import { companyId, env, flush, makeBridge, messages } from './helpers.mjs';
 
 const API = '/api/plugins/journeystudios.project-dashboards/api';
@@ -9,6 +9,9 @@ const otherCompany = '00000000-0000-4000-8000-000000000000';
 const projectId = '3c9c5b0e-3b1e-4a0e-9d52-8f2a6b0a1c11';
 const slug = 'delivery-status';
 const spec = { version: 1, title: 'Delivery', datasets: {}, sections: [] };
+const entryId = '8d0b6f0e-5a1c-4a52-9a6f-0f1d2c3b4a59';
+const cursor = 'WyIyMDI2LTEwLTEzVDEyOjAwOjAwLjAwMFoiLCIxMTExIl0';
+const links = [{ label: 'Pull request', url: 'https://example.com/pr/7' }];
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const DASHBOARD_NAMES = DASHBOARD_TOOLS.map((entry) => entry.name);
 
@@ -42,16 +45,17 @@ const textOf = (reply) => reply.result.content.map((item) => item.text).join('\n
 const payloadOf = (reply) => JSON.parse(reply.result.content.at(-1).text);
 const noSecrets = (ctx) => assert.doesNotMatch(ctx.output.join('') + ctx.errors.join(''), /secret-test-value/);
 
-test('tools/list advertises the six dashboard tools with strict schemas and annotations', async () => {
+test('tools/list advertises the six dashboard and four changelog tools with strict schemas and annotations', async () => {
   const ctx = makeBridge();
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
   await flush();
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`);
   await flush();
   const listed = messages(ctx.output).find((entry) => entry.id === 2).result.tools;
-  assert.deepEqual(listed.slice(-6).map((entry) => entry.name), [
+  assert.deepEqual(listed.slice(-10).map((entry) => entry.name), [
     'paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus',
     'paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipValidateDashboardSpec',
+    'paperclipListChangelog', 'paperclipAddChangelogEntry', 'paperclipUpdateChangelogEntry', 'paperclipImportChangelogFromIssues',
   ]);
   assert.deepEqual(listed.slice(1, 1 + OBSERVATORY_TOOLS.length).map((entry) => entry.name), OBSERVATORY_TOOLS.map((entry) => entry.name));
   const byName = new Map(listed.map((entry) => [entry.name, entry]));
@@ -61,19 +65,36 @@ test('tools/list advertises the six dashboard tools with strict schemas and anno
     assert.ok(entry.description.length > 40);
     assert.deepEqual(byName.get(entry.name), entry);
   }
-  for (const name of ['paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus', 'paperclipValidateDashboardSpec']) {
+  for (const name of ['paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus', 'paperclipValidateDashboardSpec', 'paperclipListChangelog']) {
     assert.equal(byName.get(name).annotations.readOnlyHint, true);
   }
-  for (const name of ['paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset']) {
+  for (const name of ['paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipUpdateChangelogEntry', 'paperclipImportChangelogFromIssues']) {
     assert.deepEqual(
       [byName.get(name).annotations.readOnlyHint, byName.get(name).annotations.destructiveHint, byName.get(name).annotations.idempotentHint],
       [false, false, true],
     );
   }
+  // Adding an entry creates a new record every time, so it must not advertise idempotence.
+  assert.deepEqual(byName.get('paperclipAddChangelogEntry').annotations, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+  for (const entry of DASHBOARD_TOOLS) assert.equal(entry.annotations.openWorldHint, false, entry.name);
   assert.deepEqual(byName.get('paperclipGetDashboard').inputSchema.required, ['slug']);
   assert.deepEqual(byName.get('paperclipUpsertDashboard').inputSchema.required, ['slug', 'spec']);
   assert.deepEqual(byName.get('paperclipUpdateDashboardDataset').inputSchema.required, ['slug', 'datasetId', 'rows']);
   assert.equal(byName.get('paperclipListDashboards').inputSchema.required, undefined);
+  assert.equal(byName.get('paperclipListChangelog').inputSchema.required, undefined);
+  assert.deepEqual(byName.get('paperclipAddChangelogEntry').inputSchema.required, ['projectId', 'kind', 'title']);
+  assert.deepEqual(byName.get('paperclipUpdateChangelogEntry').inputSchema.required, ['entryId']);
+  assert.deepEqual(byName.get('paperclipImportChangelogFromIssues').inputSchema.required, ['projectId']);
+  assert.deepEqual(byName.get('paperclipAddChangelogEntry').inputSchema.properties.kind.enum, CURATED_KINDS);
+  assert.ok(!CURATED_KINDS.includes('issue'));
+  assert.deepEqual(byName.get('paperclipListChangelog').inputSchema.properties.kinds.items.enum, ALL_KINDS);
+  assert.deepEqual(byName.get('paperclipUpdateChangelogEntry').inputSchema.properties.body.type, ['string', 'null']);
+  // The descriptions teach when to record, that issues arrive on their own, and how the writers differ.
+  assert.match(byName.get('paperclipAddChangelogEntry').description, /NOT idempotent/);
+  assert.match(byName.get('paperclipAddChangelogEntry').description, /one entry per relevant change/);
+  assert.match(byName.get('paperclipAddChangelogEntry').description, /Completed issues already enter the changelog on their own/);
+  assert.match(byName.get('paperclipListChangelog').description, /nextCursor/);
+  assert.match(byName.get('paperclipImportChangelogFromIssues').description, /automatically/);
   // Mentioned so the model can find the dry-run and refresh tools from the writer's description.
   assert.match(byName.get('paperclipUpsertDashboard').description, /paperclipValidateDashboardSpec/);
   assert.match(byName.get('paperclipUpsertDashboard').description, /paperclipUpdateDashboardDataset/);
@@ -111,6 +132,38 @@ const REQUEST_CASES = [
   {
     name: 'paperclipValidateDashboardSpec', args: { spec }, method: 'POST', path: '/validate', query: {},
     body: { spec }, reply: { valid: true, datasets: 0, sections: 0 },
+  },
+  { name: 'paperclipListChangelog', args: {}, method: 'GET', path: '/changelog', query: {}, reply: { entries: [], nextCursor: null } },
+  {
+    name: 'paperclipListChangelog',
+    args: { projectId, kinds: ['release', 'fix', 'issue'], includeIssues: false, before: cursor, limit: 500 },
+    method: 'GET', path: '/changelog',
+    query: { projectId, kind: 'release,fix,issue', includeIssues: 'false', before: cursor, limit: '500' },
+    reply: { entries: [{ id: entryId, kind: 'release', title: 'Shipped' }], nextCursor: cursor },
+  },
+  { name: 'paperclipListChangelog', args: { kinds: [], includeIssues: true, limit: 1 }, method: 'GET', path: '/changelog', query: { includeIssues: 'true', limit: '1' }, reply: { entries: [], nextCursor: null } },
+  {
+    name: 'paperclipAddChangelogEntry',
+    args: { projectId, kind: 'release', title: 'Checkout v2', body: 'Faster **payments**', version: 'v2.0.0', refs: ['ABC-12', 'abc1234'], links, occurredAt: '2026-10-13T12:00:00Z' },
+    method: 'POST', path: '/changelog', query: {},
+    body: { projectId, kind: 'release', title: 'Checkout v2', body: 'Faster **payments**', version: 'v2.0.0', refs: ['ABC-12', 'abc1234'], links, occurredAt: '2026-10-13T12:00:00Z' },
+    reply: { entry: { id: entryId, kind: 'release' } },
+  },
+  {
+    name: 'paperclipAddChangelogEntry', args: { projectId, kind: 'note', title: 'Minimal' }, method: 'POST', path: '/changelog', query: {},
+    body: { projectId, kind: 'note', title: 'Minimal' }, reply: { entry: { id: entryId, kind: 'note' } },
+  },
+  {
+    name: 'paperclipUpdateChangelogEntry', args: { entryId, title: 'Renamed', body: null, version: null }, method: 'POST', path: `/changelog/${entryId}`, query: {},
+    body: { title: 'Renamed', body: null, version: null }, reply: { entry: { id: entryId } },
+  },
+  {
+    name: 'paperclipUpdateChangelogEntry', args: { entryId, kind: 'fix', refs: [], links: [], occurredAt: '2026-10-01' }, method: 'POST', path: `/changelog/${entryId}`, query: {},
+    body: { kind: 'fix', refs: [], links: [], occurredAt: '2026-10-01' }, reply: { entry: { id: entryId } },
+  },
+  {
+    name: 'paperclipImportChangelogFromIssues', args: { projectId }, method: 'POST', path: '/changelog/import', query: {},
+    body: { projectId }, reply: { scanned: 5, imported: 3, skipped: 2, truncated: false },
   },
 ];
 
@@ -157,6 +210,10 @@ test('a company in the input is rejected for every dashboard tool and never reac
     paperclipUpsertDashboard: { slug, spec },
     paperclipUpdateDashboardDataset: { slug, datasetId: 'phases', rows: [] },
     paperclipValidateDashboardSpec: { spec },
+    paperclipListChangelog: {},
+    paperclipAddChangelogEntry: { projectId, kind: 'note', title: 'x' },
+    paperclipUpdateChangelogEntry: { entryId, title: 'x' },
+    paperclipImportChangelogFromIssues: { projectId },
   };
   assert.deepEqual(Object.keys(valid), DASHBOARD_NAMES);
   const ctx = setup();
@@ -227,6 +284,67 @@ const VALIDATION_CASES = [
   ['paperclipValidateDashboardSpec', { spec, slug }, /unexpected field/],
   ['paperclipGetDashboard', [], /arguments must be an object/],
   ['paperclipGetDashboard', 'slug', /arguments must be an object/],
+  ['paperclipListChangelog', { projectId: 'nope' }, /projectId must be a UUID/],
+  ['paperclipListChangelog', { projectId: null }, /projectId must be a UUID/],
+  ['paperclipListChangelog', { kinds: 'fix' }, /kinds must be an array of changelog kinds/],
+  ['paperclipListChangelog', { kinds: ['bogus'] }, /kinds must be an array of changelog kinds/],
+  ['paperclipListChangelog', { kinds: Array.from({ length: 10 }, () => 'fix') }, /kinds must be an array/],
+  ['paperclipListChangelog', { includeIssues: 'false' }, /includeIssues must be true or false/],
+  ['paperclipListChangelog', { includeIssues: 0 }, /includeIssues must be true or false/],
+  ['paperclipListChangelog', { before: '' }, /before must be the nextCursor string/],
+  ['paperclipListChangelog', { before: 'c'.repeat(201) }, /before must be the nextCursor string/],
+  ['paperclipListChangelog', { before: 5 }, /before must be the nextCursor string/],
+  ['paperclipListChangelog', { limit: 0 }, /limit must be an integer from 1 to 500/],
+  ['paperclipListChangelog', { limit: 501 }, /limit must be an integer from 1 to 500/],
+  ['paperclipListChangelog', { limit: 1.5 }, /limit must be an integer from 1 to 500/],
+  ['paperclipListChangelog', { limit: '50' }, /limit must be an integer from 1 to 500/],
+  ['paperclipListChangelog', { slug }, /unexpected field/],
+  ['paperclipAddChangelogEntry', { kind: 'note', title: 'x' }, /projectId is required/],
+  ['paperclipAddChangelogEntry', { projectId, title: 'x' }, /kind is required/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note' }, /title is required/],
+  ['paperclipAddChangelogEntry', { projectId: 'nope', kind: 'note', title: 'x' }, /projectId must be a UUID/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'issue', title: 'x' }, /kind must be one of milestone, release.*issue entries are created automatically/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'party', title: 'x' }, /kind must be one of/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: '' }, /title must be a string of 1-200/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 't'.repeat(201) }, /title must be a string of 1-200/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', body: '' }, /body must be a string of 1-20000/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', body: 'b'.repeat(20_001) }, /body must be a string of 1-20000/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', body: null }, /body must be a string of 1-20000 characters\.$/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', version: 'v'.repeat(65) }, /version must be a string of 1-64/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', version: null }, /version must be a string of 1-64 characters\.$/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', refs: 'ABC-1' }, /refs must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', refs: Array.from({ length: 21 }, () => 'r') }, /refs must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', refs: [''] }, /refs must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', refs: ['r'.repeat(101)] }, /refs must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', refs: [5] }, /refs must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: 'https://a.test' }, /links must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: Array.from({ length: 21 }, () => links[0]) }, /links must be an array of at most 20/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L', url: 'javascript:alert(1)' }] }, /links must be an array.*absolute http or https URL/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L', url: 'ftp://a.test/x' }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L', url: '/relative' }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L', url: `https://a.test/${'a'.repeat(2000)}` }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: '', url: 'https://a.test' }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L' }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: [{ label: 'L', url: 'https://a.test', extra: 1 }] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', links: ['https://a.test'] }, /links must be an array/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', occurredAt: 'yesterday' }, /occurredAt must be an ISO 8601/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', occurredAt: 1760000000 }, /occurredAt must be an ISO 8601/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', issueId: entryId }, /unexpected field/],
+  ['paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x', deletedAt: 'now' }, /unexpected field/],
+  ['paperclipUpdateChangelogEntry', { title: 'x' }, /entryId is required/],
+  ['paperclipUpdateChangelogEntry', { entryId: 'nope', title: 'x' }, /entryId must be a UUID/],
+  ['paperclipUpdateChangelogEntry', { entryId: 'import', title: 'x' }, /entryId must be a UUID/],
+  ['paperclipUpdateChangelogEntry', { entryId: `${entryId}/../x`, title: 'x' }, /entryId must be a UUID/],
+  ['paperclipUpdateChangelogEntry', { entryId }, /at least one of kind, title, body, version, refs, links, occurredAt is required/],
+  ['paperclipUpdateChangelogEntry', { entryId, projectId }, /unexpected field/],
+  ['paperclipUpdateChangelogEntry', { entryId, kind: 'issue' }, /kind must be one of/],
+  ['paperclipUpdateChangelogEntry', { entryId, title: null }, /title must be a string of 1-200/],
+  ['paperclipUpdateChangelogEntry', { entryId, body: '' }, /body must be a string of 1-20000 characters, or null to clear it/],
+  ['paperclipUpdateChangelogEntry', { entryId, version: 5 }, /version must be a string of 1-64 characters, or null/],
+  ['paperclipUpdateChangelogEntry', { entryId, refs: null }, /refs must be an array/],
+  ['paperclipImportChangelogFromIssues', {}, /projectId is required/],
+  ['paperclipImportChangelogFromIssues', { projectId: 'nope' }, /projectId must be a UUID/],
+  ['paperclipImportChangelogFromIssues', { projectId, limit: 5 }, /unexpected field/],
 ];
 
 for (const [index, [name, args, pattern]] of VALIDATION_CASES.entries()) {
@@ -579,4 +697,59 @@ test('dashboard tools require an initialized MCP session and ignore notification
   assert.equal(ctx.requests.length, 0);
   assert.equal(ctx.output.length > 0, true);
   assert.equal(messages(ctx.output).length, 1);
+});
+
+test('changelog tools relay the plugin client errors as tool errors', async () => {
+  const cases = [
+    [422, { error: 'invalid_entry', details: ['kind: must be one of milestone, release', 'links[0].url: must be an absolute http or https URL of at most 2000 characters'] },
+      'Project Dashboards rejected the request (HTTP 422): invalid_entry\n- kind: must be one of milestone, release\n- links[0].url: must be an absolute http or https URL of at most 2000 characters'],
+    [400, { error: 'Project not found in this company' }, 'Project Dashboards rejected the request (HTTP 400): Project not found in this company'],
+    [400, { error: 'Entries generated from completed issues mirror the issue and cannot be edited; edit the issue instead' },
+      'Project Dashboards rejected the request (HTTP 400): Entries generated from completed issues mirror the issue and cannot be edited; edit the issue instead'],
+    [404, { error: 'not_found' }, 'Project Dashboards rejected the request (HTTP 404): not_found'],
+  ];
+  for (const [status, body, expected] of cases) {
+    const ctx = setup({ respond: () => json({ companyId, ...body, stack: 'at secret.js:1' }, status) });
+    const reply = await callTool(ctx, 'paperclipUpdateChangelogEntry', { entryId, title: 'x' });
+    assert.equal(reply.result.isError, true);
+    assert.equal(textOf(reply), expected);
+    noSecrets(ctx);
+  }
+});
+
+test('changelog tools fail closed on a foreign company echo and report a missing plugin', async () => {
+  const foreign = setup({ respond: () => json({ companyId: otherCompany, entries: [{ title: 'foreign tenant data' }], nextCursor: null }) });
+  const reply = await callTool(foreign, 'paperclipListChangelog', {});
+  assert.equal(reply.result.isError, true);
+  assert.match(textOf(reply), /^Project Dashboards request failed/);
+  assert.doesNotMatch(foreign.output.join(''), /foreign tenant data/);
+  const absent = setup({ respond: () => json({ error: 'Plugin not found' }, 404) });
+  assert.match(textOf(await callTool(absent, 'paperclipAddChangelogEntry', { projectId, kind: 'note', title: 'x' })), /^Project Dashboards plugin unavailable/);
+});
+
+test('the changelog list query carries only what the caller set, plus the pinned company', async () => {
+  const ctx = setup({ respond: () => json({ companyId, entries: [], nextCursor: null }) });
+  await callTool(ctx, 'paperclipListChangelog', { limit: 25 }, 1);
+  assert.deepEqual(Object.fromEntries(ctx.requests[0].url.searchParams), { companyId, limit: '25' });
+  assert.equal(ctx.requests[0].options.body, undefined);
+});
+
+test('the import and update paths cannot collide: only a UUID reaches the entry route', async () => {
+  const ctx = setup({ respond: () => json({ companyId, scanned: 0, imported: 0, skipped: 0, truncated: false }) });
+  await callTool(ctx, 'paperclipImportChangelogFromIssues', { projectId }, 1);
+  assert.equal(ctx.requests[0].url.pathname, `${API}/changelog/import`);
+  const rejected = await callTool(ctx, 'paperclipUpdateChangelogEntry', { entryId: 'import', title: 'x' }, 2);
+  assert.equal(rejected.result.isError, true);
+  assert.equal(ctx.requests.length, 1);
+});
+
+test('adding a changelog entry is capped by serialized bytes like every other write', async () => {
+  const ctx = setup({ respond: () => json({ companyId, entry: {} }) });
+  // 20 refs of 100 characters, 20 links and a 20,000-character body stay far below the cap.
+  const reply = await callTool(ctx, 'paperclipAddChangelogEntry', {
+    projectId, kind: 'note', title: 't'.repeat(200), body: 'b'.repeat(20_000), version: 'v'.repeat(64),
+    refs: Array.from({ length: 20 }, () => 'r'.repeat(100)), links: Array.from({ length: 20 }, () => ({ label: 'L'.repeat(100), url: `https://a.test/${'p'.repeat(1900)}` })),
+  });
+  assert.equal(reply.result.isError, undefined);
+  assert.ok(Buffer.byteLength(ctx.requests[0].options.body) < MAX_REQUEST_BODY_BYTES);
 });
