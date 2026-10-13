@@ -6,10 +6,13 @@ import { IDENTITY_DESCRIPTION, resolveBoardIdentity, identityToolError } from '.
 import { tool, uuid, UUID_RE } from './tool-schema.mjs';
 import {
   DASHBOARD_TOOLS, buildDashboardRequest, dashboardBusyResult, dashboardFailureResult,
-  dashboardInputErrorResult, dashboardToolResult, isDashboardTool, DashboardInputError,
+  dashboardInputErrorResult, dashboardToolResult, isDashboardTool, isRecord, DashboardInputError,
 } from './dashboards.mjs';
+import {
+  ROADMAP_TOOLS, isRoadmapTool, roadmapBusyResult, roadmapFailureResult, runRoadmapTool,
+} from './roadmap.mjs';
 
-export { DASHBOARD_TOOLS };
+export { DASHBOARD_TOOLS, ROADMAP_TOOLS };
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STOCK_LINE_BYTES = 16 * 1024 * 1024;
@@ -58,6 +61,18 @@ function rpcError(id, code, message) {
 
 function asIdKey(id) {
   return `${typeof id}:${JSON.stringify(id)}`;
+}
+
+/**
+ * The tool catalog is extended by the bridge and can grow when the bridge is upgraded behind a
+ * running client, so the initialize answer promises tools/list_changed notifications (every other
+ * capability of the stock server is kept as it is).
+ */
+function advertiseToolListChanged(response) {
+  if (response.error || !isRecord(response.result)) return response;
+  const capabilities = isRecord(response.result.capabilities) ? response.result.capabilities : {};
+  const tools = isRecord(capabilities.tools) ? capabilities.tools : {};
+  return { ...response, result: { ...response.result, capabilities: { ...capabilities, tools: { ...tools, listChanged: true } } } };
 }
 
 function validateConfig(env) {
@@ -119,6 +134,7 @@ export class McpBridge {
     this.stderr = stderr;
     this.ownActive = 0;
     this.initialized = false;
+    this.listChangedSent = false;
     this.childUnavailable = false;
     this.pending = new Map();
     this.identityPending = new Set();
@@ -298,6 +314,19 @@ export class McpBridge {
       } finally { this.ownActive--; }
       return;
     }
+    if (message.method === 'tools/call' && isRoadmapTool(message.params?.name)) {
+      if (!hasId) return;
+      if (!this.initialized) return this.writeJson(rpcError(id, -32002, 'Initialize the MCP session first'));
+      if (this.ownActive >= MAX_OWN_CONCURRENCY) return this.writeJson({ jsonrpc: '2.0', id, result: roadmapBusyResult() });
+      this.ownActive++;
+      try {
+        const result = await this.callRoadmapTool(message.params.name, message.params.arguments ?? {});
+        this.writeJson({ jsonrpc: '2.0', id, result });
+      } catch {
+        this.writeJson({ jsonrpc: '2.0', id, result: roadmapFailureResult() });
+      } finally { this.ownActive--; }
+      return;
+    }
     if (message.method === 'tools/list' && hasId) {
       if (this.pending.size >= MAX_PENDING) return this.writeJson(rpcError(id, -32000, 'Too many pending MCP requests'));
       const isInitialPage = message.params?.cursor === undefined;
@@ -306,7 +335,7 @@ export class McpBridge {
         const tools = response.result?.tools;
         if (!Array.isArray(tools)) return response;
         const existing = new Set(tools.map((item) => item?.name).filter((name) => typeof name === 'string'));
-        const ownTools = [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS];
+        const ownTools = [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS, ...ROADMAP_TOOLS];
         const conflicts = ownTools.filter((entry) => existing.has(entry.name));
         if (conflicts.length) return rpcError(id, -32603, 'MCP tool name conflict with bridge tools');
         const actorAwareTools = tools.map((entry) => entry?.name === 'paperclipMe'
@@ -316,8 +345,25 @@ export class McpBridge {
       });
       return;
     }
+    if (message.method === 'notifications/initialized' && !hasId) {
+      this.forward(message, message.method);
+      this.announceToolList();
+      return;
+    }
     if (hasId && this.pending.size >= MAX_PENDING) return this.writeJson(rpcError(id, -32000, 'Too many pending MCP requests'));
-    this.forward(message, message.method);
+    this.forward(message, message.method, message.method === 'initialize' && hasId ? advertiseToolListChanged : undefined);
+  }
+
+  /**
+   * Tell the client once, right after it confirms the handshake, to fetch tools/list again: a client
+   * that cached an older catalog for this server (for example after a bridge upgrade behind a running
+   * client) then learns the added tools. It can only follow the initialize response, because
+   * `initialized` is set while that response is being relayed, and it is never repeated.
+   */
+  announceToolList() {
+    if (this.listChangedSent || !this.initialized || this.childUnavailable) return;
+    this.listChangedSent = true;
+    this.writeJson({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
   }
 
   forward(message, method, transform = (response) => response) {
@@ -393,6 +439,13 @@ export class McpBridge {
       });
     } catch { return dashboardFailureResult(); }
     return dashboardToolResult(name, response, this.config.companyId);
+  }
+
+  async callRoadmapTool(name, rawInput) {
+    return runRoadmapTool(name, rawInput, {
+      companyId: this.config.companyId,
+      request: (pathname, { method, body }) => this.apiRequest(pathname, { method, body, redirect: 'error' }),
+    });
   }
 
   async callOwnTool(name, rawInput) {

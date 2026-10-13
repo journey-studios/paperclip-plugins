@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS, ROADMAP_TOOLS } from '../src/bridge.mjs';
 import { companyId, agentId, runId, env, makeBridge, flush, messages } from './helpers.mjs';
 
 test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () => {
@@ -19,7 +19,7 @@ test('bearer API URLs require HTTPS unless loopback or explicitly allowed', () =
   }
 });
 
-test('tools/list forwards stock tools and adds exactly the five Observatory and ten Dashboards tools (six dashboards, four changelog) after initialize', async () => {
+test('tools/list forwards stock tools and adds exactly the five Observatory, ten Dashboards and five roadmap tools after initialize', async () => {
   const ctx = makeBridge();
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
   await flush();
@@ -29,7 +29,7 @@ test('tools/list forwards stock tools and adds exactly the five Observatory and 
   const result = firstPage.tools;
   assert.equal(result[0].name, 'existingTool');
   assert.equal(firstPage.nextCursor, 'stock-next-1');
-  assert.deepEqual(result.slice(1).map((entry) => entry.name), [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS].map((entry) => entry.name));
+  assert.deepEqual(result.slice(1).map((entry) => entry.name), [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS, ...ROADMAP_TOOLS].map((entry) => entry.name));
   assert.deepEqual(ctx.child().received.map((entry) => entry.method), ['initialize', 'tools/list']);
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: 'stock-next' } })}\n`);
   await flush();
@@ -42,6 +42,108 @@ test('tools/list forwards stock tools and adds exactly the five Observatory and 
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: { cursor: 'collision-dashboards' } })}\n`);
   await flush();
   assert.match(messages(ctx.output).find((entry) => entry.id === 5).error.message, /tool name conflict/);
+  ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/list', params: { cursor: 'collision-roadmap' } })}\n`);
+  await flush();
+  assert.match(messages(ctx.output).find((entry) => entry.id === 6).error.message, /tool name conflict/);
+});
+
+const listChangedCount = (ctx) => messages(ctx.output).filter((entry) => entry.method === 'notifications/tools/list_changed').length;
+const writeLine = (ctx, message) => ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+
+test('initialize advertises tools.listChanged and keeps every other part of the stock answer', async () => {
+  const stock = {
+    protocolVersion: '2025-03-26',
+    serverInfo: { name: 'stock', version: '9.9.9' },
+    capabilities: { tools: { subscribe: false }, resources: { listChanged: false }, logging: {} },
+    instructions: 'Use the tools.',
+  };
+  const ctx = makeBridge({ initializeResult: stock });
+  writeLine(ctx, { id: 'init', method: 'initialize', params: { protocolVersion: '2025-03-26' } });
+  await flush();
+  const answer = messages(ctx.output).find((entry) => entry.id === 'init');
+  assert.deepEqual(answer.result, { ...stock, capabilities: { ...stock.capabilities, tools: { subscribe: false, listChanged: true } } });
+  assert.deepEqual(ctx.child().received[0], { jsonrpc: '2.0', id: 'init', method: 'initialize', params: { protocolVersion: '2025-03-26' } });
+
+  const plain = makeBridge();
+  writeLine(plain, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  assert.deepEqual(messages(plain.output)[0].result, { protocolVersion: '2025-03-26', capabilities: { tools: { listChanged: true } } });
+
+  // Without a tools capability (or with listChanged switched off) the bridge still promises the notification.
+  for (const capabilities of [{}, { logging: {} }, { tools: { listChanged: false } }]) {
+    const other = makeBridge({ initializeResult: { protocolVersion: '2025-03-26', capabilities } });
+    writeLine(other, { id: 1, method: 'initialize', params: {} });
+    await flush();
+    const result = messages(other.output)[0].result;
+    assert.equal(result.capabilities.tools.listChanged, true);
+    assert.deepEqual({ ...result.capabilities, tools: undefined }, { ...capabilities, tools: undefined });
+  }
+});
+
+test('initialize errors and answers without a result object are relayed unchanged', async () => {
+  const failing = makeBridge({ initializeError: { code: -32603, message: 'stock failed' } });
+  writeLine(failing, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  assert.deepEqual(messages(failing.output), [{ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'stock failed' } }]);
+  assert.equal(failing.bridge.initialized, false);
+  writeLine(failing, { method: 'notifications/initialized' });
+  await flush();
+  assert.equal(listChangedCount(failing), 0, 'no notification without a successful handshake');
+
+  const odd = makeBridge({ initializeResult: 'not an object' });
+  writeLine(odd, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  assert.equal(messages(odd.output)[0].result, 'not an object');
+});
+
+test('tools/list_changed is sent once, only after the initialize answer and the initialized notification', async () => {
+  const ctx = makeBridge();
+  writeLine(ctx, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  assert.deepEqual(messages(ctx.output).map((entry) => entry.id ?? entry.method), [1], 'nothing but the initialize answer yet');
+  writeLine(ctx, { method: 'notifications/initialized' });
+  await flush();
+  const sent = messages(ctx.output);
+  assert.deepEqual(sent.map((entry) => entry.id ?? entry.method), [1, 'notifications/tools/list_changed']);
+  assert.deepEqual(sent[1], { jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+  assert.deepEqual(ctx.child().received.map((entry) => entry.method), ['initialize', 'notifications/initialized'], 'the notification still reaches the stock server');
+  assert.equal(ctx.child().received[1].id, undefined);
+
+  // Never again, however often the client repeats itself or uses the session.
+  writeLine(ctx, { method: 'notifications/initialized' });
+  writeLine(ctx, { id: 2, method: 'tools/list' });
+  writeLine(ctx, { id: 3, method: 'ping' });
+  writeLine(ctx, { method: 'notifications/initialized' });
+  await flush();
+  assert.equal(listChangedCount(ctx), 1);
+  assert.deepEqual(ctx.child().received.map((entry) => entry.method), ['initialize', 'notifications/initialized', 'notifications/initialized', 'tools/list', 'ping', 'notifications/initialized']);
+  assert.deepEqual(messages(ctx.output).find((entry) => entry.id === 3).result, { pong: true });
+  assert.ok(messages(ctx.output).find((entry) => entry.id === 2).result.tools.length > 1);
+});
+
+test('tools/list_changed can never precede the initialize answer, even if the client confirms too early', async () => {
+  const ctx = makeBridge();
+  writeLine(ctx, { method: 'notifications/initialized' });
+  await flush();
+  assert.equal(listChangedCount(ctx), 0, 'no initialize answer has been sent yet');
+  assert.deepEqual(ctx.child().received.map((entry) => entry.method), ['notifications/initialized'], 'still forwarded as before');
+  writeLine(ctx, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  assert.equal(listChangedCount(ctx), 0, 'the handshake is not complete until the client confirms');
+  writeLine(ctx, { method: 'notifications/initialized' });
+  await flush();
+  const order = messages(ctx.output).map((entry) => entry.id ?? entry.method);
+  assert.deepEqual(order, [1, 'notifications/tools/list_changed']);
+});
+
+test('tools/list_changed is not sent when the stock server is gone', async () => {
+  const ctx = makeBridge();
+  writeLine(ctx, { id: 1, method: 'initialize', params: {} });
+  await flush();
+  ctx.child().emit('exit');
+  writeLine(ctx, { method: 'notifications/initialized' });
+  await flush();
+  assert.equal(listChangedCount(ctx), 0);
 });
 
 test('client responses to stock server-initiated JSON-RPC requests are forwarded unchanged', async () => {
@@ -176,11 +278,17 @@ test('process protocol preserves stock JSON-RPC IDs and notifications while inte
   };
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 'init-id', method: 'initialize', params: {} })}\n`);
   await waitFor(() => received.some((item) => item.id === 'init-id'));
+  const initAnswer = received.find((item) => item.id === 'init-id');
+  assert.deepEqual(initAnswer.result.capabilities, { tools: { listChanged: true } });
+  assert.equal(received.some((item) => item.method === 'notifications/tools/list_changed'), false, 'not before the client confirms');
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+  await waitFor(() => received.some((item) => item.method === 'notifications/tools/list_changed'));
   child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 72, method: 'tools/list' })}\n`);
   await waitFor(() => received.some((item) => item.id === 72));
+  assert.equal(received.filter((item) => item.method === 'notifications/tools/list_changed').length, 1);
+  assert.ok(received.indexOf(initAnswer) < received.findIndex((item) => item.method === 'notifications/tools/list_changed'));
   const listed = received.find((item) => item.id === 72);
   assert.equal(listed.result.tools[0].name, 'stock');
-  assert.equal(listed.result.tools.length, 1 + OBSERVATORY_TOOLS.length + DASHBOARD_TOOLS.length);
+  assert.equal(listed.result.tools.length, 1 + OBSERVATORY_TOOLS.length + DASHBOARD_TOOLS.length + ROADMAP_TOOLS.length);
   assert.equal(received.find((item) => item.method === 'notifications/initialized')?.id, undefined);
 });
