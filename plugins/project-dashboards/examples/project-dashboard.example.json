@@ -1,0 +1,721 @@
+{
+  "version": 1,
+  "title": "Acme Web App — delivery status",
+  "summary": "Tracking the road to the **public launch** of the Acme Web App. Core accounts are shipped; billing and the public API are in progress. Numbers below come from the demo datasets listed under *Sources*.",
+  "meta": "Demo data for illustration only. Owner: *Delivery team*. Refreshed by the tracking agent.",
+  "datasets": {
+    "phases": {
+      "title": "Phases and gates",
+      "description": "One row per delivery phase with its current gate status.",
+      "source": "https://example.com/acme/roadmap",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "phase",
+        "name",
+        "scope",
+        "status"
+      ],
+      "rows": [
+        {
+          "phase": "F0",
+          "name": "Foundations",
+          "scope": "Repository, CI and environments",
+          "status": "done"
+        },
+        {
+          "phase": "F1",
+          "name": "Core accounts",
+          "scope": "Sign-up, login and profile",
+          "status": "done"
+        },
+        {
+          "phase": "F2",
+          "name": "Billing",
+          "scope": "Plans, invoices and webhooks",
+          "status": "partial"
+        },
+        {
+          "phase": "F3",
+          "name": "Public API",
+          "scope": "REST API and developer keys",
+          "status": "partial"
+        },
+        {
+          "phase": "F4",
+          "name": "Launch readiness",
+          "scope": "Load tests and runbooks",
+          "status": "todo"
+        }
+      ]
+    },
+    "roadmap": {
+      "title": "Roadmap boxes by phase",
+      "description": "Checklist items completed versus still open.",
+      "source": "Planning board export (demo)",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "phase",
+        "done",
+        "open",
+        "total"
+      ],
+      "rows": [
+        {
+          "phase": "F0",
+          "done": 8,
+          "open": 0,
+          "total": 8
+        },
+        {
+          "phase": "F1",
+          "done": 11,
+          "open": 1,
+          "total": 12
+        },
+        {
+          "phase": "F2",
+          "done": 6,
+          "open": 5,
+          "total": 11
+        },
+        {
+          "phase": "F3",
+          "done": 4,
+          "open": 7,
+          "total": 11
+        },
+        {
+          "phase": "F4",
+          "done": 0,
+          "open": 9,
+          "total": 9
+        }
+      ]
+    },
+    "production": {
+      "title": "Production status",
+      "description": "Service health snapshot.",
+      "source": "Monitoring dashboard (demo)",
+      "updatedAt": "2026-10-11T08:30:00Z",
+      "columns": [
+        "name",
+        "value",
+        "status",
+        "note"
+      ],
+      "rows": [
+        {
+          "name": "Web app",
+          "value": "99.95%",
+          "status": "ok",
+          "note": "Uptime, last 30 days"
+        },
+        {
+          "name": "REST API",
+          "value": "99.9%",
+          "status": "ok",
+          "note": "Uptime, last 30 days"
+        },
+        {
+          "name": "Email delivery",
+          "value": "97.2%",
+          "status": "warn",
+          "note": "Delivery rate, some bounces"
+        },
+        {
+          "name": "Background jobs",
+          "value": "2 queues",
+          "status": "ok",
+          "note": "Both queues draining"
+        },
+        {
+          "name": "Search index",
+          "value": "Not live",
+          "status": "todo",
+          "note": "Planned for F4"
+        },
+        {
+          "name": "Billing webhooks",
+          "value": "Sandbox",
+          "status": "partial",
+          "note": "Production keys pending"
+        }
+      ]
+    },
+    "pending": {
+      "title": "Pending items",
+      "description": "Open and recently closed work items.",
+      "source": "Issue tracker export (demo)",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "id",
+        "title",
+        "type",
+        "priority",
+        "status",
+        "owner"
+      ],
+      "rows": [
+        {
+          "id": "ACME-101",
+          "title": "Invoice PDF rounds cents incorrectly",
+          "type": "Bug",
+          "priority": "P0",
+          "status": "blocked",
+          "owner": "Dana"
+        },
+        {
+          "id": "ACME-102",
+          "title": "Add API key rotation",
+          "type": "Feature",
+          "priority": "P1",
+          "status": "in_progress",
+          "owner": "Lee"
+        },
+        {
+          "id": "ACME-103",
+          "title": "Document webhook retries",
+          "type": "Docs",
+          "priority": "P2",
+          "status": "todo",
+          "owner": "Sam"
+        },
+        {
+          "id": "ACME-104",
+          "title": "Upgrade database driver",
+          "type": "Chore",
+          "priority": "P1",
+          "status": "todo",
+          "owner": "Lee"
+        },
+        {
+          "id": "ACME-105",
+          "title": "Profile page avatar upload fails on Safari",
+          "type": "Bug",
+          "priority": "P1",
+          "status": "in_progress",
+          "owner": "Dana"
+        },
+        {
+          "id": "ACME-106",
+          "title": "Rate limit anonymous search",
+          "type": "Feature",
+          "priority": "P2",
+          "status": "todo",
+          "owner": "Sam"
+        },
+        {
+          "id": "ACME-107",
+          "title": "Remove unused feature flags",
+          "type": "Chore",
+          "priority": "P2",
+          "status": "todo",
+          "owner": "Kim"
+        },
+        {
+          "id": "ACME-108",
+          "title": "Billing page empty state",
+          "type": "Feature",
+          "priority": "P1",
+          "status": "done",
+          "owner": "Kim"
+        },
+        {
+          "id": "ACME-109",
+          "title": "Add load test scenarios",
+          "type": "Chore",
+          "priority": "P0",
+          "status": "todo",
+          "owner": "Lee"
+        },
+        {
+          "id": "ACME-110",
+          "title": "Fix timezone in report export",
+          "type": "Bug",
+          "priority": "P2",
+          "status": "failed",
+          "owner": "Sam"
+        }
+      ]
+    },
+    "pending_by_type": {
+      "title": "Pending items by type and priority",
+      "description": "Aggregated from the pending items dataset.",
+      "source": "Derived from the pending items dataset",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "type",
+        "P0",
+        "P1",
+        "P2"
+      ],
+      "rows": [
+        {
+          "type": "Bug",
+          "P0": 1,
+          "P1": 1,
+          "P2": 1
+        },
+        {
+          "type": "Feature",
+          "P0": 0,
+          "P1": 2,
+          "P2": 1
+        },
+        {
+          "type": "Chore",
+          "P0": 1,
+          "P1": 1,
+          "P2": 1
+        },
+        {
+          "type": "Docs",
+          "P0": 0,
+          "P1": 0,
+          "P2": 1
+        }
+      ]
+    },
+    "deliveries": {
+      "title": "Deliveries per day",
+      "description": "Merged changes shipped each day.",
+      "source": "Release log (demo)",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "day",
+        "shipped"
+      ],
+      "rows": [
+        {
+          "day": "2026-10-05",
+          "shipped": 3
+        },
+        {
+          "day": "2026-10-06",
+          "shipped": 5
+        },
+        {
+          "day": "2026-10-07",
+          "shipped": 2
+        },
+        {
+          "day": "2026-10-08",
+          "shipped": 6
+        },
+        {
+          "day": "2026-10-09",
+          "shipped": 4
+        },
+        {
+          "day": "2026-10-10",
+          "shipped": 1
+        },
+        {
+          "day": "2026-10-11",
+          "shipped": 0
+        }
+      ]
+    },
+    "releases": {
+      "title": "Recent releases",
+      "description": "Latest tagged releases.",
+      "source": "https://example.com/acme/releases",
+      "updatedAt": "2026-10-11T09:00:00Z",
+      "columns": [
+        "date",
+        "version",
+        "summary",
+        "link"
+      ],
+      "rows": [
+        {
+          "date": "2026-10-09",
+          "version": "v0.14.2",
+          "summary": "Billing sandbox webhooks",
+          "link": "https://example.com/acme/releases/v0.14.2"
+        },
+        {
+          "date": "2026-10-08",
+          "version": "v0.14.1",
+          "summary": "Search relevance fixes",
+          "link": "https://example.com/acme/releases/v0.14.1"
+        },
+        {
+          "date": "2026-10-06",
+          "version": "v0.14.0",
+          "summary": "API key management",
+          "link": "https://example.com/acme/releases/v0.14.0"
+        }
+      ]
+    },
+    "code": {
+      "title": "Code size by module",
+      "description": "Lines of source per module, excluding tests.",
+      "source": "Repository statistics (demo)",
+      "updatedAt": "2026-10-10T18:00:00Z",
+      "columns": [
+        "module",
+        "lines"
+      ],
+      "rows": [
+        {
+          "module": "web",
+          "lines": 18420
+        },
+        {
+          "module": "api",
+          "lines": 12310
+        },
+        {
+          "module": "billing",
+          "lines": 6240
+        },
+        {
+          "module": "jobs",
+          "lines": 4180
+        },
+        {
+          "module": "shared",
+          "lines": 3050
+        }
+      ]
+    },
+    "coverage": {
+      "title": "Quality gates",
+      "description": "Share of each quality target reached.",
+      "source": "CI report (demo)",
+      "updatedAt": "2026-10-11T07:00:00Z",
+      "columns": [
+        "gate",
+        "value"
+      ],
+      "rows": [
+        {
+          "gate": "Unit tests passing",
+          "value": 0.98
+        },
+        {
+          "gate": "Line coverage",
+          "value": 0.71
+        },
+        {
+          "gate": "Accessibility audit",
+          "value": 0.55
+        }
+      ]
+    }
+  },
+  "statusTones": {
+    "blocked": "bad"
+  },
+  "sections": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "note": "Headline numbers across the whole program.",
+      "blocks": [
+        {
+          "type": "kpis",
+          "items": [
+            {
+              "label": "Phases done",
+              "value": {
+                "dataset": "phases",
+                "field": "phase",
+                "where": {
+                  "status": "done"
+                },
+                "agg": "count"
+              },
+              "of": {
+                "dataset": "phases",
+                "field": "phase",
+                "agg": "count"
+              },
+              "caption": "Gates passed so far",
+              "format": "int"
+            },
+            {
+              "label": "Roadmap boxes",
+              "value": {
+                "dataset": "roadmap",
+                "field": "done",
+                "agg": "sum"
+              },
+              "of": {
+                "dataset": "roadmap",
+                "field": "total",
+                "agg": "sum"
+              },
+              "caption": "Done versus still open",
+              "format": "int"
+            },
+            {
+              "label": "Open P0 items",
+              "value": {
+                "dataset": "pending",
+                "field": "id",
+                "where": {
+                  "priority": "P0"
+                },
+                "agg": "count"
+              },
+              "tone": "bad",
+              "caption": "Need attention first",
+              "format": "int"
+            },
+            {
+              "label": "Shipped this week",
+              "value": {
+                "dataset": "deliveries",
+                "field": "shipped",
+                "agg": "sum"
+              },
+              "caption": "Seven-day total",
+              "format": "int"
+            },
+            {
+              "label": "Line coverage",
+              "value": {
+                "dataset": "coverage",
+                "field": "value",
+                "where": {
+                  "gate": "Line coverage"
+                }
+              },
+              "format": "pct",
+              "caption": "Target 80%"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "phases",
+      "title": "Phases and gates",
+      "note": "Each gate is **ok** when the phase exit criteria are met.",
+      "columns": 2,
+      "blocks": [
+        {
+          "type": "table",
+          "title": "Phases",
+          "dataset": "phases",
+          "rowKey": "phase",
+          "span": 2,
+          "columns": [
+            {
+              "field": "phase",
+              "label": "Phase",
+              "format": "strong"
+            },
+            {
+              "field": "name",
+              "label": "Name"
+            },
+            {
+              "field": "scope",
+              "label": "Scope",
+              "wide": true
+            },
+            {
+              "field": "status",
+              "label": "Status",
+              "format": "status"
+            }
+          ]
+        },
+        {
+          "type": "chart",
+          "title": "Roadmap boxes",
+          "note": "Done and open items per phase.",
+          "chart": "stackedBar",
+          "dataset": "roadmap",
+          "x": "phase",
+          "y": [
+            "done",
+            "open"
+          ],
+          "seriesLabels": {
+            "done": "Done",
+            "open": "Open"
+          },
+          "format": "int"
+        },
+        {
+          "type": "mermaid",
+          "title": "Phase flow",
+          "code": "flowchart LR\n  F0[Foundations] --> F1[Core accounts]\n  F1 --> F2[Billing]\n  F2 --> F3[Public API]\n  F3 --> F4[Launch readiness]"
+        }
+      ]
+    },
+    {
+      "id": "production",
+      "title": "What exists in production",
+      "note": "Live services and their health.",
+      "blocks": [
+        {
+          "type": "statusList",
+          "dataset": "production",
+          "labelField": "name",
+          "valueField": "value",
+          "statusField": "status",
+          "detailField": "note"
+        }
+      ]
+    },
+    {
+      "id": "pending",
+      "title": "Pending items",
+      "note": "Filter by status, type or search by text.",
+      "blocks": [
+        {
+          "type": "table",
+          "dataset": "pending",
+          "rowKey": "id",
+          "columns": [
+            {
+              "field": "id",
+              "label": "ID",
+              "format": "code"
+            },
+            {
+              "field": "title",
+              "label": "Title",
+              "wide": true
+            },
+            {
+              "field": "type",
+              "label": "Type",
+              "format": "muted"
+            },
+            {
+              "field": "priority",
+              "label": "Priority",
+              "format": "priority"
+            },
+            {
+              "field": "status",
+              "label": "Status",
+              "format": "status"
+            },
+            {
+              "field": "owner",
+              "label": "Owner"
+            }
+          ],
+          "filters": {
+            "chips": "status",
+            "selects": [
+              "type",
+              "priority"
+            ],
+            "search": true
+          },
+          "sort": {
+            "field": "priority",
+            "dir": "asc"
+          },
+          "emptyText": "Nothing matches these filters."
+        },
+        {
+          "type": "chart",
+          "title": "Pending by type and priority",
+          "chart": "stackedBar",
+          "dataset": "pending_by_type",
+          "x": "type",
+          "y": [
+            "P0",
+            "P1",
+            "P2"
+          ],
+          "format": "int"
+        }
+      ]
+    },
+    {
+      "id": "delivery",
+      "title": "Delivery",
+      "columns": 2,
+      "blocks": [
+        {
+          "type": "chart",
+          "title": "Deliveries per day",
+          "chart": "bar",
+          "dataset": "deliveries",
+          "x": "day",
+          "y": "shipped",
+          "seriesLabels": {
+            "shipped": "Shipped"
+          },
+          "format": "int",
+          "goal": 4
+        },
+        {
+          "type": "table",
+          "title": "Recent releases",
+          "dataset": "releases",
+          "rowKey": "version",
+          "columns": [
+            {
+              "field": "date",
+              "label": "Date",
+              "format": "date"
+            },
+            {
+              "field": "version",
+              "label": "Version",
+              "format": "code"
+            },
+            {
+              "field": "summary",
+              "label": "Summary",
+              "wide": true
+            },
+            {
+              "field": "link",
+              "label": "Notes",
+              "format": "link"
+            }
+          ]
+        },
+        {
+          "type": "chart",
+          "title": "Code size by module",
+          "chart": "horizontalBar",
+          "dataset": "code",
+          "x": "module",
+          "y": "lines",
+          "seriesLabels": {
+            "lines": "Lines"
+          },
+          "format": "int"
+        },
+        {
+          "type": "chart",
+          "title": "Quality gates",
+          "chart": "progress",
+          "dataset": "coverage",
+          "x": "gate",
+          "y": "value",
+          "format": "pct",
+          "goal": 1
+        }
+      ]
+    },
+    {
+      "id": "limits",
+      "title": "What this dashboard does not prove",
+      "blocks": [
+        {
+          "type": "callout",
+          "tone": "warn",
+          "content": "All figures are **demo data** and are only as fresh as the *updated* time of each source."
+        },
+        {
+          "type": "markdown",
+          "content": "- A passing gate shows the criteria were met, not that users are satisfied.\n- Uptime comes from synthetic checks, not from real traffic.\n- Line counts measure size, not quality or risk.\n- Coverage numbers do not show that the right behavior is tested."
+        }
+      ]
+    }
+  ]
+}
