@@ -38,8 +38,8 @@ const post = (_path: string, payload: unknown, extra: ApiCall = {}) => {
 };
 
 describe("manifest declarations", () => {
-  it("declares the ten board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.4.0");
+  it("declares the eleven board routes with company resolution from the query", () => {
+    expect(manifest.version).toBe("0.4.1");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
@@ -47,13 +47,14 @@ describe("manifest declarations", () => {
       ["dashboard-status", "GET", "/dashboards/:slug/status"],
       ["dashboard-upsert", "POST", "/dashboards"],
       ["dataset-update", "POST", "/dashboards/:slug/datasets/:datasetId"],
+      ["dashboard-move", "POST", "/dashboards/:slug/project"],
       ["spec-validate", "POST", "/validate"],
       ["changelog-list", "GET", "/changelog"],
       ["changelog-add", "POST", "/changelog"],
       ["changelog-import", "POST", "/changelog/import"],
       ["changelog-update", "POST", "/changelog/:entryId"],
     ]);
-    expect(API_ROUTES).toHaveLength(10);
+    expect(API_ROUTES).toHaveLength(11);
     for (const route of manifest.apiRoutes ?? []) {
       expect(route).toMatchObject({ auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } });
     }
@@ -278,6 +279,144 @@ describe("REST API", () => {
     expect(results.every((r) => r.status === 200)).toBe(true);
     const status = await h.api("dashboard-status", { params: { slug: "race" } });
     expect(body(status).status.revision).toBe(4);
+  });
+});
+
+describe("POST /dashboards/:slug/project (dashboard-move)", () => {
+  const move = (slug: string, payload: unknown, extra: ApiCall = {}) =>
+    h.api("dashboard-move", { method: "POST", params: { slug }, body: payload, ...extra });
+  const revisionsOf = async (id: string) => (await h.data("dashboard.revisions", { companyId: COMPANY, id })) as { revision: number }[];
+
+  it("moves the dashboard atomically: one new revision, unchanged spec, activity logged, board user as author", async () => {
+    await post("", { slug: "mv", spec: spec("Movable", 4) });
+    const before = body(await h.api("dashboard-get", { params: { slug: "mv" } })).dashboard;
+    expect(before).toMatchObject({ projectId: PROJECT, revision: 1 });
+    const writes = h.executed.length;
+
+    const response = await move("mv", { projectId: SECOND_PROJECT });
+    expect(response.status).toBe(200);
+    expect(response.headers?.["cache-control"]).toBe("no-store");
+    expect(body(response)).toEqual({
+      companyId: COMPANY,
+      moved: true,
+      dashboard: {
+        id: before.id,
+        slug: "mv",
+        title: "Movable",
+        projectId: SECOND_PROJECT,
+        projectName: "Internal Tools",
+        revision: 2,
+        updatedAt: expect.any(String),
+        updatedBy: { kind: "user", id: "board-user-1", name: null },
+        viewPath: "/ACME/dashboards?d=mv",
+      },
+    });
+    // One single statement writes the row and its revision.
+    expect(h.executed.length - writes).toBe(1);
+    const after = body(await h.api("dashboard-get", { params: { slug: "mv" } })).dashboard;
+    expect(after.spec).toEqual(before.spec);
+    expect(after).toMatchObject({ title: "Movable", projectId: SECOND_PROJECT, revision: 2 });
+    expect((await revisionsOf(before.id)).map((r) => r.revision)).toEqual([2, 1]);
+    expect(h.activity.at(-1)?.message).toBe('Moved dashboard "Movable" to project "Internal Tools"');
+    expect(body(await h.api("dashboards-list", { query: { companyId: COMPANY, projectId: SECOND_PROJECT } })).dashboards.map((d: Json) => d.slug)).toEqual(["mv"]);
+    expect(body(await h.api("dashboards-list", { query: { companyId: COMPANY, projectId: PROJECT } })).dashboards).toEqual([]);
+  });
+
+  it("answers moved: false without a new revision or activity when the project does not change", async () => {
+    await post("", { slug: "stay", spec: spec() });
+    const id = body(await h.api("dashboard-get", { params: { slug: "stay" } })).dashboard.id as string;
+    const writes = h.executed.length;
+    const activity = h.activity.length;
+    const response = await move("stay", { projectId: PROJECT });
+    expect(response.status).toBe(200);
+    expect(body(response)).toMatchObject({ companyId: COMPANY, moved: false, dashboard: { slug: "stay", projectId: PROJECT, revision: 1 } });
+    expect(h.executed).toHaveLength(writes);
+    expect(h.activity).toHaveLength(activity);
+    expect((await revisionsOf(id)).map((r) => r.revision)).toEqual([1]);
+    // An uppercase UUID is the same project.
+    expect(body(await move("stay", { projectId: PROJECT.toUpperCase() })).moved).toBe(false);
+    // Moving twice to the target only moves once.
+    expect(body(await move("stay", { projectId: SECOND_PROJECT })).moved).toBe(true);
+    expect(body(await move("stay", { projectId: SECOND_PROJECT })).moved).toBe(false);
+    expect((await revisionsOf(id)).map((r) => r.revision)).toEqual([2, 1]);
+  });
+
+  it("moves a projectless dashboard into a project", async () => {
+    await post("", { slug: "lost", spec: spec() });
+    await h.db.exec(`DELETE FROM public.projects WHERE id = '${PROJECT}'`);
+    expect(body(await h.api("dashboard-get", { params: { slug: "lost" } })).dashboard.projectId).toBeNull();
+    const response = await move("lost", { projectId: SECOND_PROJECT });
+    expect(body(response)).toMatchObject({ moved: true, dashboard: { projectId: SECOND_PROJECT, projectName: "Internal Tools", revision: 2 } });
+  });
+
+  it("reports project_required for a missing, null or malformed projectId, before looking the dashboard up", async () => {
+    await post("", { slug: "req", spec: spec() });
+    const writes = h.executed.length;
+    for (const payload of [{}, { projectId: null }, { projectId: "nope" }, { projectId: 5 }, { projectId: "" }, { projectId: [PROJECT] }, { project: PROJECT }, null, [PROJECT], "text"]) {
+      const response = await move("req", payload);
+      expect(response.status, JSON.stringify(payload)).toBe(400);
+      expect(body(response), JSON.stringify(payload)).toEqual({ companyId: COMPANY, error: "project_required" });
+    }
+    // The documented order: a malformed projectId is reported even when the dashboard does not exist.
+    expect(body(await move("missing", {})).error).toBe("project_required");
+    expect(h.executed).toHaveLength(writes);
+    expect(body(await h.api("dashboard-get", { params: { slug: "req" } })).dashboard.revision).toBe(1);
+  });
+
+  it("reports project_not_found for unknown projects and projects of another company, and project_archived", async () => {
+    await post("", { slug: "chk", spec: spec() });
+    const writes = h.executed.length;
+    const unknown = await move("chk", { projectId: "99999999-9999-4999-8999-999999999999" });
+    expect(unknown.status).toBe(400);
+    expect(body(unknown)).toEqual({ companyId: COMPANY, error: "project_not_found" });
+    const foreign = await move("chk", { projectId: OTHER_PROJECT });
+    expect(foreign.status).toBe(400);
+    expect(body(foreign)).toEqual({ companyId: COMPANY, error: "project_not_found" });
+    const archived = await move("chk", { projectId: ARCHIVED_PROJECT });
+    expect(archived.status).toBe(400);
+    expect(body(archived)).toEqual({ companyId: COMPANY, error: "project_archived" });
+    expect(h.executed).toHaveLength(writes);
+    expect(body(await h.api("dashboard-get", { params: { slug: "chk" } })).dashboard).toMatchObject({ projectId: PROJECT, revision: 1 });
+  });
+
+  it("answers 404 not_found for an unknown dashboard and 400 for a bad slug, with the company echo", async () => {
+    const unknown = await move("missing", { projectId: SECOND_PROJECT });
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers?.["cache-control"]).toBe("no-store");
+    expect(body(unknown)).toEqual({ companyId: COMPANY, error: "not_found" });
+    const bad = await move("Bad Slug", { projectId: SECOND_PROJECT });
+    expect(bad.status).toBe(400);
+    expect(body(bad).companyId).toBe(COMPANY);
+    expect(typeof body(bad).error).toBe("string");
+    expect(await rowsOf()).toHaveLength(0);
+  });
+
+  it("isolates companies: another company cannot see or move the dashboard, nor move one into a foreign project", async () => {
+    await post("", { slug: "secret", spec: spec("Secret") });
+    const other = { companyId: OTHER_COMPANY, query: { companyId: OTHER_COMPANY } };
+    const hidden = await move("secret", { projectId: OTHER_PROJECT }, other);
+    expect(hidden.status).toBe(404);
+    expect(body(hidden)).toEqual({ companyId: OTHER_COMPANY, error: "not_found" });
+    // The owner cannot move it into the other company's project either.
+    expect(body(await move("secret", { projectId: OTHER_PROJECT })).error).toBe("project_not_found");
+    // Each company moves only its own dashboard with the same slug.
+    await post("", { slug: "secret", spec: spec("B copy") }, other);
+    expect(body(await move("secret", { projectId: SECOND_PROJECT })).moved).toBe(true);
+    const bView = body(await h.api("dashboard-get", { params: { slug: "secret" }, ...other })).dashboard;
+    expect(bView).toMatchObject({ title: "B copy", projectId: OTHER_PROJECT, revision: 1 });
+    expect(body(await h.api("dashboard-get", { params: { slug: "secret" } })).dashboard).toMatchObject({ title: "Secret", projectId: SECOND_PROJECT, revision: 2 });
+  });
+
+  it("serializes moves with other writes of the company", async () => {
+    await post("", { slug: "race", spec: spec() });
+    const results = await Promise.all([
+      move("race", { projectId: SECOND_PROJECT }),
+      move("race", { projectId: SECOND_PROJECT }),
+      post("", { slug: "race", spec: spec("again", 2), projectId: undefined }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(results.slice(0, 2).map((r) => body(r).moved).sort()).toEqual([false, true]);
+    expect(body(await h.api("dashboard-status", { params: { slug: "race" } })).status).toMatchObject({ revision: 3 });
   });
 });
 

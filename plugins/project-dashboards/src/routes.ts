@@ -5,6 +5,7 @@ export const API_ROUTES = [
   { routeKey: "dashboard-status", method: "GET", path: "/dashboards/:slug/status" },
   { routeKey: "dashboard-upsert", method: "POST", path: "/dashboards" },
   { routeKey: "dataset-update", method: "POST", path: "/dashboards/:slug/datasets/:datasetId" },
+  { routeKey: "dashboard-move", method: "POST", path: "/dashboards/:slug/project" },
   { routeKey: "spec-validate", method: "POST", path: "/validate" },
   { routeKey: "changelog-list", method: "GET", path: "/changelog" },
   { routeKey: "changelog-add", method: "POST", path: "/changelog" },
