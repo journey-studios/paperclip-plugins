@@ -4,8 +4,8 @@ Agents (and board users) publish **project tracking dashboards** for any system,
 
 An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpec**; the plugin validates it with path-precise errors and the Paperclip UI renders it.
 
-- Every dashboard belongs to a Paperclip project (see [Projects](#projects)).
-- Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in their own area.
+- New dashboards must belong to a Paperclip project; existing projectless dashboards stay editable (see [Projects](#projects)).
+- Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in a separate "No project" group.
 - A **Dashboard** tab on every project page.
 - Six agent tools: `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`.
 - A board REST API for external clients (and the MCP bridge), with data-freshness reporting.
@@ -108,7 +108,7 @@ A complete example, with every block type, lives in [`examples/project-dashboard
 
 ## Projects
 
-Every dashboard belongs to a Paperclip project, and dashboards are grouped by project in the UI.
+New dashboards must belong to a Paperclip project, and the UI groups dashboards by project. Existing dashboards without a project (created before this rule, or whose project was deleted) can remain projectless and are shown in a separate group.
 
 - **New dashboards need a project.** REST: `projectId` is required, otherwise `400 project_required`. Agent tool: `projectId`, else the run's project, else a tool error `project_required` that says the run has no project. `null` is not accepted anywhere.
 - **Existing dashboards keep their project** when `projectId` is omitted; a UUID moves them.
