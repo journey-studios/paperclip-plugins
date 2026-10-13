@@ -15,6 +15,7 @@ import type {
   Tone,
 } from "../contracts.js";
 import { getOwn } from "../keys.js";
+import { safeHttpUrl } from "../safe-url.js";
 import { computeFreshness } from "../status.js";
 import { ChartView } from "./charts.js";
 import type { Translate } from "./i18n.js";
@@ -26,7 +27,6 @@ import {
   mermaidFence,
   resolvePalette,
   resolveValue,
-  safeHref,
   seriesColorsFor,
   sortRows,
   toneFor,
@@ -55,7 +55,7 @@ export function createEnv(spec: DashboardSpec, settings: DashboardSettings, fmt:
   };
 }
 
-function Md({ content }: { content: string }) {
+export function Md({ content }: { content: string }) {
   return (
     <div className="jpd-md">
       <MarkdownBlock content={content} />
@@ -121,7 +121,7 @@ function Cell({ column, value, env }: { column: TableColumn; value: Primitive | 
     case "date":
       return fmt.date(value);
     case "link": {
-      const href = safeHref(value);
+      const href = safeHttpUrl(value);
       return href ? (
         <a className="jpd-link" href={href} target="_blank" rel="noopener noreferrer">
           {text}
@@ -403,7 +403,7 @@ function SourcesPanel({ env, stale }: { env: ViewEnv; stale: Set<string> }) {
       <div className="jpd-sources-body">
         <div className="jpd-card-note">{t("sourcesHint")}</div>
         {entries.map(([id, dataset]) => {
-          const href = safeHref(dataset.source);
+          const href = safeHttpUrl(dataset.source);
           return (
             <div className="jpd-source" key={id}>
               <div className="jpd-source-title">

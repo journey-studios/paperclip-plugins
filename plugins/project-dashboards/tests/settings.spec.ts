@@ -87,12 +87,32 @@ describe("settings", () => {
     }
   });
 
+  it("defaults the changelog to top-level issue capture and a Changelog tab label", () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({ changelogFromIssues: "top-level", changelogTabLabel: "Changelog" });
+    expect(normalizeSettings({ changelogFromIssues: "all", changelogTabLabel: "  Evolução " })).toMatchObject({
+      changelogFromIssues: "all",
+      changelogTabLabel: "Evolução",
+    });
+    expect(normalizeSettings({ changelogFromIssues: "off" }).changelogFromIssues).toBe("off");
+  });
+
+  it("falls back to the defaults for an invalid changelog mode or label without throwing", () => {
+    for (const bad of ["ALL", "", "everything", null, 3, true, ["all"], { mode: "all" }]) {
+      expect(normalizeSettings({ changelogFromIssues: bad }).changelogFromIssues, String(bad)).toBe("top-level");
+    }
+    expect(normalizeSettings({ changelogTabLabel: "" }).changelogTabLabel).toBe("Changelog");
+    expect(normalizeSettings({ changelogTabLabel: "x".repeat(41) }).changelogTabLabel).toBe("Changelog");
+    expect(normalizeSettings({ changelogTabLabel: 5 }).changelogTabLabel).toBe("Changelog");
+  });
+
   it("declares the settings schema in the manifest", () => {
     expect(manifest.instanceConfigSchema).toBe(INSTANCE_CONFIG_SCHEMA);
     expect(Object.keys(INSTANCE_CONFIG_SCHEMA.properties).sort()).toEqual(
-      ["currency", "defaultStaleAfterHours", "defaultStatusTones", "locale", "maxRevisions", "maxSpecBytes", "navLabel", "palette", "projectTabLabel", "refreshIntervalSeconds"].sort(),
+      ["changelogFromIssues", "changelogTabLabel", "currency", "defaultStaleAfterHours", "defaultStatusTones", "locale", "maxRevisions", "maxSpecBytes", "navLabel", "palette", "projectTabLabel", "refreshIntervalSeconds"].sort(),
     );
     expect(INSTANCE_CONFIG_SCHEMA.properties.maxRevisions).toMatchObject({ minimum: 1, maximum: 200, default: 20 });
     expect(INSTANCE_CONFIG_SCHEMA.properties.maxSpecBytes.default).toBe(524288);
+    expect(INSTANCE_CONFIG_SCHEMA.properties.changelogFromIssues).toMatchObject({ enum: ["off", "top-level", "all"], default: "top-level" });
+    expect(INSTANCE_CONFIG_SCHEMA.properties.changelogTabLabel).toMatchObject({ default: "Changelog", maxLength: 40 });
   });
 });

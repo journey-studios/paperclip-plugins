@@ -1,4 +1,5 @@
 import type { PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { CHANGELOG_KINDS, CURATED_KINDS } from "./contracts.js";
 
 export const AUTHORING_GUIDE = [
   "Publish a project-tracking dashboard as a declarative JSON spec (never HTML or scripts). Every dashboard belongs to a project: a new dashboard uses projectId, else the current run's project; an existing dashboard keeps its project unless projectId moves it; archived projects are rejected (project_archived).",
@@ -10,6 +11,42 @@ export const AUTHORING_GUIDE = [
   "Series whose field names are statuses or priorities (done, blocked, P0...) are colored by tone automatically; use seriesColors to choose colors.",
   "Use update_dataset to refresh numbers without resending the page. Use validate_dashboard_spec to dry-run.",
 ].join("\n");
+
+export const CHANGELOG_GUIDE = [
+  "A project changelog is the evolution of a project over time: a dated list of what changed and why.",
+  "Record an entry when something relevant is closed: a merged PR, a validated deploy, a milestone, a decision, an incident or a release. One entry per relevant change, not one per run or per commit.",
+  "Write the title as the result (\"Checkout accepts Pix payments\"), not the activity. Use body (Markdown) for what changed and why, refs for issue identifiers, PR numbers or commit SHAs, links for URLs, version for a release number and occurredAt when the event happened earlier than now.",
+  `Kinds: ${CURATED_KINDS.join(", ")}.`,
+  "Completed issues are added to the changelog automatically (kind \"issue\", according to the company setting), so do not record an entry that only repeats an issue that was just completed.",
+  "Entries cannot be deleted by agents; correct a mistake with update_changelog_entry.",
+].join("\n");
+
+const changelogFieldSchemas = {
+  kind: { type: "string", enum: [...CURATED_KINDS], description: "What the entry records." },
+  title: { type: "string", minLength: 1, maxLength: 200, description: "The result, in one line." },
+  body: { type: "string", maxLength: 20000, description: "Markdown: what changed and why." },
+  version: { type: "string", minLength: 1, maxLength: 64, description: "Release or version label, such as v1.4.0." },
+  refs: {
+    type: "array",
+    maxItems: 20,
+    items: { type: "string", minLength: 1, maxLength: 100 },
+    description: "Issue identifiers (ABC-12 style), PR numbers or commit SHAs.",
+  },
+  links: {
+    type: "array",
+    maxItems: 20,
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["label", "url"],
+      properties: {
+        label: { type: "string", minLength: 1, maxLength: 100 },
+        url: { type: "string", maxLength: 2000, description: "Absolute http or https URL." },
+      },
+    },
+  },
+  occurredAt: { type: "string", maxLength: 64, description: "ISO 8601 date or timestamp of the event; defaults to now." },
+};
 
 const projectIdSchema = {
   type: "string",
@@ -97,6 +134,54 @@ export const TOOL_DECLARATIONS: PluginToolDeclaration[] = [
       additionalProperties: false,
       required: ["spec"],
       properties: { spec: { type: "object" } },
+    },
+  },
+  {
+    name: "add_changelog_entry",
+    displayName: "Add changelog entry",
+    description: `Record one entry in a project's changelog.\n${CHANGELOG_GUIDE}`,
+    parametersSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "title"],
+      properties: {
+        projectId: { type: "string", description: "Project UUID. Omit to use the current run's project." },
+        ...changelogFieldSchemas,
+      },
+    },
+  },
+  {
+    name: "list_changelog",
+    displayName: "List changelog",
+    description:
+      "Read the changelog, newest first: the dated evolution of one project or of the whole company. Read it before recording an entry to avoid duplicating one, or to summarize what changed. Pass the nextCursor of a response as `before` for older entries.",
+    parametersSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        projectId: { type: "string", description: "Project UUID filter; omit for every project of the company." },
+        kinds: { type: "array", items: { type: "string", enum: [...CHANGELOG_KINDS] }, description: "Only these kinds." },
+        includeIssues: { type: "boolean", description: "Include entries generated from completed issues (default true)." },
+        before: { type: "string", maxLength: 200, description: "The nextCursor of the previous response." },
+        limit: { type: "integer", minimum: 1, maximum: 500, description: "Entries to return (default 50)." },
+      },
+    },
+  },
+  {
+    name: "update_changelog_entry",
+    displayName: "Update changelog entry",
+    description:
+      "Correct or complete a changelog entry written with add_changelog_entry: send entryId and only the fields to change. null clears body or version. Entries generated from completed issues mirror the issue and cannot be edited.",
+    parametersSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["entryId"],
+      properties: {
+        entryId: { type: "string", description: "Entry UUID, from list_changelog or add_changelog_entry." },
+        ...changelogFieldSchemas,
+        body: { type: ["string", "null"], maxLength: 20000, description: "Markdown; null removes it." },
+        version: { type: ["string", "null"], minLength: 1, maxLength: 64, description: "Version label; null removes it." },
+      },
     },
   },
 ];

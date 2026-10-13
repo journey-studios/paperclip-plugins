@@ -9,16 +9,13 @@ import type {
   Dataset,
   RevisionSummary,
 } from "./contracts.js";
+import { DashboardError, NotFoundError } from "./errors.js";
 import { getOwn } from "./keys.js";
 import { projectUrlKeys } from "./project-lookup.js";
-import { normalizeSettings } from "./settings.js";
 import { validateSpec } from "./spec.js";
+import { agentNames, iso, table, uuid } from "./store-util.js";
 
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG = /^[a-z0-9-]{1,64}$/;
-
-/** A user-correctable failure whose message is safe to show to agents and board users. */
-export class DashboardError extends Error {}
 
 /** Every dashboard belongs to a project; these codes are part of the REST contract. */
 export class ProjectError extends DashboardError {
@@ -29,9 +26,6 @@ export class ProjectError extends DashboardError {
     super(`${code}: ${detail}`);
   }
 }
-
-/** The dashboard, dataset or revision does not exist in this company. */
-export class NotFoundError extends DashboardError {}
 
 /** The spec failed validation; details are path-precise messages. */
 export class InvalidSpecError extends DashboardError {
@@ -50,57 +44,11 @@ export class SpecTooLargeError extends DashboardError {
   }
 }
 
-export function uuid(value: unknown, label: string): string {
-  if (typeof value !== "string" || !GUID.test(value)) {
-    throw new DashboardError(`${label} must be a UUID`);
-  }
-  return value.toLowerCase();
-}
-
 export function slugOf(value: unknown): string {
   if (typeof value !== "string" || !SLUG.test(value)) {
     throw new DashboardError("slug must be lowercase letters, digits and hyphens (1-64 characters)");
   }
   return value;
-}
-
-/**
- * Paperclip owns one worker process per installed plugin. Serializing company
- * mutations keeps the read-modify-write revision bump race-free.
- */
-export function companySerialQueue() {
-  const pending = new Map<string, Promise<unknown>>();
-  return async <T>(companyId: string, operation: () => Promise<T>): Promise<T> => {
-    const previous = pending.get(companyId) ?? Promise.resolve();
-    const result = previous.catch(() => {}).then(operation);
-    pending.set(companyId, result);
-    try {
-      return await result;
-    } finally {
-      if (pending.get(companyId) === result) {
-        pending.delete(companyId);
-      }
-    }
-  };
-}
-
-function table(ctx: PluginContext, key: "dashboards" | "dashboard_revisions"): string {
-  if (!/^[a-z_][a-z0-9_]*$/.test(ctx.db.namespace)) {
-    throw new Error("Invalid plugin database namespace");
-  }
-  return `${ctx.db.namespace}.${key}`;
-}
-
-function iso(value: unknown): string {
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  const parsed = new Date(String(value));
-  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
-}
-
-export async function getSettings(ctx: PluginContext, companyId: string): Promise<DashboardSettings> {
-  return normalizeSettings(await ctx.config.get(companyId));
 }
 
 interface DashboardRow {
@@ -123,23 +71,7 @@ const COLUMNS = `d.id, d.company_id, d.project_id, p.name AS project_name, d.slu
 const FROM = (ctx: PluginContext) =>
   `${table(ctx, "dashboards")} d LEFT JOIN public.projects p ON p.id = d.project_id`;
 
-async function agentNames(ctx: PluginContext, companyId: string, rows: DashboardRow[]): Promise<Map<string, string>> {
-  const ids = [...new Set(rows.filter((r) => r.updated_by_kind === "agent" && r.updated_by_id).map((r) => String(r.updated_by_id)))];
-  const names = new Map<string, string>();
-  await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const agent = GUID.test(id) ? await ctx.agents.get(id, companyId) : null;
-        if (agent) {
-          names.set(id, agent.name);
-        }
-      } catch {
-        // A missing name must never break listing.
-      }
-    }),
-  );
-  return names;
-}
+const updaters = (rows: DashboardRow[]) => rows.map((row) => ({ kind: row.updated_by_kind, id: row.updated_by_id }));
 
 function summarize(row: DashboardRow, names: Map<string, string>, urlKeys: Map<string, string | null>): DashboardSummary {
   return {
@@ -189,7 +121,7 @@ export async function listDashboards(
     args,
   );
   const [names, urlKeys] = await Promise.all([
-    agentNames(ctx, companyId, rows),
+    agentNames(ctx, companyId, updaters(rows)),
     projectUrlKeys(ctx, companyId, rows.map((row) => row.project_id)),
   ]);
   return rows.map((row) => summarize(row, names, urlKeys));
@@ -214,7 +146,7 @@ export async function getDashboard(
     return null;
   }
   const [names, urlKeys] = await Promise.all([
-    agentNames(ctx, companyId, [row]),
+    agentNames(ctx, companyId, updaters([row])),
     projectUrlKeys(ctx, companyId, [row.project_id]),
   ]);
   const { spec, errors } = parseStoredSpec(row.spec);

@@ -1,4 +1,4 @@
-import { TONES, type DashboardSettings, type Tone } from "./contracts.js";
+import { CHANGELOG_CAPTURE_MODES, TONES, type ChangelogCapture, type DashboardSettings, type Tone } from "./contracts.js";
 import { dict, isReservedKey } from "./keys.js";
 
 export const SETTINGS_LIMITS = {
@@ -65,6 +65,8 @@ export const DEFAULT_SETTINGS: DashboardSettings = {
   maxSpecBytes: SETTINGS_LIMITS.maxSpecBytes.default,
   navLabel: "Dashboards",
   projectTabLabel: "Dashboard",
+  changelogTabLabel: "Changelog",
+  changelogFromIssues: "top-level",
   palette: [],
   defaultStatusTones: {},
   defaultStaleAfterHours: SETTINGS_LIMITS.staleAfterHours.default,
@@ -138,6 +140,10 @@ function isTone(value: unknown): value is Tone {
   return typeof value === "string" && (TONES as readonly string[]).includes(value);
 }
 
+function isCaptureMode(value: unknown): value is ChangelogCapture {
+  return CHANGELOG_CAPTURE_MODES.some((mode) => mode === value);
+}
+
 /**
  * Turn raw operator configuration into effective settings. Invalid values never
  * throw: each falls back to its default so a typo cannot break dashboards.
@@ -167,6 +173,8 @@ export function normalizeSettings(raw: unknown): DashboardSettings {
     maxSpecBytes: boundedInt(input.maxSpecBytes, SETTINGS_LIMITS.maxSpecBytes),
     navLabel: label(input.navLabel, DEFAULT_SETTINGS.navLabel),
     projectTabLabel: label(input.projectTabLabel, DEFAULT_SETTINGS.projectTabLabel),
+    changelogTabLabel: label(input.changelogTabLabel, DEFAULT_SETTINGS.changelogTabLabel),
+    changelogFromIssues: isCaptureMode(input.changelogFromIssues) ? input.changelogFromIssues : DEFAULT_SETTINGS.changelogFromIssues,
     palette: palette.some((entry) => entry !== "") ? palette : [],
     defaultStatusTones,
     defaultStaleAfterHours: boundedInt(input.defaultStaleAfterHours, SETTINGS_LIMITS.staleAfterHours),
@@ -218,6 +226,21 @@ export const INSTANCE_CONFIG_SCHEMA = {
       title: "Project tab label",
       default: DEFAULT_SETTINGS.projectTabLabel,
       maxLength: SETTINGS_LIMITS.label.max,
+    },
+    changelogTabLabel: {
+      type: "string",
+      title: "Changelog tab label",
+      description: "Heading shown inside the project Changelog tab and on the Changelog view of the dashboards page.",
+      default: DEFAULT_SETTINGS.changelogTabLabel,
+      maxLength: SETTINGS_LIMITS.label.max,
+    },
+    changelogFromIssues: {
+      type: "string",
+      title: "Changelog from completed issues",
+      description:
+        "Which issues that become done are added to their project's changelog automatically: off (none), top-level (issues without a parent) or all (including sub-issues). Routine, watchdog and plugin-generated issues are never added.",
+      enum: [...CHANGELOG_CAPTURE_MODES],
+      default: DEFAULT_SETTINGS.changelogFromIssues,
     },
     palette: {
       type: "array",

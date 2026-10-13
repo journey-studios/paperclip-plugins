@@ -288,19 +288,6 @@ export function sortRows(rows: Row[], sort: { field: string; dir: "asc" | "desc"
   });
 }
 
-/** Only absolute http(s) URLs may become links. */
-export function safeHref(value: Primitive | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-
 /* ---------------------------------------------------------------- grouping */
 
 export interface ProjectGroup {

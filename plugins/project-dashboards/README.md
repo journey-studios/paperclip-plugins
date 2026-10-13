@@ -5,9 +5,10 @@ Agents (and board users) publish **project tracking dashboards** for any system,
 An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpec**; the plugin validates it with path-precise errors and the Paperclip UI renders it.
 
 - New dashboards must belong to a Paperclip project; existing projectless dashboards stay editable (see [Projects](#projects)).
-- Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in a separate "No project" group.
-- A **Dashboard** tab on every project page.
-- Six agent tools: `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`.
+- Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in a separate "No project" group, and a **Dashboards | Changelog** switch.
+- A **Dashboard** tab and a **Changelog** tab on every project page.
+- A per-project **changelog**: agents record milestones, releases, fixes and decisions, and completed issues are added automatically, so you can watch a project evolve (see [Changelog](#changelog)).
+- Nine agent tools: `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`, `add_changelog_entry`, `list_changelog`, `update_changelog_entry`.
 - A board REST API for external clients (and the MCP bridge), with data-freshness reporting.
 - Live refresh: open dashboards poll for new revisions and show how fresh each source is.
 - Plugin-owned PostgreSQL tables with revision history (restore from the UI).
@@ -17,7 +18,7 @@ An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpe
 
 Build and pack from this monorepo (see the root README), then install the produced `@journey-studios/paperclip-plugin-project-dashboards` archive in Paperclip. The plugin id is `journeystudios.project-dashboards`.
 
-Capabilities requested (least privilege): `agent.tools.register`, `agents.read` (agent names in "updated by"), `projects.read` (validate `projectId`), `companies.read` (company URL prefix for links), `api.routes.register` (REST API), `database.namespace.migrate|read|write`, `activity.log.write`, `ui.sidebar.register`, `ui.page.register`, `ui.detailTab.register`. It needs no artifact access and no host patch. The migration creates `dashboards` and `dashboard_revisions` in the plugin namespace and references `companies` and `projects` (read-only foreign keys).
+Capabilities requested (least privilege): `agent.tools.register`, `agents.read` (agent names in "updated by"), `projects.read` (validate `projectId`, project names), `issues.read` (read a completed issue and import completed issues into the changelog), `events.subscribe` (the `issue.updated` event, for automatic changelog entries), `companies.read` (company URL prefix for links), `api.routes.register` (REST API), `database.namespace.migrate|read|write`, `activity.log.write`, `ui.sidebar.register`, `ui.page.register`, `ui.detailTab.register`. It needs no artifact access, no issue write access and no host patch. Migration `001` creates `dashboards` and `dashboard_revisions`; migration `002` adds `changelog_entries`. Both live in the plugin namespace and reference `companies` and `projects` (read-only foreign keys). Upgrading from 0.3.x applies `002` and changes nothing else.
 
 ## Settings
 
@@ -30,7 +31,9 @@ Open the plugin's settings page in Paperclip (generated from the manifest's `ins
 | `maxRevisions` | `20` (1 to 200) | Revisions kept per dashboard; older ones are pruned on write. |
 | `maxSpecBytes` | `524288` (1 KiB to 8 MiB) | Maximum serialized spec size; larger specs are rejected with a clear error. |
 | `navLabel` | `Dashboards` | Sidebar entry and page title. |
-| `projectTabLabel` | `Dashboard` | Heading shown inside the project tab. |
+| `projectTabLabel` | `Dashboard` | Heading shown inside the project's Dashboard tab. |
+| `changelogTabLabel` | `Changelog` | Heading shown inside the project's Changelog tab, and the label of the Changelog view on the dashboards page. |
+| `changelogFromIssues` | `top-level` | Which issues that become done are added to their project's changelog on their own: `off`, `top-level` (no parent issue) or `all` (sub-issues too). An invalid value falls back to `top-level`. See [Changelog](#changelog). |
 | `defaultStaleAfterHours` | `0` (0 to 8760) | Datasets older than this many hours are flagged stale unless they set `staleAfterHours`. `0` never marks datasets stale. |
 | `refreshIntervalSeconds` | `30` (`0`, or 5 to 3600) | How often an open dashboard checks for new revisions. `0` turns automatic refresh off. |
 | `palette` | built-in | Up to 8 hex colors overriding the chart palette; an invalid entry keeps the built-in color for that slot. |
@@ -50,6 +53,9 @@ Tools run inside an agent run. The company always comes from the run, never from
 | `get_dashboard_status` | `slug` | One-line freshness summary plus the full status (see below). |
 | `update_dataset` | `slug`, `datasetId`, `rows`, `columns?`, `description?`, `source?`, `updatedAt?` | Replaces one dataset's rows without resending the page. The whole spec is revalidated and `updatedAt` defaults to now. |
 | `validate_dashboard_spec` | `spec` | Dry run, stores nothing. |
+| `add_changelog_entry` | `kind`, `title`, `projectId?`, `body?`, `version?`, `refs?`, `links?`, `occurredAt?` | Record one changelog entry. `projectId` omitted: the run's project. |
+| `list_changelog` | `projectId?`, `kinds?`, `includeIssues?`, `before?`, `limit?` | Read the changelog, newest first; `before` takes the previous `nextCursor`. |
+| `update_changelog_entry` | `entryId`, and any of `kind`, `title`, `body`, `version`, `refs`, `links`, `occurredAt` | Correct an entry written by hand; `null` clears `body` or `version`. |
 
 `slug` is lowercase `[a-z0-9-]`, 1 to 64 characters, unique per company.
 
@@ -59,6 +65,55 @@ Tools run inside an agent run. The company always comes from the run, never from
 2. Always fill each dataset's `title`, `description`, `source` and `updatedAt`. The Sources panel is how readers decide whether to trust the page.
 3. Validate with `validate_dashboard_spec` before publishing large specs.
 4. Prefer a few focused sections. State what the dashboard does **not** prove in a closing Markdown block.
+
+## Changelog
+
+A project's changelog shows how it evolved: a dated list of what changed and why. It is stored in its own table, apart from dashboards, because a dashboard spec is rewritten on every publish while a changelog only grows.
+
+### Entries
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `milestone`, `release`, `feature`, `fix`, `improvement`, `decision`, `incident` or `note` for entries written by agents, the board or the bridge; `issue` for the entries the plugin generates itself. Nothing external can write `issue`. |
+| `title` | The result, 1 to 200 characters. |
+| `body` | Optional Markdown, at most 20,000 characters: what changed and why. |
+| `version` | Optional release label, 1 to 64 characters. |
+| `refs` | Up to 20 short strings (1 to 100 characters): issue identifiers, PR numbers, commit SHAs. An identifier such as `ABC-12` becomes a link to that issue. |
+| `links` | Up to 20 `{ label, url }`. `url` must be an absolute `http`/`https` URL of at most 2,000 characters. |
+| `occurredAt` | When it happened (ISO 8601 date or timestamp, 1970 or later); defaults to now. |
+
+The project is fixed when an entry is created. Entries record who wrote them (agent, board user or system) and appear newest first by `occurredAt`.
+
+### Completed issues
+
+Issues that become `done` are added by the plugin as `issue` entries (title of the issue, its identifier as the ref, its completion time, the system as author). This is controlled per company by `changelogFromIssues`:
+
+- `top-level` (default): issues without a parent. Completed sub-issues are mostly tests and smoke checks, so they are skipped.
+- `all`: every eligible issue, sub-issues included.
+- `off`: nothing is captured automatically.
+
+An issue is eligible when it is `done`, belongs to a project, is not hidden and was created manually (`originKind` absent or `manual`); routine runs, watchdogs, recoveries, chat-channel issues and issues made by plugins are never captured. The plugin reads each `issue.updated` event, looks the issue up and inserts an entry once per issue (a unique index absorbs repeated or re-delivered events). It never edits an entry afterwards. Entries of kind `issue` cannot be edited, because they mirror the issue.
+
+Event delivery is best-effort and held in memory, so events can be missed while the plugin restarts or upgrades. **Import completed issues** (button in the project's Changelog tab, REST `POST /changelog/import`, or the bridge) reads the project's completed issues (up to 1,000, as the host returns them) and inserts the ones that have no entry yet. It is idempotent, runs even when automatic capture is `off`, uses `all` only when the setting is `all`, and reports `{ scanned, imported, skipped, truncated }` (`skipped` is every scanned issue that was not newly imported; `truncated` means the host returned a full page of 1,000 and older issues may not have been seen).
+
+### Deleting
+
+Deleting is a board action in the UI (with a confirmation) and is soft: the entry disappears from every list but its row stays. That keeps the one-entry-per-issue index in force, so a later import or a repeated event never brings back an automatic entry the board removed. There is no delete tool, REST route or bridge tool, as with dashboards.
+
+### In the UI
+
+- The project page has a **Changelog** tab (after **Dashboard**). The dashboards page has **Dashboards | Changelog** tabs (`/dashboards?view=changelog`; a `?d=<slug>` link still opens that dashboard) with a project selector and "All projects".
+- The timeline is grouped by month. Each entry shows its date, a kind badge, title, version, the project (company view only), Markdown body, refs, links and author; `issue` entries are compact and have no body.
+- Filters: one chip per kind present, and **Include completed issues**. **Show more** loads 50 more entries each time, up to 500.
+- The list refreshes on the `refreshIntervalSeconds` setting like dashboards do.
+- The project tab has **Import completed issues**.
+
+### Recording entries well
+
+1. Record an entry when something relevant closes: a merged PR, a validated deploy, a milestone, a decision, an incident or a release. One entry per relevant change, not one per run.
+2. Title with the result ("Checkout accepts bank transfers"), `body` with what changed and why, `refs` with the issue, PR or SHA.
+3. Do not duplicate completed issues; they arrive on their own.
+4. Read with `list_changelog` first when you only need to know what already happened.
 
 ## DashboardSpec v1
 
@@ -139,15 +194,20 @@ Board-authenticated routes mounted by the host under `/api/plugins/journeystudio
 | `POST /dashboards` | `{ slug, title?, projectId?: uuid, spec }` | `{ companyId, created, dashboard: Summary }` |
 | `POST /dashboards/:slug/datasets/:datasetId` | `{ rows, columns?, description?, source?, updatedAt? }` | `{ companyId, dashboard: Summary, dataset: DatasetStatus }` |
 | `POST /validate` | `{ spec }` | `{ companyId, valid: true, datasets, sections }` |
+| `GET /changelog` (`?projectId=&kind=&includeIssues=&before=&limit=`) | none | `{ companyId, entries: Entry[], nextCursor }` |
+| `POST /changelog` | `{ projectId, kind, title, body?, version?, refs?, links?, occurredAt? }` | `{ companyId, entry: Entry }` |
+| `POST /changelog/import` | `{ projectId }` | `{ companyId, scanned, imported, skipped, truncated }` |
+| `POST /changelog/:entryId` | any of `kind`, `title`, `body`, `version`, `refs`, `links`, `occurredAt` | `{ companyId, entry: Entry }` |
 
 - `Summary` is `{ id, slug, title, projectId, projectName, revision, updatedAt, updatedBy, viewPath }` (`projectId` and `projectName` are `null` only for projectless dashboards); `viewPath` is `/<COMPANY_PREFIX>/dashboards?d=<slug>`, relative to the web origin.
 - `DatasetStatus` is `{ id, title, rows, updatedAt, ageMinutes, staleAfterHours, stale }`. `Status` is a `Summary` plus `{ orphan, checkedAt, health, staleCount, datasets, sections, blocks }`.
 - `projectId` on upsert is required for a new dashboard (`400 project_required`); omitted on an existing dashboard keeps its project, or its lack of one; a UUID moves it. `null` is rejected with a 400. The project must belong to the company (`400 project_not_found`) and must not be archived (`400 project_archived`).
-- Errors: `400 { error: "<message>" }` (bad slug, dataset id, project or body shape; `project_required`, `project_not_found` and `project_archived` are the project codes), `404 { error: "not_found" }` (dashboard, dataset or route), `413 { error: "spec_too_large", limitBytes }`, `422 { error: "invalid_spec", details: string[] }` (at most 50 path-precise messages, each at most 300 characters), `500 { error: "internal_error" }` (details are logged, never returned).
+- Changelog routes: `kind` is a comma-separated list (`issue` is accepted when reading), `includeIssues` is `true` or `false` (default `true`), `limit` is 1 to 500 (default 50) and `before` is the `nextCursor` of the previous page (an opaque keyset cursor; `null` means the end). Entries are ordered by `occurredAt`, then `id`, descending. `Entry` is `{ id, projectId, projectName, kind, title, body, version, refs, links, occurredAt, issueId, createdBy, updatedBy, createdAt, updatedAt }`, with actors as `{ kind, id, name }`. `POST /changelog/import` is declared before `POST /changelog/:entryId` because the host uses the first route that matches. Updating needs at least one field; `null` clears `body` or `version`; `projectId` cannot change; an `issue` entry cannot be updated (400). `kind: "issue"` is rejected on writes. Deleting is not available over REST. Unlike new dashboards, an entry may be recorded for any project of the company, archived ones included, because the changelog is history.
+- Errors: `400 { error: "<message>" }` (bad slug, dataset id, project, entry id, list parameter or body shape; `project_required`, `project_not_found` and `project_archived` are the project codes), `404 { error: "not_found" }` (dashboard, dataset, entry or route), `413 { error: "spec_too_large", limitBytes }`, `422 { error: "invalid_spec", details: string[] }` for specs and `422 { error: "invalid_entry", details: string[] }` for changelog fields (at most 50 path-precise messages, each at most 300 characters, for example `links[0].url: must be an absolute http or https URL of at most 2000 characters`), `500 { error: "internal_error" }` (details are logged, never returned).
 
 ## Using from MCP
 
-The companion `plugin-mcp-bridge` service in this repository exposes these routes to external MCP clients as `paperclip*Dashboard*` tools, using the board credentials of the bridge's operator. See its README for setup. The plugin itself needs no MCP configuration.
+The companion `plugin-mcp-bridge` service in this repository exposes these routes to external MCP clients as `paperclip*Dashboard*` tools and, for the changelog, `paperclipListChangelog`, `paperclipAddChangelogEntry`, `paperclipUpdateChangelogEntry` and `paperclipImportChangelogFromIssues`, using the board credentials of the bridge's operator. See its README for setup. The plugin itself needs no MCP configuration.
 
 ## Security model
 
@@ -156,7 +216,8 @@ The companion `plugin-mcp-bridge` service in this repository exposes these route
 - Markdown goes only through the host `MarkdownBlock`. In the pinned host (`MarkdownBody` on `react-markdown` with `remark-gfm` and no `rehype-raw`), raw HTML in Markdown is not rendered, URLs are filtered by the library's default transform, and Mermaid runs with `securityLevel: "strict"`. Mermaid blocks are wrapped in a fence longer than any backtick run in the code, so a diagram cannot break out into Markdown.
 - Table links render only absolute `http`/`https` URLs with `rel="noopener noreferrer"`; anything else is shown as text.
 - REST routes use board authentication; the company comes from the host-authorized query value, never from the body. Every query is scoped by `company_id`.
-- Agent tools take the company from the run context; every query is scoped by `company_id`; `projectId` must belong to the company and not be archived.
+- Agent tools take the company from the run context; every query is scoped by `company_id`; `projectId` must belong to the company and, for a new or moved dashboard, not be archived.
+- Changelog text is always rendered as text, bodies go through the host Markdown renderer, and `links` open only absolute `http`/`https` URLs (checked when written and again when rendered); issue links are built only from strictly shaped identifiers. Writes reject unexpected and reserved fields.
 - Writes are serialized per company and recorded in the activity log.
 
 ## Limits
@@ -164,9 +225,11 @@ The companion `plugin-mcp-bridge` service in this repository exposes these route
 - Serialized spec size: `maxSpecBytes` (default 512 KiB).
 - Revisions kept: `maxRevisions` (default 20).
 - Text fields are capped (titles 200 characters, Markdown 100,000), and at most 50 validation errors are reported per call.
+- Changelog: titles 200 characters, `body` 20,000, `version` 64, 20 `refs` of 100 characters, 20 `links`, 500 entries per request (the UI shows up to 500), and an import looks at up to 1,000 completed issues.
+- Automatic entries depend on host events that are delivered best-effort; run **Import completed issues** after downtime to reconcile.
 - Live refresh is polling-based and only runs while the tab is visible; changes appear within one `refreshIntervalSeconds`.
 - Charts are drawn as responsive SVG, sized for dashboards rather than for tens of thousands of points; long category lists thin their axis labels.
-- A project's tab label in the host tab strip is fixed to `Dashboard`; `projectTabLabel` sets the heading inside the tab.
+- A project's tab labels in the host tab strip are fixed to `Dashboard` and `Changelog`; `projectTabLabel` and `changelogTabLabel` set the headings inside the tabs.
 - Settings are edited in the host's generated settings form (the SDK has no worker-side config write path for a custom page).
 
 ## Development

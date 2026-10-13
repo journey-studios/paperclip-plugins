@@ -11,9 +11,11 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import type { DashboardRecord, DashboardSettings, DashboardSummary, LiveStatus, RevisionSummary } from "../contracts.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
+import { ChangelogTimeline, CompanyChangelog, ViewTabs } from "./changelog.js";
 import { GroupedList, ProjectEmpty, ProjectLine } from "./grouping.js";
 import { createTranslator, type Translate } from "./i18n.js";
 import { formatterFor, type Formatter } from "./model.js";
+import { State, usePolling, type Localized } from "./shared.js";
 import { styles } from "./styles.js";
 import { DashboardView, actorLabel, createEnv } from "./view.js";
 
@@ -29,33 +31,6 @@ function useIsDark(): boolean {
     return () => observer.disconnect();
   }, []);
   return dark;
-}
-
-/**
- * Run `tick` every `seconds` while the page is visible (0 = never), and once
- * when the page becomes visible again. Timers are removed on unmount.
- */
-export function usePolling(seconds: number, tick: () => void): void {
-  const latest = useRef(tick);
-  useEffect(() => {
-    latest.current = tick;
-  });
-  useEffect(() => {
-    if (seconds <= 0 || typeof document === "undefined") {
-      return undefined;
-    }
-    const run = () => {
-      if (document.visibilityState === "visible") {
-        latest.current();
-      }
-    };
-    const timer = setInterval(run, seconds * 1000);
-    document.addEventListener("visibilitychange", run);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", run);
-    };
-  }, [seconds]);
 }
 
 function LiveIndicator({ seconds, checkedAt, t }: { seconds: number; checkedAt: number; t: Translate }) {
@@ -81,12 +56,6 @@ function LiveIndicator({ seconds, checkedAt, t }: { seconds: number; checkedAt: 
       {t("liveOn", { seconds: Math.max(0, Math.floor((now - checkedAt) / 1000)) })}
     </span>
   );
-}
-
-export interface Localized {
-  settings: DashboardSettings;
-  t: Translate;
-  fmt: Formatter;
 }
 
 function useLocalized(companyId: string | null): Localized {
@@ -119,15 +88,6 @@ export function SidebarLink({ context }: PluginSidebarProps) {
         <Icon />
         {settings.navLabel}
       </a>
-    </div>
-  );
-}
-
-function State({ title, body }: { title: string; body?: string }) {
-  return (
-    <div className="jpd-state">
-      <strong>{title}</strong>
-      {body ? <span>{body}</span> : null}
     </div>
   );
 }
@@ -349,10 +309,13 @@ export function DashboardsPage({ context }: PluginPageProps) {
   const location = useHostLocation();
   const localized = useLocalized(context.companyId);
   const { settings, t } = localized;
-  const slug = new URLSearchParams(location.search).get("d");
+  const params = new URLSearchParams(location.search);
+  const slug = params.get("d");
+  // A dashboard link (?d=) always wins over the view switch.
+  const changelogView = !slug && params.get("view") === "changelog";
   const list = usePluginData<DashboardSummary[]>("dashboards.list", { companyId: context.companyId });
   usePolling(settings.refreshIntervalSeconds, () => {
-    if (!slug) {
+    if (!slug && !changelogView) {
       list.refresh();
     }
   });
@@ -375,6 +338,8 @@ export function DashboardsPage({ context }: PluginPageProps) {
         />
       </>
     );
+  } else if (changelogView) {
+    body = <CompanyChangelog companyId={context.companyId} localized={localized} />;
   } else if (list.error) {
     body = <State title={t("loadError", { message: list.error.message })} />;
   } else if (list.loading && !list.data) {
@@ -397,6 +362,7 @@ export function DashboardsPage({ context }: PluginPageProps) {
     <div className="jpd" style={{ display: "grid", gap: 16, padding: 16 }}>
       <style>{styles}</style>
       {!slug ? <h1 className="jpd-title">{settings.navLabel}</h1> : null}
+      {!slug && context.companyId ? <ViewTabs active={changelogView ? "changelog" : "dashboards"} localized={localized} /> : null}
       {body}
     </div>
   );
@@ -457,6 +423,22 @@ export function ProjectDashboardTab({ context }: PluginDetailTabProps) {
       <style>{styles}</style>
       <h2 className="jpd-h2">{settings.projectTabLabel}</h2>
       {body}
+    </div>
+  );
+}
+
+export function ProjectChangelogTab({ context }: PluginDetailTabProps) {
+  const localized = useLocalized(context.companyId);
+  const { t, settings } = localized;
+  return (
+    <div className="jpd" style={{ display: "grid", gap: 16, padding: 16 }}>
+      <style>{styles}</style>
+      <h2 className="jpd-h2">{settings.changelogTabLabel}</h2>
+      {context.companyId ? (
+        <ChangelogTimeline companyId={context.companyId} projectId={context.entityId} localized={localized} showProject={false} allowImport />
+      ) : (
+        <State title={t("changelogNoCompany")} />
+      )}
     </div>
   );
 }
