@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
 import { makeBridge, flush, messages, env } from './helpers.mjs';
 
 const profile = { id: 'human-test-id', name: 'Test User', email: 'test@example.invalid', image: null };
@@ -243,7 +244,7 @@ test('tools/list updates only the existing identity description on every page', 
     assert.deepEqual(tools[1], stockTools[1]);
     assert.equal(tools.filter((tool) => tool.name === 'paperclipMe').length, 1);
   }
-  assert.equal(result(ctx, 2).result.tools.length, 7);
+  assert.equal(result(ctx, 2).result.tools.length, stockTools.length + OBSERVATORY_TOOLS.length + DASHBOARD_TOOLS.length);
   assert.equal(result(ctx, 3).result.tools.length, 2);
 });
 
