@@ -1,13 +1,14 @@
 {
   "name": "@journey-studios/plugin-mcp-bridge",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.5.0",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node src/bridge.mjs",
+    "start:connections": "node src/connections-server.mjs",
     "test": "node --test test/*.test.mjs test/*.spec.mjs",
     "test:coverage": "node --experimental-test-coverage --test-coverage-include=src/*.mjs --test test/*.test.mjs test/*.spec.mjs"
   }

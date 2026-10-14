@@ -9,6 +9,7 @@ import {
   SpecTooLargeError,
   getDashboard,
   listDashboards,
+  setDashboardProject,
   slugOf,
   updateDataset,
   upsertDashboard,
@@ -17,7 +18,7 @@ import {
 import { DashboardError, NotFoundError } from "./errors.js";
 import type { LinkResolver } from "./links.js";
 import { computeFreshness, computeStatus } from "./status.js";
-import { getSettings, uuid, type companySerialQueue } from "./store-util.js";
+import { GUID, getSettings, uuid, type companySerialQueue } from "./store-util.js";
 
 type Serial = ReturnType<typeof companySerialQueue>;
 type Body = Record<string, unknown>;
@@ -181,6 +182,26 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
           }),
         );
         return ok(companyId, { dashboard: await summary(companyId, record), dataset: datasetStatus(record, datasetId, settings) });
+      }
+      case "dashboard-move": {
+        // Same logic as the dashboard.setProject board action. The contract answers every missing,
+        // null or malformed projectId with project_required, so it is checked before the dashboard lookup.
+        const projectId = isRecord(input.body) ? input.body.projectId : undefined;
+        if (typeof projectId !== "string" || !GUID.test(projectId)) {
+          throw new ProjectError("project_required", "projectId must be a project UUID of this company");
+        }
+        const result = await serial(companyId, async () => {
+          const before = await required(companyId, input.params.slug ?? "");
+          const record = await setDashboardProject(ctx, {
+            companyId,
+            id: before.id,
+            projectId,
+            actor: actorOf(input),
+            settings: await getSettings(ctx, companyId),
+          });
+          return { moved: record.projectId !== before.projectId, record };
+        });
+        return ok(companyId, { moved: result.moved, dashboard: await summary(companyId, result.record) });
       }
       case "spec-validate": {
         const body = requireBody(input.body);

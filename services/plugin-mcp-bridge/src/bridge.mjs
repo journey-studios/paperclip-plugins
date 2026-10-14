@@ -1,17 +1,21 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseApiBase } from './api-base.mjs';
 import { readBounded } from './bounded-response.mjs';
 import { IDENTITY_DESCRIPTION, resolveBoardIdentity, identityToolError } from './identity.mjs';
+import { createJsonlReader } from './jsonl-reader.mjs';
 import { tool, uuid, UUID_RE } from './tool-schema.mjs';
 import {
   DASHBOARD_TOOLS, buildDashboardRequest, dashboardBusyResult, dashboardFailureResult,
-  dashboardInputErrorResult, dashboardToolResult, isDashboardTool, DashboardInputError,
+  dashboardInputErrorResult, dashboardToolResult, isDashboardTool, isRecord, DashboardInputError,
 } from './dashboards.mjs';
+import {
+  ROADMAP_TOOLS, isRoadmapTool, roadmapBusyResult, roadmapFailureResult, runRoadmapTool,
+} from './roadmap.mjs';
 
-export { DASHBOARD_TOOLS };
+export { DASHBOARD_TOOLS, ROADMAP_TOOLS };
 
-const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_STOCK_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING = 128;
 const MAX_OWN_CONCURRENCY = 8;
@@ -60,6 +64,18 @@ function asIdKey(id) {
   return `${typeof id}:${JSON.stringify(id)}`;
 }
 
+/**
+ * The tool catalog is extended by the bridge and can grow when the bridge is upgraded behind a
+ * running client, so the initialize answer promises tools/list_changed notifications (every other
+ * capability of the stock server is kept as it is).
+ */
+function advertiseToolListChanged(response) {
+  if (response.error || !isRecord(response.result)) return response;
+  const capabilities = isRecord(response.result.capabilities) ? response.result.capabilities : {};
+  const tools = isRecord(capabilities.tools) ? capabilities.tools : {};
+  return { ...response, result: { ...response.result, capabilities: { ...capabilities, tools: { ...tools, listChanged: true } } } };
+}
+
 function validateConfig(env) {
   const apiUrl = env.PAPERCLIP_API_URL;
   const apiKey = env.PAPERCLIP_API_KEY;
@@ -67,14 +83,7 @@ function validateConfig(env) {
   if (!apiUrl || !apiKey || !companyId || !UUID_RE.test(companyId)) {
     throw new Error('bridge configuration is incomplete');
   }
-  let parsed;
-  try { parsed = new URL(apiUrl); } catch { throw new Error('bridge configuration is invalid'); }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-  const insecureHttpAllowed = parsed.protocol === 'http:' && (loopback || env.PAPERCLIP_ALLOW_INSECURE_HTTP === '1');
-  if (!(parsed.protocol === 'https:' || insecureHttpAllowed) || parsed.username || parsed.password) {
-    throw new Error('bridge configuration is invalid');
-  }
-  return { apiBase: parsed.toString().replace(/\/$/, ''), apiKey, companyId };
+  return { apiBase: parseApiBase(env), apiKey, companyId };
 }
 
 function parseToolInput(name, input) {
@@ -119,6 +128,7 @@ export class McpBridge {
     this.stderr = stderr;
     this.ownActive = 0;
     this.initialized = false;
+    this.listChangedSent = false;
     this.childUnavailable = false;
     this.pending = new Map();
     this.identityPending = new Set();
@@ -137,8 +147,11 @@ export class McpBridge {
     this.child.on('exit', () => {
       this.markUnavailable();
     });
-    this.inputBuffer = Buffer.alloc(0);
-    stdin.on('data', (chunk) => this.onInputData(chunk));
+    const input = createJsonlReader({
+      onMessage: (message) => { void this.handleMessage(message); },
+      onDiagnostic: (message) => this.writeStderr(message),
+    });
+    stdin.on('data', (chunk) => input.push(chunk));
     stdin.on('end', () => { try { this.child.stdin.end(); } catch {} });
   }
 
@@ -159,26 +172,6 @@ export class McpBridge {
       this.writeJson(rpcError(pending.id, -32603, 'MCP subprocess unavailable'));
     }
     this.pending.clear();
-  }
-
-  onInputData(chunk) {
-    this.inputBuffer = Buffer.concat([this.inputBuffer, Buffer.from(chunk)]);
-    if (this.inputBuffer.length > MAX_LINE_BYTES && !this.inputBuffer.includes(0x0a)) {
-      this.inputBuffer = Buffer.alloc(0);
-      this.writeStderr('MCP input exceeded size limit');
-      return;
-    }
-    while (true) {
-      const newline = this.inputBuffer.indexOf(0x0a);
-      if (newline < 0) break;
-      const line = this.inputBuffer.subarray(0, newline);
-      this.inputBuffer = this.inputBuffer.subarray(newline + 1);
-      if (!line.length) continue;
-      if (line.length > MAX_LINE_BYTES) { this.writeStderr('MCP input exceeded size limit'); continue; }
-      let message;
-      try { message = JSON.parse(line.toString('utf8')); } catch { this.writeStderr('Invalid MCP input'); continue; }
-      void this.handleMessage(message);
-    }
   }
 
   onChildData(chunk) {
@@ -298,6 +291,19 @@ export class McpBridge {
       } finally { this.ownActive--; }
       return;
     }
+    if (message.method === 'tools/call' && isRoadmapTool(message.params?.name)) {
+      if (!hasId) return;
+      if (!this.initialized) return this.writeJson(rpcError(id, -32002, 'Initialize the MCP session first'));
+      if (this.ownActive >= MAX_OWN_CONCURRENCY) return this.writeJson({ jsonrpc: '2.0', id, result: roadmapBusyResult() });
+      this.ownActive++;
+      try {
+        const result = await this.callRoadmapTool(message.params.name, message.params.arguments ?? {});
+        this.writeJson({ jsonrpc: '2.0', id, result });
+      } catch {
+        this.writeJson({ jsonrpc: '2.0', id, result: roadmapFailureResult() });
+      } finally { this.ownActive--; }
+      return;
+    }
     if (message.method === 'tools/list' && hasId) {
       if (this.pending.size >= MAX_PENDING) return this.writeJson(rpcError(id, -32000, 'Too many pending MCP requests'));
       const isInitialPage = message.params?.cursor === undefined;
@@ -306,7 +312,7 @@ export class McpBridge {
         const tools = response.result?.tools;
         if (!Array.isArray(tools)) return response;
         const existing = new Set(tools.map((item) => item?.name).filter((name) => typeof name === 'string'));
-        const ownTools = [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS];
+        const ownTools = [...OBSERVATORY_TOOLS, ...DASHBOARD_TOOLS, ...ROADMAP_TOOLS];
         const conflicts = ownTools.filter((entry) => existing.has(entry.name));
         if (conflicts.length) return rpcError(id, -32603, 'MCP tool name conflict with bridge tools');
         const actorAwareTools = tools.map((entry) => entry?.name === 'paperclipMe'
@@ -316,8 +322,25 @@ export class McpBridge {
       });
       return;
     }
+    if (message.method === 'notifications/initialized' && !hasId) {
+      this.forward(message, message.method);
+      this.announceToolList();
+      return;
+    }
     if (hasId && this.pending.size >= MAX_PENDING) return this.writeJson(rpcError(id, -32000, 'Too many pending MCP requests'));
-    this.forward(message, message.method);
+    this.forward(message, message.method, message.method === 'initialize' && hasId ? advertiseToolListChanged : undefined);
+  }
+
+  /**
+   * Tell the client once, right after it confirms the handshake, to fetch tools/list again: a client
+   * that cached an older catalog for this server (for example after a bridge upgrade behind a running
+   * client) then learns the added tools. It can only follow the initialize response, because
+   * `initialized` is set while that response is being relayed, and it is never repeated.
+   */
+  announceToolList() {
+    if (this.listChangedSent || !this.initialized || this.childUnavailable) return;
+    this.listChangedSent = true;
+    this.writeJson({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
   }
 
   forward(message, method, transform = (response) => response) {
@@ -393,6 +416,13 @@ export class McpBridge {
       });
     } catch { return dashboardFailureResult(); }
     return dashboardToolResult(name, response, this.config.companyId);
+  }
+
+  async callRoadmapTool(name, rawInput) {
+    return runRoadmapTool(name, rawInput, {
+      companyId: this.config.companyId,
+      request: (pathname, { method, body }) => this.apiRequest(pathname, { method, body, redirect: 'error' }),
+    });
   }
 
   async callOwnTool(name, rawInput) {

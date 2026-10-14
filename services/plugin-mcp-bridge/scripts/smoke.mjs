@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 
 // Read-only integration check; credentials never enter argv or test output.
 // Dashboard and changelog writes only happen when SMOKE_DASHBOARD_WRITE=1 (see README).
+// The roadmap tools (projects, goals, dashboard moves) are only exercised with input that cannot
+// write anything: it is rejected by the bridge, or it names resources that do not exist.
 const env = { ...process.env };
 if (!env.PAPERCLIP_API_KEY && env.PAPERCLIP_API_KEY_FILE) {
   env.PAPERCLIP_API_KEY = readFileSync(env.PAPERCLIP_API_KEY_FILE, 'utf8').trim();
@@ -33,9 +35,12 @@ const child = spawn(process.execPath, [fileURLToPath(new URL('../src/bridge.mjs'
 const pending = new Map();
 let seq = 0;
 const lines = createInterface({ input: child.stdout });
+// Server-initiated notifications (no id). The bridge must announce a refreshed tool list exactly once.
+let listChangedNotifications = 0;
 lines.on('line', (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
+  if (message.id === undefined && message.method === 'notifications/tools/list_changed') listChangedNotifications++;
   const waiter = pending.get(message.id);
   if (!waiter) return;
   pending.delete(message.id);
@@ -62,6 +67,7 @@ const DASHBOARD_SMOKE_SLUG = 'mcp-bridge-smoke';
 const dashboardTools = ['paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus',
   'paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipValidateDashboardSpec',
   'paperclipListChangelog', 'paperclipAddChangelogEntry', 'paperclipUpdateChangelogEntry', 'paperclipImportChangelogFromIssues'];
+const roadmapTools = ['paperclipCreateProject', 'paperclipUpdateProject', 'paperclipCreateGoal', 'paperclipUpdateGoal', 'paperclipMoveDashboard'];
 const smokeSpec = (rows, updatedAt = new Date().toISOString()) => ({
   version: 1,
   title: 'MCP bridge smoke test',
@@ -94,16 +100,21 @@ const dashboardData = (result, what) => {
 const errorText = (result) => result.content.map((item) => item.text).join('\n');
 let stage = 'initialize';
 try {
-  await request('initialize', {
+  const handshake = await request('initialize', {
     protocolVersion: '2024-11-05', capabilities: {},
     clientInfo: { name: 'observatory-readonly-smoke', version: '0.1.0' },
   });
+  assert.equal(handshake.capabilities?.tools?.listChanged, true, 'initialize must advertise tools.listChanged');
+  assert.equal(listChangedNotifications, 0, 'tools/list_changed must not precede the initialized notification');
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  stage = 'list-changed';
+  for (let waited = 0; listChangedNotifications === 0 && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(listChangedNotifications, 1, 'tools/list_changed must follow notifications/initialized exactly once');
   stage = 'catalog';
   const catalog = await request('tools/list', {});
   const names = new Set(catalog.tools.map((tool) => tool.name));
   const added = ['paperclipAgentHealthOverview', 'paperclipDiagnoseAgent', 'paperclipListRunFailures', 'paperclipFindAgentAnomalies', 'paperclipTraceRun'];
-  for (const name of [...added, ...dashboardTools]) assert(names.has(name), `Missing tool: ${name}`);
+  for (const name of [...added, ...dashboardTools, ...roadmapTools]) assert(names.has(name), `Missing tool: ${name}`);
   assert.equal(names.size, catalog.tools.length, 'Tool names must be unique');
   stage = 'identity';
   const identity = await call('paperclipMe', {});
@@ -193,6 +204,39 @@ try {
   assert.equal(nullProject.isError, true, 'projectId null must be rejected');
   assert.match(errorText(nullProject), /^Invalid input: projectId must be a project UUID/);
   dashboardChecks.push('dashboard-validate', 'dashboard-invalid-spec-422', 'dashboard-not-found-404', 'dashboard-input-bounds', 'dashboard-company-override', 'dashboard-null-project-rejected');
+  // Roadmap tools. Nothing is created: every bad input below is rejected by the bridge before any HTTP call,
+  // and each one is also invalid for Paperclip itself (bad status or level, no fields, unknown ids), so even
+  // a validation regression could not store a project or a goal.
+  stage = 'roadmap';
+  const roadmapChecks = [];
+  const goalProbe = randomUUID();
+  const badInputs = [
+    ['paperclipCreateProject', {}],
+    ['paperclipCreateProject', { name: 'mcp-bridge-smoke', status: 'bogus' }],
+    ['paperclipCreateProject', { name: 'mcp-bridge-smoke', status: 'bogus', companyId: randomUUID() }],
+    ['paperclipCreateProject', { name: 'mcp-bridge-smoke', status: 'bogus', env: { SMOKE: 'x' } }],
+    ['paperclipUpdateProject', { projectId: randomUUID() }],
+    ['paperclipCreateGoal', { title: 'mcp-bridge-smoke', level: 'galaxy' }],
+    ['paperclipUpdateGoal', { goalId: goalProbe, parentId: goalProbe }],
+    ['paperclipMoveDashboard', { slug: 'Not A Slug', projectId: randomUUID() }],
+  ];
+  for (const [name, args] of badInputs) {
+    const rejected = await call(name, args);
+    assert.equal(rejected.isError, true, `${name} must reject bad input`);
+    assert.match(errorText(rejected), /^Invalid input: /, `${name} must reject bad input in the bridge`);
+  }
+  // Unknown ids: the bridge reads the resource first and stops there, so nothing can be written.
+  const missingProject = await call('paperclipUpdateProject', { projectId: randomUUID(), name: 'mcp-bridge-smoke' });
+  assert.equal(missingProject.isError, true);
+  assert.match(errorText(missingProject), /^Not found: project [0-9a-f-]{36} does not exist in the configured Paperclip company\. Nothing was written\.$/);
+  const missingGoal = await call('paperclipUpdateGoal', { goalId: randomUUID(), title: 'mcp-bridge-smoke' });
+  assert.equal(missingGoal.isError, true);
+  assert.match(errorText(missingGoal), /^Not found: goal [0-9a-f-]{36} does not exist in the configured Paperclip company\. Nothing was written\.$/);
+  // Moving an unknown dashboard answers the plugin's own not_found (the target project is never looked at).
+  const missingMove = await call('paperclipMoveDashboard', { slug: `mcp-bridge-missing-${randomUUID().slice(0, 8)}`, projectId: randomUUID() });
+  assert.equal(missingMove.isError, true);
+  assert.match(errorText(missingMove), /HTTP 404\): not_found/);
+  roadmapChecks.push('roadmap-input-bounds', 'roadmap-update-project-not-found', 'roadmap-update-goal-not-found', 'roadmap-move-dashboard-not-found');
   // Changelog reads only. The input checks below are rejected by the bridge itself, before any HTTP call.
   stage = 'changelog';
   const changelog = dashboardData(await call('paperclipListChangelog', { limit: 5 }), 'list changelog');
@@ -268,13 +312,14 @@ try {
       dashboardChecks.push('changelog-add', 'changelog-update', 'changelog-read-back');
     }
   }
+  assert.equal(listChangedNotifications, 1, 'tools/list_changed must be sent exactly once');
   console.log(JSON.stringify({
-    ok: true, toolsTotal: catalog.tools.length, addedTools: added.length + dashboardTools.length,
+    ok: true, toolsTotal: catalog.tools.length, addedTools: added.length + dashboardTools.length + roadmapTools.length,
     dashboards: listed.dashboards.length, changelogEntriesSeen: changelog.entries.length, dashboardWrites: env.SMOKE_DASHBOARD_WRITE === '1',
     agents: overview.agents.length, runs: overview.summary?.runsTotal,
     failuresReturned: failures.failures?.length ?? failures.items?.length,
     anomaliesReturned: anomalies.anomalies?.length ?? anomalies.items?.length,
-    traceEvents, checks: ['official-server', ...added, 'input-bounds', 'company-override', 'unknown-agent', ...dashboardChecks],
+    traceEvents, checks: ['official-server', 'tools-list-changed', ...added, 'input-bounds', 'company-override', 'unknown-agent', ...dashboardChecks, ...roadmapChecks],
   }));
   }
   }

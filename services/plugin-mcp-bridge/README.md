@@ -1,6 +1,8 @@
 # Paperclip plugin MCP bridge
 
-Private Node.js 24 stdio bridge that leaves the official Paperclip MCP server in place and adds five read-only tools from the Journey Studios Agent Observatory plugin and ten tools from the Project Dashboards plugin: six for dashboards (list, read, live status, create/update, validate) and four for the per-project changelog (list, add, update, import completed issues). The bridge spawns the official server, forwards its JSON-RPC stream, and intercepts `tools/list`, calls to its own fixed tool names, and the actor-aware `paperclipMe` compatibility adapter. It does not modify Paperclip core or expose an HTTP listener.
+Private Node.js 24 stdio bridge that leaves the official Paperclip MCP server in place and adds five read-only tools from the Journey Studios Agent Observatory plugin and ten tools from the Project Dashboards plugin: six for dashboards (list, read, live status, create/update, validate) and four for the per-project changelog (list, add, update, import completed issues), plus five roadmap tools: create and update projects and goals through the core Paperclip API, and move a dashboard to another project. The bridge spawns the official server, forwards its JSON-RPC stream, and intercepts `tools/list`, calls to its own fixed tool names, and the actor-aware `paperclipMe` compatibility adapter. It does not modify Paperclip core or expose an HTTP listener.
+
+The package also ships a second, independent stdio entry point, the [connections server](#connections-server-agent-runs) (`src/connections-server.mjs`), which hands an agent run the external-connection tools (for example PostHog) that Paperclip allows that agent to use.
 
 ## Configuration
 
@@ -40,7 +42,7 @@ The company ID is always inserted from deployment configuration. UUID inputs are
 
 For trace, the bridge requests `/api/heartbeat-runs/:runId/events?companyId=…&limit=100` only when the plugin trace summary includes the exact configured `companyId`. It returns only allowlisted event fields (`seq`, `eventType`, `type`, `stream`, `timestamp`) and safe tool metadata (`toolName`, `name`, `status`, `durationMs`). `createdAt` is normalized into `timestamp`. Event payloads, raw logs, and all other event fields are discarded. The response preserves existing coverage metadata and adds `coverage.eventsAvailable`, `coverage.eventsTruncated`, and `coverage.nextSeq`; a full 100-event page is conservatively marked truncated. If event lookup fails, the trace summary remains available with `coverage.eventsUnavailable` set.
 
-If the Observatory plugin is absent, ordinary stock Paperclip MCP tools remain available; the five Observatory tools return a generic failure. A stock tool name collision with any of the fifteen bridge tool names (five Observatory, ten Dashboards and changelog) makes `tools/list` fail closed with a generic JSON-RPC error.
+If the Observatory plugin is absent, ordinary stock Paperclip MCP tools remain available; the five Observatory tools return a generic failure. A stock tool name collision with any of the twenty bridge tool names (five Observatory, ten Dashboards and changelog, five roadmap) makes `tools/list` fail closed with a generic JSON-RPC error.
 
 ## Project Dashboards tools (0.3.0)
 
@@ -110,21 +112,131 @@ Unlike the Observatory tools, the Dashboards tools surface the plugin's document
 
 A missing dashboard answers 404 `not_found` with the company echo, so it is reported as a normal client error and not as an unavailable plugin. The project rule's 400s (`project_required`, `project_not_found`, `project_archived`) are plugin client errors with the company echo and travel the same way. Stock tools and Observatory tools keep working when the Dashboards plugin is absent.
 
+## Roadmap tools (0.4.0)
+
+Five tools manage the strategic side of the roadmap. Goals are its strategic level, projects group dashboards, a changelog and issues, and dashboards belong to projects. The first four talk to the **core** Paperclip REST API with the board key (the same bearer and the same pinned company as every other tool); the fifth is a Project Dashboards plugin call.
+
+| Tool | Request | Input | Notes |
+| --- | --- | --- | --- |
+| `paperclipCreateProject` | `POST /api/companies/{company}/projects` | `{ name, description?: string \| null, status?, goalIds?, targetDate?, color?, leadAgentId?: uuid \| null, idempotencyKey? }` | **Not idempotent** unless `idempotencyKey` is given. |
+| `paperclipUpdateProject` | `PATCH /api/projects/:id` | `{ projectId, name?, description?, status?, goalIds?, targetDate?: date \| null, color?: color \| null, leadAgentId?: uuid \| null, archived?: boolean }`, at least one besides `projectId` | Idempotent. `goalIds` **replaces** the whole set (`[]` unlinks all). |
+| `paperclipCreateGoal` | `POST /api/companies/{company}/goals` | `{ title, description?, level?, status?, parentId?: uuid \| null, ownerAgentId?: uuid \| null }` | **Not idempotent.** |
+| `paperclipUpdateGoal` | `PATCH /api/goals/:id` | `{ goalId, title?, description?, level?, status?, parentId?, ownerAgentId? }`, at least one besides `goalId`; `parentId` cannot be `goalId` | Idempotent. |
+| `paperclipMoveDashboard` | `POST /api/plugins/journeystudios.project-dashboards/api/dashboards/:slug/project` | `{ slug, projectId }` | Needs plugin 0.4.1. Idempotent: `moved: false` and no new revision when the dashboard is already in that project. |
+
+- **Input** is validated before any HTTP call and unknown keys are rejected. `name` and `title` are non-blank strings of 1-200 characters, `description` at most 10,000 characters (`null` clears it), `status` one of `backlog`, `planned`, `in_progress`, `completed`, `cancelled` for projects and `planned`, `active`, `achieved`, `cancelled` for goals, `level` one of `company`, `team`, `agent`, `task`, `goalIds` at most 20 distinct UUIDs, `targetDate` a real calendar date `YYYY-MM-DD`, `color` `#rrggbb`, `idempotencyKey` 1-255 characters. The enums are copies of the host constants (`PROJECT_STATUSES`, `GOAL_LEVELS`, `GOAL_STATUSES`); `roadmap.test.mjs` compares them with the vendored host source whenever it is present. The company is never an input: it is always the pinned `PAPERCLIP_COMPANY_ID`, and a project or goal created through these tools belongs to it. The host's `env`, `executionWorkspacePolicy`, `workspace`, `repositoryIds` and `repositoryUrls`, and pausing, are not accepted (as unknown fields), so the tools can neither read nor change them; `archived` is translated into `archivedAt` (the current time as an ISO string, or `null`).
+- **Company check.** Before any write, every referenced id must belong to the pinned company: each `goalIds` entry and `parentId` through `GET /api/goals/:id`, each `leadAgentId` and `ownerAgentId` through `GET /api/agents/:id`, and for updates the target itself through `GET /api/projects/:id` or `GET /api/goals/:id`. A record that is missing, or whose `companyId` is not the pinned one, ends the call with `Not found: … Nothing was written.` and no write request is sent (the two cases are deliberately indistinguishable). A reference check that fails for any other reason (5xx, 403, a record without `companyId`) is a generic failure and also stops before the write. Every write response must carry the pinned `companyId` too.
+- **Read-back.** The host's schemas are not strict (unknown fields are ignored), and some values are changed on the way in, so after every create or update the bridge reads the resource again (`GET /api/projects/:id` or `/api/goals/:id`, with the same company check) and returns that state, not an echo of the request. The result is `{ created | updated, project | goal, warnings? }`: a compact project (`id`, `name`, `urlKey`, `status`, `description`, `goalIds`, `leadAgentId`, `targetDate`, `archivedAt`) or goal (`id`, `title`, `description`, `level`, `status`, `parentId`, `ownerAgentId`). Every requested field whose stored value differs from what was asked produces a warning (`Field "status" was requested as "planned" but reads back as "backlog"…`), and the result starts with a `Warning:` text block repeating them. Paperclip appends a numeric suffix (`Name 2`) when a project name collides with an existing one: that is called out explicitly. A repeated `idempotencyKey` returns the first project and says so (`created: false`). If the read-back itself fails, the write is still reported, with a warning that the state is the answer of the write, never as a failure that would invite a duplicate create. `archived: true` or `false` on a project already in that state sends nothing, so repeating the call does not move `archivedAt`.
+- **Errors.** For the core routes, the host's own 400, 404, 409 and 422 answers are passed through so the model can fix its call: `Paperclip rejected the request (HTTP n): <error>`, with the error text cut to 300 characters and up to 20 detail lines (`- path: message` from the host's validation issues, each cut to 300 characters, then `- (n more not shown)`). 401, 403, 429, 5xx, transport errors, timeouts, oversize or malformed bodies and a company mismatch stay generic (`Roadmap request failed…`) and never echo a body. A generic failure of a write that may have reached the host adds `The write may or may not have been applied: read the resource before retrying`. `paperclipMoveDashboard` uses the Dashboards error policy above (`project_required`, `project_not_found`, `project_archived` and `not_found` reach the model).
+- **Annotations.** All five are `readOnlyHint: false, destructiveHint: false, openWorldHint: false`; the two creates are `idempotentHint: false`, the updates and the move `true`. There are deliberately no delete tools (deleting a project is a hard delete in the host) and no way to pause a project (the host only pauses on budget). Creating or changing a project wakes no agent.
+- GETs time out after 10 s and writes after 25 s, redirects are rejected, bodies are capped at 1 MiB, and the calls share the concurrency limit of 8 with the other tools (`Roadmap tools are busy; retry shortly.`).
+
+## Tool list refresh (`tools/list_changed`)
+
+The bridge adds tools to the stock catalog, and a client that cached an older catalog for this server (for example after the bridge was upgraded behind a running client) would never see them. So the bridge answers `initialize` with `capabilities.tools.listChanged: true` (the other capabilities of the stock server are kept as they are) and, once the client has sent `notifications/initialized`, forwards that notification to the stock server as before and then sends one `notifications/tools/list_changed` to the client, which makes it fetch `tools/list` again. It is sent once per process, never before the `initialize` answer has been relayed (a client that confirms early gets nothing until it has initialized), and not at all when the stock server has failed to initialize or is gone.
+
 ## Deploy and rollback
 
-Build/run this service as a sidecar or wrapper in the Paperclip container environment, mount only this service directory read-only, provide its three required environment values through the deployment secret mechanism, and point the MCP client at `node /path/to/plugin-mcp-bridge/src/bridge.mjs` using stdio. Keep the existing official server command and credentials unchanged. This bridge opens no public port; use the existing authenticated MCP transport if one is needed. Verify that `tools/list` includes all fifteen names (five Observatory, ten Dashboards and changelog) and that one stock tool call, one Observatory read-only call and one Dashboards read-only call succeed before routing users to it.
+Build/run this service as a sidecar or wrapper in the Paperclip container environment, mount only this service directory read-only, provide its three required environment values through the deployment secret mechanism, and point the MCP client at `node /path/to/plugin-mcp-bridge/src/bridge.mjs` using stdio. Keep the existing official server command and credentials unchanged. This bridge opens no public port; use the existing authenticated MCP transport if one is needed. Verify that `tools/list` includes all twenty names (five Observatory, ten Dashboards and changelog, five roadmap) and that one stock tool call, one Observatory read-only call and one Dashboards read-only call succeed before routing users to it.
 
 Rollback by switching the MCP client command back to the existing official `paperclip-mcp-server` command (or to the previous bridge release directory, for example 0.1.1) and removing the bridge process/container. No Paperclip database migration or core change is made, so rollback does not require a data restore. Dashboards and changelog entries written through the bridge stay in the plugin and remain editable in the board UI.
 
+## Connections server (agent runs)
+
+`src/connections-server.mjs` (`pnpm start:connections`) is a stdio MCP server for **agent runs**. Paperclip governs external connections such as PostHog and publishes the tools each agent may use through its *tool gateway*. The `claude_local` and `codex_local` adapters hand that list to their CLI themselves; the `agy_local` adapter (Antigravity CLI) hands over nothing, and `agy` only accepts MCP servers from its global config. This server closes that gap: it is registered once in the CLI, the CLI starts it as a child process for every run, and it exposes only the tools the gateway lists for that agent. Governance (which tools exist for the agent, read-only enforcement, "Ask first" approvals, rate limits, audit) stays in Paperclip; the server only relays.
+
+It is independent of `bridge.mjs`. It does not start the official Paperclip MCP server (agents already reach the Paperclip API through the `paperclip` skill), it does not expose the Observatory, Dashboards, changelog or roadmap tools, and it opens no port. Both entry points share `api-base.mjs` (URL validation), `jsonl-reader.mjs` (stdin framing) and `bounded-response.mjs`.
+
+### Environment
+
+The credential is never configured: the CLI's child process inherits the environment of the run, and that is the only place the server reads it from.
+
+| Variable | Purpose |
+| --- | --- |
+| `PAPERCLIP_API_URL` | Paperclip base URL, with or without a trailing `/api` (`http://127.0.0.1:3100` and `http://127.0.0.1:3100/api` are the same). Same rules as the bridge: HTTPS, or HTTP for loopback (`localhost`, `127.0.0.1`, `[::1]`); no user or password in the URL. |
+| `PAPERCLIP_API_KEY` | The agent's per-run JWT, which already identifies the agent, the company and the run. Used only to open and revoke the gateway session. Never printed, logged, passed as an argument or returned to the model. |
+| `PAPERCLIP_ALLOW_INSECURE_HTTP` | Set exactly `1` only to permit plain HTTP to a non-loopback host on a trusted private network; it exposes the key to that network. |
+
+`PAPERCLIP_COMPANY_ID`, `PAPERCLIP_AGENT_ID` and `PAPERCLIP_RUN_ID` are not read, and no `X-Paperclip-Run-Id` header is sent: the JWT carries the run, and a header that disagrees with it is answered with HTTP 422. An unusable `PAPERCLIP_API_URL` (not HTTPS and not loopback without the opt-in, credentials in the URL, not a URL) prints `Paperclip connections server configuration is invalid` to stderr and exits with code 1.
+
+### Registering it in the agent CLI
+
+Register the command once, with no environment and no credential in the CLI config:
+
+```sh
+agy mcp add paperclip-connections -- node /path/to/plugin-mcp-bridge/src/connections-server.mjs
+```
+
+The package needs Node 24 (like the rest of the bridge) and no dependencies. Mount or copy only this service directory, read-only.
+
+### Outside an agent run
+
+A human starting the CLI has no Paperclip credentials in the environment, and a stale or foreign key has no active run. Neither is an error. The server starts, answers `initialize` and `ping`, returns `{ "tools": [] }` for `tools/list`, and answers `tools/call` with an `isError` result saying "Paperclip connections are only available inside an active agent run." It writes one generic line to stderr and makes no further gateway attempts. This state is permanent for the process, because the server lives inside a single run.
+
+### How it talks to the gateway
+
+All paths are under `/api/tool-gateway`.
+
+| Step | Request |
+| --- | --- |
+| Open a session (on the first listing or call) | `POST /sessions` with `Authorization: Bearer <PAPERCLIP_API_KEY>` and `{"ttlMs": 3600000}` (the 60 minute maximum) |
+| List the allowed tools (every `tools/list`, never cached) | `GET /tools` with the header `x-paperclip-tool-gateway-token: <token>` (the raw token, no `Bearer`) |
+| Run a tool | `POST /tools/call` with the same header and `{"tool", "parameters", "timeoutMs": 55000}`; the HTTP timeout is 60 s |
+| Close the session | `POST /sessions/:id/revoke` with the Bearer key and `{}`; best effort, 2 s timeout |
+
+- One session is opened at a time and shared by concurrent requests. It is renewed when fewer than 60 seconds remain before `expiresAt`. On a 401 saying the session itself is gone (`session_expired`, `session_revoked`, `session_invalid`) the server opens one new session and repeats the request once; the gateway authenticates before it runs anything, so that repeat cannot run a tool twice.
+- If opening a session is refused with 400, 401, 403 (`run_inactive`, `run_company_mismatch`, `run_agent_mismatch`, `run_context_mismatch`, ...) or 404 (`agent_not_found`), or a request gets 401 `session_run_inactive`, there is no active run for this process and it becomes unavailable (previous section). 5xx and network errors while opening a session are treated as temporary.
+- When stdin ends, or on SIGTERM or SIGINT, in-flight tool requests are aborted, the session is revoked and the process exits. A session whose creation is still running is not aborted: it is awaited (at most its own 15 s timeout) and then revoked, so no valid session is left behind.
+- Input lines are capped at 1 MiB (as in the bridge). An oversized record is discarded whole, up to its terminating newline, so a valid-looking tail of it is never dispatched; one diagnostic is written to stderr.
+- Redirects are rejected, response bodies are capped at 1 MiB, and at most 8 tool calls run at once (a ninth gets an `isError` "busy; retry shortly" result).
+
+### Tool names
+
+Models accept only `[A-Za-z0-9_-]`, 64 characters at most, while the gateway names tools like `mcp.posthog-1a2b3c4d:query-run`. The server drops the `mcp.` prefix and replaces every other character outside that set with `_`, so that tool is advertised as `posthog-1a2b3c4d_query-run`. A name that would exceed 64 characters, or that collides with another name in the same list, keeps a truncated readable part and gets `_` plus the first 8 hex characters of the SHA-256 of its original gateway name (for a collision, every name involved gets the suffix, so the result does not depend on listing order). The mapping is rebuilt on every `tools/list`. A `tools/call` for a name the server does not know rereads the gateway list once, because the allowed set can grow during a run; if the name is still unknown it answers JSON-RPC error `-32602` "Unknown tool".
+
+Each tool is advertised with the gateway's `description`, `parametersSchema` as `inputSchema` (`{"type": "object"}` when absent) and, when it is an object, `providerMetadata.annotations`. Tools switched off for the agent never appear in the list. A tool set to "Ask first" is listed like any other, with a marker in its description, and its first call returns the approval instructions (below).
+
+### Results and errors
+
+`tools/call` always answers with an MCP result (`content`, `isError`, `structuredContent`) except for the protocol errors `-32002` (before `initialize`), `-32602` (bad parameters, unknown tool) and `-32601` (unknown method). Text written by Paperclip is cut to 2,000 characters.
+
+| Gateway answer | Result for the model |
+| --- | --- |
+| 200 `completed` | The original upstream `content` blocks and `structuredContent`; `isError: true` when the upstream tool reported an error (HTTP stays 200 for that). Without usable blocks, the joined text, or the JSON of the result. |
+| 200 `replayed` | The summary of the identical earlier call in this run, with a note saying so. |
+| 409 `approval_required` | `isError`, with the instructions Paperclip returns (do not repeat the call, end the run and wait for the approval). |
+| Other 409 (`action_declined`, `approval_path_missing`, `provider_interaction_required`), 403 `deny_*`, 429 `rate_limited`, 404 `tool_not_found`, other 4xx | `isError`: "Paperclip did not run this tool: <Paperclip's error text>". |
+| 422 `prompt_injection_blocked` | `isError`, generic statement that the call was blocked as a possible prompt injection; the findings are not forwarded. |
+| 5xx, 502/504 from the upstream, timeouts, network errors, invalid or oversized bodies | `isError`, a generic message with at most a short `reasonCode`. The gateway's `execution` details are never forwarded. |
+
+### What is never exposed
+
+The agent key and the gateway token are not written to stdout or stderr, not returned in any result and not put in an argument or URL. Stdout carries only JSON-RPC messages; stderr carries generic fixed diagnostics. HTTP bodies, `execution`, `findings`, approval identifiers and request or session identifiers are never passed to the model: only the allow-listed fields above are.
+
+### Trying it by hand
+
+Point it at any HTTP server that implements the gateway paths (or at Paperclip itself with a run's environment) and speak JSON-RPC lines on stdin:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' |
+  PAPERCLIP_API_URL=http://127.0.0.1:3100 PAPERCLIP_API_KEY=<run key> node src/connections-server.mjs
+```
+
+The automated tests (`test/gateway-client.test.mjs`, `test/connections.test.mjs`) run the same flows against an in-memory gateway and against a throwaway local HTTP server, with no external calls.
+
 ## Tests
 
-Run `pnpm test`. Tests exercise protocol initialization and tool listing with a mock subprocess, stock tool forwarding/notifications, fixed company scoping, strict input validation, trace company proof, and event sanitization without external dependencies. `test/dashboards.test.mjs` covers the Dashboards and changelog tools: tool catalog and annotations (including the non-idempotent `paperclipAddChangelogEntry`), the method/path/query/body of every tool, company pinning, input and body-size rejections, the 422/400/404/413 client-error policy and its truncation, generic 5xx handling, company-mismatch fail-closed, plugin-unavailable detection, the status summary, the shared concurrency limit and the GET/POST timeouts.
+Run `pnpm test`. `test/gateway-client.test.mjs` and `test/connections.test.mjs` cover the connections server (see its section above): protocol handling, name translation, the session lifecycle, every gateway answer and its MCP translation, shutdown and revocation, configuration, and a check that neither the key nor a token reaches stdout or stderr. The remaining tests exercise protocol initialization and tool listing with a mock subprocess, stock tool forwarding/notifications, fixed company scoping, strict input validation, trace company proof, and event sanitization without external dependencies. `test/roadmap.test.mjs` covers the roadmap project and goal tools against an in-memory stand-in for the core routes (catalog, annotations and schemas, the enums against the vendored host constants, strict input validation, the company checks and the absence of any write when one fails, the read-back and its warnings, the name suffix, idempotency keys, the error policy and its bounds, timeouts, concurrency); `test/bridge.test.mjs` covers the `tools/list_changed` handshake; `test/dashboards.test.mjs` also covers `paperclipMoveDashboard` and covers the Dashboards and changelog tools: tool catalog and annotations (including the non-idempotent `paperclipAddChangelogEntry`), the method/path/query/body of every tool, company pinning, input and body-size rejections, the 422/400/404/413 client-error policy and its truncation, generic 5xx handling, company-mismatch fail-closed, plugin-unavailable detection, the status summary, the shared concurrency limit and the GET/POST timeouts.
 
 ## Live verification
 
-Run `node scripts/smoke.mjs` in the target MCP container with the existing API URL, company ID, and key environment. A deployment may set `PAPERCLIP_API_KEY_FILE` instead of an inline key; the script reads it into the child environment and never prints it. The check initializes the official server, verifies all fifteen added tools, calls one stock tool and all Observatory tools, and rejects invalid bounds, a company override, and an unknown agent. By default it performs no writes or agent wakes.
+Run `node scripts/smoke.mjs` in the target MCP container with the existing API URL, company ID, and key environment. A deployment may set `PAPERCLIP_API_KEY_FILE` instead of an inline key; the script reads it into the child environment and never prints it. The check initializes the official server, verifies all twenty added tools and the `tools/list_changed` handshake, calls one stock tool and all Observatory tools, and rejects invalid bounds, a company override, and an unknown agent. By default it performs no writes or agent wakes. It also checks that `initialize` advertises `tools.listChanged` and that exactly one `tools/list_changed` follows `notifications/initialized`.
 
 The Dashboards part of the smoke is read-only by default: it lists dashboards, validates a tiny spec (a dry run, nothing stored), checks the 422, 404 and input-bound error paths and that `projectId: null` is refused by the bridge before any HTTP call (it is sent with a deliberately invalid spec, so a regression could not store anything), and, when `SMOKE_DASHBOARD_SLUG` is set, reads that dashboard's status and spec. Setting `SMOKE_DASHBOARD_WRITE=1` additionally **writes**: it first reads the `mcp-bridge-smoke` dashboard. If it exists, the smoke upserts it without `projectId` (title "MCP bridge smoke test"), so it stays in its project or stays projectless. If it does not exist, `SMOKE_DASHBOARD_PROJECT_ID` (the UUID of a project in the configured company) is required to create it in that project; without it the script stops with a clear message before writing anything, and a value that is not a UUID is rejected before the bridge starts. It then refreshes the `smoke` dataset, reads it back and checks the status and the project. There is no delete tool, so that one dashboard stays until someone removes it in the board UI; leave the variable unset for production checks that must not write.
+
+The roadmap part never creates anything, in any mode: it checks that bad input (an empty project, a company override, an unknown status or level, an `env` field, a goal that is its own parent, an invalid dashboard slug) is rejected by the bridge, that `paperclipUpdateProject` and `paperclipUpdateGoal` with a random UUID answer `Not found: … Nothing was written.`, and that `paperclipMoveDashboard` with an unknown slug returns the plugin's `not_found` (so it needs plugin 0.4.1). Every bad input is also invalid for Paperclip itself, so even a validation regression could not store a project or a goal.
 
 The changelog part is read-only by default as well: it lists the changelog (`paperclipListChangelog`, optionally scoped with `SMOKE_CHANGELOG_PROJECT_ID`, which must be a UUID and is validated before the bridge starts, and without issue entries) and checks that bad input (a `limit` of 0, a company override, the `issue` kind, an update without fields) is rejected without touching the network. Only when `SMOKE_DASHBOARD_WRITE=1` **and** `SMOKE_CHANGELOG_PROJECT_ID` are both set does it also write: it adds one `note` entry titled "MCP bridge smoke test <timestamp>" to that project, updates it (sets `version` and clears `body`) and reads it back. Adding is not idempotent, so every such run leaves one more `note` that can only be removed in the board UI. The smoke never calls `paperclipImportChangelogFromIssues`, because an import writes an entry for every completed issue of the project.
 

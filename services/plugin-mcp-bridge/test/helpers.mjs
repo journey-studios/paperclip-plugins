@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { DASHBOARD_TOOLS, McpBridge, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { DASHBOARD_TOOLS, McpBridge, OBSERVATORY_TOOLS, ROADMAP_TOOLS } from '../src/bridge.mjs';
 
 export const companyId = 'd9f67265-9c8f-4cbe-b91c-b3e0ea26da02';
 export const agentId = '7067603c-5ee4-4db8-87f1-8c16a54f44a2';
@@ -11,7 +11,7 @@ export const env = {
   PAPERCLIP_COMPANY_ID: companyId,
 };
 
-function fakeChild({ stockCallResult, stockTools } = {}) {
+function fakeChild({ stockCallResult, stockTools, initializeResult, initializeError } = {}) {
   const child = new EventEmitter();
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
@@ -23,9 +23,14 @@ function fakeChild({ stockCallResult, stockTools } = {}) {
     if (message.method === 'tools/call' && stockCallResult !== undefined) {
       child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: stockCallResult })}\n`);
     }
-    if (message.method === 'initialize') child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } } })}\n`);
+    if (message.method === 'initialize') {
+      const answer = initializeError
+        ? { jsonrpc: '2.0', id: message.id, error: initializeError }
+        : { jsonrpc: '2.0', id: message.id, result: initializeResult ?? { protocolVersion: '2025-03-26', capabilities: { tools: {} } } };
+      child.stdout.write(`${JSON.stringify(answer)}\n`);
+    }
     if (message.method === 'tools/list') {
-      const collisions = { collision: OBSERVATORY_TOOLS[0], 'collision-dashboards': DASHBOARD_TOOLS[0] };
+      const collisions = { collision: OBSERVATORY_TOOLS[0], 'collision-dashboards': DASHBOARD_TOOLS[0], 'collision-roadmap': ROADMAP_TOOLS.at(-1) };
       const collision = collisions[message.params?.cursor];
       const tools = collision ? [{ name: collision.name }] : (stockTools ?? [{ name: 'existingTool' }]);
       const nextCursor = message.params?.cursor ? 'stock-next-2' : 'stock-next-1';
@@ -36,14 +41,14 @@ function fakeChild({ stockCallResult, stockTools } = {}) {
   return child;
 }
 
-export function makeBridge({ fetchImpl = async () => new Response('{}'), bridgeEnv = env, stockCallResult, stockTools } = {}) {
+export function makeBridge({ fetchImpl = async () => new Response('{}'), bridgeEnv = env, stockCallResult, stockTools, initializeResult, initializeError } = {}) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   let child;
   const bridge = new McpBridge({
     env: bridgeEnv,
-    spawn: (...args) => { child = fakeChild({ stockCallResult, stockTools }); child.spawnArgs = args; return child; },
+    spawn: (...args) => { child = fakeChild({ stockCallResult, stockTools, initializeResult, initializeError }); child.spawnArgs = args; return child; },
     fetchImpl,
     stdin,
     stdout,
