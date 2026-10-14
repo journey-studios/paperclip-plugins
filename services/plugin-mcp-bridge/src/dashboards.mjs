@@ -26,19 +26,19 @@ export const MAX_CHANGELOG_PAGE = 500;
 const CLIENT_ERROR_STATUSES = new Set([400, 404, 413, 422]);
 const HEALTH_VALUES = new Set(['fresh', 'stale', 'unknown']);
 
-const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const isPlainObject = (value) => {
+export const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+export const isPlainObject = (value) => {
   if (!isRecord(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 };
-const boundedString = (min, max) => (value) => typeof value === 'string' && value.length >= min && value.length <= max;
+export const boundedString = (min, max) => (value) => typeof value === 'string' && value.length >= min && value.length <= max;
 
 /** Input rejected by the bridge before any HTTP call. The message is bridge-authored and safe to return. */
 export class DashboardInputError extends Error {}
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false };
-const IDEMPOTENT_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+export const IDEMPOTENT_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 // Adds a new record every call, so repeating it duplicates the entry.
 const ADDITIVE_WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
@@ -172,6 +172,11 @@ const DEFINITIONS = new Map([
         .filter((key) => input[key] !== undefined).map((key) => [key, input[key]])),
     }),
   }],
+  ['paperclipMoveDashboard', {
+    fields: { slug: 'slug', projectId: 'projectId' },
+    required: ['slug', 'projectId'],
+    build: (input) => ({ method: 'POST', path: route(input.slug, 'project'), params: {}, body: { projectId: input.projectId } }),
+  }],
   ['paperclipValidateDashboardSpec', {
     fields: { spec: 'spec' },
     required: ['spec'],
@@ -301,6 +306,18 @@ export const DASHBOARD_TOOLS = [
     ['projectId'], IDEMPOTENT_WRITE),
 ];
 
+/**
+ * Moves a dashboard between projects. It is a Project Dashboards plugin call and shares this module's
+ * request building and result handling, but it is listed with the roadmap tools (see roadmap.mjs).
+ */
+export const MOVE_DASHBOARD_TOOL = tool('paperclipMoveDashboard',
+  'Move an existing Project Dashboard to another Paperclip project of the configured company, by slug. Projects group dashboards, so use this to rehome a dashboard, including one that has no project. The spec is untouched; the move is stored as a new revision and logged as activity. The target project must exist in this company and not be archived. Returns {moved, dashboard}; moved is false, with no new revision, when the dashboard is already in that project. To create or edit a dashboard use paperclipUpsertDashboard. Idempotent.',
+  {
+    slug: slugSchema,
+    projectId: { ...uuid, description: 'The project to move the dashboard into (an active project of this company).' },
+  },
+  ['slug', 'projectId'], IDEMPOTENT_WRITE);
+
 export const isDashboardTool = (name) => DEFINITIONS.has(name);
 
 function reject(message) {
@@ -343,7 +360,7 @@ export function buildDashboardRequest(name, rawInput) {
   return { method, path: `${DASHBOARD_API_PREFIX}${path}`, params, bodyText };
 }
 
-const textResult = (text, isError = false) => ({ ...(isError ? { isError: true } : {}), content: [{ type: 'text', text }] });
+export const textResult = (text, isError = false) => ({ ...(isError ? { isError: true } : {}), content: [{ type: 'text', text }] });
 
 export const dashboardInputErrorResult = (message) => textResult(message, true);
 export const dashboardFailureResult = () => textResult('Project Dashboards request failed. Check bridge configuration and plugin availability.', true);
@@ -351,7 +368,7 @@ export const dashboardBusyResult = () => textResult('Project Dashboards is busy;
 const unavailableResult = () => textResult('Project Dashboards plugin unavailable. Check that it is installed and enabled for this company; other Paperclip tools are unaffected.', true);
 
 /** One printable line: control characters collapsed, bounded length. */
-function clean(value, max = MAX_MESSAGE_CHARS) {
+export function clean(value, max = MAX_MESSAGE_CHARS) {
   const text = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

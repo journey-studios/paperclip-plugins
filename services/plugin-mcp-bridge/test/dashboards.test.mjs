@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS } from '../src/bridge.mjs';
+import { DASHBOARD_TOOLS, OBSERVATORY_TOOLS, ROADMAP_TOOLS } from '../src/bridge.mjs';
 import { ALL_KINDS, CURATED_KINDS, MAX_REQUEST_BODY_BYTES } from '../src/dashboards.mjs';
 import { companyId, env, flush, makeBridge, messages } from './helpers.mjs';
 
@@ -52,7 +52,7 @@ test('tools/list advertises the six dashboard and four changelog tools with stri
   ctx.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`);
   await flush();
   const listed = messages(ctx.output).find((entry) => entry.id === 2).result.tools;
-  assert.deepEqual(listed.slice(-10).map((entry) => entry.name), [
+  assert.deepEqual(listed.slice(-10 - ROADMAP_TOOLS.length, -ROADMAP_TOOLS.length).map((entry) => entry.name), [
     'paperclipListDashboards', 'paperclipGetDashboard', 'paperclipDashboardStatus',
     'paperclipUpsertDashboard', 'paperclipUpdateDashboardDataset', 'paperclipValidateDashboardSpec',
     'paperclipListChangelog', 'paperclipAddChangelogEntry', 'paperclipUpdateChangelogEntry', 'paperclipImportChangelogFromIssues',
@@ -128,6 +128,14 @@ const REQUEST_CASES = [
   {
     name: 'paperclipUpdateDashboardDataset', args: { slug, datasetId: 'Phases', rows: [] }, method: 'POST',
     path: `/dashboards/${slug}/datasets/Phases`, query: {}, body: { rows: [] }, reply: { dashboard: { slug }, dataset: { id: 'Phases', rows: 0 } },
+  },
+  {
+    name: 'paperclipMoveDashboard', args: { slug, projectId }, method: 'POST', path: `/dashboards/${slug}/project`, query: {},
+    body: { projectId }, reply: { moved: true, dashboard: { slug, projectId, revision: 2 } },
+  },
+  {
+    name: 'paperclipMoveDashboard', args: { slug: 'a'.repeat(64), projectId: projectId.toUpperCase() }, method: 'POST', path: `/dashboards/${'a'.repeat(64)}/project`, query: {},
+    body: { projectId: projectId.toUpperCase() }, reply: { moved: false, dashboard: { slug, projectId, revision: 2 } },
   },
   {
     name: 'paperclipValidateDashboardSpec', args: { spec }, method: 'POST', path: '/validate', query: {},
@@ -279,6 +287,16 @@ const VALIDATION_CASES = [
   ['paperclipUpdateDashboardDataset', { slug, datasetId: 'd', rows: [], updatedAt: 1760000000 }, /updatedAt must be an ISO/],
   ['paperclipUpdateDashboardDataset', { slug, datasetId: 'd', rows: [], updatedAt: `2026-10-13T00:00:00Z${' '.repeat(64)}` }, /updatedAt must be an ISO/],
   ['paperclipUpdateDashboardDataset', { slug, datasetId: 'd', rows: [], projectId }, /unexpected field/],
+  ['paperclipMoveDashboard', {}, /slug is required/],
+  ['paperclipMoveDashboard', { slug }, /projectId is required/],
+  ['paperclipMoveDashboard', { projectId }, /slug is required/],
+  ['paperclipMoveDashboard', { slug, projectId: null }, /projectId must be a project UUID \(null is not accepted: every dashboard belongs to a project\)/],
+  ['paperclipMoveDashboard', { slug, projectId: 'nope' }, /projectId must be a project UUID/],
+  ['paperclipMoveDashboard', { slug, projectId: 5 }, /projectId must be a project UUID/],
+  ['paperclipMoveDashboard', { slug: 'Bad Slug', projectId }, /slug must match/],
+  ['paperclipMoveDashboard', { slug: '../status', projectId }, /slug must match/],
+  ['paperclipMoveDashboard', { slug, projectId, companyId: otherCompany }, /unexpected field/],
+  ['paperclipMoveDashboard', { slug, projectId, title: 'x' }, /unexpected field/],
   ['paperclipValidateDashboardSpec', {}, /spec is required/],
   ['paperclipValidateDashboardSpec', { spec: [] }, /spec must be a JSON object/],
   ['paperclipValidateDashboardSpec', { spec, slug }, /unexpected field/],
@@ -512,6 +530,31 @@ test('the plugin project errors (project_required, project_not_found, project_ar
   const rejected = await callTool(foreign, 'paperclipUpsertDashboard', { slug, spec, projectId });
   assert.match(textOf(rejected), /^Project Dashboards request failed/);
   assert.doesNotMatch(foreign.output.join(''), /project_not_found/);
+});
+
+test('paperclipMoveDashboard relays the plugin errors (project_required, project_not_found, project_archived, not_found) as client errors', async () => {
+  const cases = [
+    [400, 'project_required'], [400, 'project_not_found'], [400, 'project_archived'], [404, 'not_found'],
+  ];
+  for (const [status, code] of cases) {
+    const ctx = setup({ respond: () => json({ companyId, error: code, stack: 'at secret.js:1' }, status) });
+    const reply = await callTool(ctx, 'paperclipMoveDashboard', { slug, projectId });
+    assert.equal(reply.result.isError, true, code);
+    assert.equal(textOf(reply), `Project Dashboards rejected the request (HTTP ${status}): ${code}`);
+    assert.doesNotMatch(textOf(reply), /unavailable|request failed|secret\.js/);
+    assert.equal(ctx.requests.length, 1);
+    noSecrets(ctx);
+  }
+  // The result is the plugin payload without the company echo.
+  const moved = setup({ respond: () => json({ companyId, moved: true, dashboard: { slug, projectId, revision: 3 } }) });
+  const reply = await callTool(moved, 'paperclipMoveDashboard', { slug, projectId });
+  assert.deepEqual(payloadOf(reply), { moved: true, dashboard: { slug, projectId, revision: 3 } });
+  // A foreign echo fails closed; a route the host does not know (plugin older than 0.4.1) is reported as unavailable.
+  const foreign = setup({ respond: () => json({ companyId: otherCompany, moved: true, dashboard: { slug: 'foreign' } }) });
+  assert.match(textOf(await callTool(foreign, 'paperclipMoveDashboard', { slug, projectId })), /^Project Dashboards request failed/);
+  assert.doesNotMatch(foreign.output.join(''), /foreign/);
+  const old = setup({ respond: () => json({ error: 'API route not found' }, 404) });
+  assert.match(textOf(await callTool(old, 'paperclipMoveDashboard', { slug, projectId })), /^Project Dashboards plugin unavailable/);
 });
 
 test('5xx, auth failures, transport errors and malformed bodies stay generic and echo nothing upstream', async () => {
