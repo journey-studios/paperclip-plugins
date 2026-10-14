@@ -125,13 +125,19 @@ export class GatewayClient {
   }
 
   /**
-   * Stop in-flight work and revoke the session, best effort: the process is exiting, the run may
-   * already be over, and the session expires on its own anyway, so no failure here matters.
+   * Stop in-flight tool traffic and revoke the session, best effort: the process is exiting, the run
+   * may already be over, and the session expires on its own anyway, so no failure here matters.
+   *
+   * A session creation that is still running is not aborted but awaited: the gateway may already
+   * have opened the session, and only its answer carries the id needed to revoke it. Aborting would
+   * leave a valid session behind for up to an hour. The creation's own 15 s timeout bounds the wait.
    */
   async close() {
     if (this.#closed) return;
     this.#closed = true;
     for (const controller of this.#inflight) controller.abort();
+    const creating = this.#creating;
+    if (creating) await creating;
     const session = this.#session;
     this.#session = null;
     if (!session || this.#unavailable) return;
@@ -154,6 +160,9 @@ export class GatewayClient {
     for (let attempt = 0; attempt < 2; attempt++) {
       const ensured = await this.#ensureSession();
       if (ensured.kind !== 'session') return ensured;
+      // close() may have run while this request waited for the session; its revoke is already
+      // underway, so the token must not be used for new traffic.
+      if (this.#closed) return { kind: 'unavailable' };
       const response = await send(ensured.session.token);
       if (response.kind !== 'response') return response;
       if (response.status === 401) {
@@ -196,6 +205,8 @@ export class GatewayClient {
       headers: { authorization: `Bearer ${this.#apiKey}` },
       body: JSON.stringify({ ttlMs: SESSION_TTL_MS }),
       timeoutMs: SESSION_TIMEOUT_MS,
+      // Untracked so close() cannot abort it: see close().
+      track: false,
     });
     if (response.kind !== 'response') return response;
     if (NO_RUN_STATUSES.has(response.status)) return this.#markUnavailable();

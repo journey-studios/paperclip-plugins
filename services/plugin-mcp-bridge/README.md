@@ -186,7 +186,8 @@ All paths are under `/api/tool-gateway`.
 
 - One session is opened at a time and shared by concurrent requests. It is renewed when fewer than 60 seconds remain before `expiresAt`. On a 401 saying the session itself is gone (`session_expired`, `session_revoked`, `session_invalid`) the server opens one new session and repeats the request once; the gateway authenticates before it runs anything, so that repeat cannot run a tool twice.
 - If opening a session is refused with 400, 401, 403 (`run_inactive`, `run_company_mismatch`, `run_agent_mismatch`, `run_context_mismatch`, ...) or 404 (`agent_not_found`), or a request gets 401 `session_run_inactive`, there is no active run for this process and it becomes unavailable (previous section). 5xx and network errors while opening a session are treated as temporary.
-- When stdin ends, or on SIGTERM or SIGINT, in-flight requests are aborted, the session is revoked and the process exits.
+- When stdin ends, or on SIGTERM or SIGINT, in-flight tool requests are aborted, the session is revoked and the process exits. A session whose creation is still running is not aborted: it is awaited (at most its own 15 s timeout) and then revoked, so no valid session is left behind.
+- Input lines are capped at 1 MiB (as in the bridge). An oversized record is discarded whole, up to its terminating newline, so a valid-looking tail of it is never dispatched; one diagnostic is written to stderr.
 - Redirects are rejected, response bodies are capped at 1 MiB, and at most 8 tool calls run at once (a ninth gets an `isError` "busy; retry shortly" result).
 
 ### Tool names

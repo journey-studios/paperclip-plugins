@@ -297,6 +297,51 @@ test('close tolerates a failing revoke and aborts requests that are still runnin
   assert.deepEqual(await running, { kind: 'failed' });
 });
 
+test('close waits for a pending session creation and revokes the session it produced', async () => {
+  const { gateway, client } = setup();
+  let release;
+  gateway.handlers.create = (request) => new Promise((resolve) => { release = () => resolve(gateway.defaults.create(request)); });
+  const listing = client.listTools();
+  const closing = client.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(gateway.ofKind('create')[0].signal.aborted, false);
+  assert.equal(gateway.ofKind('revoke').length, 0);
+  release();
+  await closing;
+  assert.equal(gateway.ofKind('revoke').length, 1);
+  assert.equal(gateway.ofKind('revoke')[0].path, `${GATEWAY}/sessions/session-1/revoke`);
+  assert.deepEqual(await listing, { kind: 'unavailable' });
+  assert.equal(gateway.ofKind('list').length, 0, 'no tool traffic after close');
+});
+
+test('close has nothing to revoke when the pending creation fails, is refused, or times out', async (t) => {
+  for (const answer of [() => json(503, { error: 'busy' }), () => json(403, { reasonCode: 'run_inactive' }), () => json(201, { sessionId: 's' })]) {
+    const { gateway, client } = setup();
+    gateway.handlers.create = answer;
+    const listing = client.listTools();
+    await client.close();
+    await listing;
+    assert.equal(gateway.ofKind('revoke').length, 0);
+  }
+
+  const { gateway, client } = setup();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  gateway.handlers.create = (request) => new Promise((_resolve, reject) => {
+    request.signal.addEventListener('abort', () => reject(new Error('aborted')));
+  });
+  const listing = client.listTools();
+  const closing = client.close();
+  t.mock.timers.tick(14_999);
+  let done = false;
+  void closing.then(() => { done = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(done, false, 'close waits for the creation until its own 15 s timeout');
+  t.mock.timers.tick(1);
+  await closing;
+  assert.deepEqual(await listing, { kind: 'failed' });
+  assert.equal(gateway.ofKind('revoke').length, 0);
+});
+
 test('revocation gives up after two seconds', async (t) => {
   const { gateway, client } = setup();
   await client.listTools();

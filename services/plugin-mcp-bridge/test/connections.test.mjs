@@ -496,6 +496,27 @@ test('a failing revoke does not stop shutdown', async () => {
   assert.equal(ctx.gateway.ofKind('revoke').length, 1);
 });
 
+test('a session still being created when stdin ends is revoked once it exists', async () => {
+  const ctx = await ready();
+  let release;
+  ctx.gateway.handlers.create = (request) => new Promise((resolve) => { release = () => resolve(ctx.gateway.defaults.create(request)); });
+  const listing = ctx.start('tools/list');
+  await ctx.waitFor(() => ctx.gateway.ofKind('create').length === 1, 'the session creation request');
+  ctx.stdin.end();
+  const shutdown = ctx.server.shutdown();
+  await ctx.settle();
+  assert.equal(ctx.gateway.ofKind('create')[0].signal.aborted, false, 'shutdown must not abort the creation: the id is needed to revoke');
+  assert.equal(ctx.gateway.ofKind('revoke').length, 0, 'nothing can be revoked before the gateway answers');
+  release();
+  await shutdown;
+  const [revoke] = ctx.gateway.ofKind('revoke');
+  assert.equal(ctx.gateway.ofKind('revoke').length, 1);
+  assert.equal(revoke.path, `${GATEWAY}/sessions/session-1/revoke`);
+  assert.equal(revoke.headers.authorization, `Bearer ${agentKey}`);
+  assert.equal(ctx.gateway.ofKind('list').length, 0, 'the request that was waiting never uses the session of a closing process');
+  assert.deepEqual((await listing.answer()).result, { tools: [] });
+});
+
 // --- configuration -------------------------------------------------------------------------------
 
 test('PAPERCLIP_API_URL may omit or include /api', async () => {
@@ -542,13 +563,73 @@ test('the JSONL reader reassembles split lines and drops oversized or malformed 
   reader.push(Buffer.from('{"c":3}\nnot json\n'));
   assert.deepEqual(messages, [{ a: 1 }, { b: 2 }, { c: 3 }]);
   assert.deepEqual(diagnostics, ['Invalid MCP input']);
-  reader.push('x'.repeat(65));
-  assert.deepEqual(diagnostics.at(-1), 'MCP input exceeded size limit');
-  reader.push('{"d":4}\n');
-  assert.deepEqual(messages.at(-1), { d: 4 }, 'recovers after dropping the runaway line');
+  // A complete line above the limit is skipped and reading continues right after it.
   reader.push(`${JSON.stringify({ long: 'y'.repeat(80) })}\n{"e":5}\n`);
   assert.equal(diagnostics.at(-1), 'MCP input exceeded size limit');
   assert.deepEqual(messages.at(-1), { e: 5 });
+  assert.equal(diagnostics.length, 2);
+});
+
+test('the JSONL reader discards the rest of an oversized record, however many chunks it spans', () => {
+  const messages = [];
+  const diagnostics = [];
+  const reader = createJsonlReader({ onMessage: (message) => messages.push(message), onDiagnostic: (text) => diagnostics.push(text), maxLineBytes: 64 });
+
+  // The tail of the runaway record is a valid message on its own and must not be dispatched.
+  reader.push('x'.repeat(65));
+  assert.deepEqual(diagnostics, ['MCP input exceeded size limit']);
+  reader.push('{"tail":1}');
+  reader.push('{"tail":2}');
+  reader.push('\n{"after":1}\n');
+  assert.deepEqual(messages, [{ after: 1 }]);
+  assert.equal(diagnostics.length, 1, 'one diagnostic per oversized record');
+
+  // Tail, newline and the next message in the same chunk.
+  reader.push('z'.repeat(40));
+  reader.push('z'.repeat(40));
+  assert.equal(diagnostics.length, 2);
+  reader.push('{"tail":3}\n{"after":2}\n');
+  assert.deepEqual(messages, [{ after: 1 }, { after: 2 }]);
+
+  // A chunk that ends a normal line and starts an oversized one is handled on its own too.
+  reader.push(`{"after":3}\n${'q'.repeat(70)}`);
+  assert.deepEqual(messages.at(-1), { after: 3 });
+  assert.equal(diagnostics.length, 3);
+  reader.push('{"tail":4}\n{"after":4}\n');
+  assert.deepEqual(messages.at(-1), { after: 4 });
+  assert.equal(messages.length, 4);
+  assert.equal(diagnostics.length, 3);
+
+  // A newline right where the buffer overflowed ends the discarded record immediately.
+  reader.push('w'.repeat(65));
+  reader.push('\n');
+  reader.push('{"after":5}\n');
+  assert.deepEqual(messages.at(-1), { after: 5 });
+});
+
+test('an oversized record is dropped whole by the server: its valid-looking tail is never dispatched', async () => {
+  const big = 'x'.repeat(600 * 1024);
+  const tail = (id) => JSON.stringify({ jsonrpc: '2.0', id, method: 'ping' });
+
+  // Tail alone in its chunk, newline and the next message in a later one.
+  const split = makeConnections();
+  split.stdin.write(big);
+  split.stdin.write(big);
+  split.stdin.write(tail('tail-split'));
+  await split.settle();
+  split.stdin.write('\n');
+  assert.deepEqual((await split.request('ping')).result, {});
+  assert.deepEqual(split.received().map((entry) => entry.id), [1], 'only the ping sent after the newline is answered');
+  assert.equal(split.errors(), 'MCP input exceeded size limit\n');
+
+  // Tail, newline and the next message arriving together.
+  const joined = makeConnections();
+  joined.stdin.write(big);
+  joined.stdin.write(big);
+  joined.stdin.write(`${tail('tail-joined')}\n`);
+  assert.deepEqual((await joined.request('ping')).result, {});
+  assert.deepEqual(joined.received().map((entry) => entry.id), [1]);
+  assert.equal(joined.errors(), 'MCP input exceeded size limit\n');
 });
 
 // --- secrets -------------------------------------------------------------------------------------

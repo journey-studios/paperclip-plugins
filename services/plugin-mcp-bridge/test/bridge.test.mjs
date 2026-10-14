@@ -253,6 +253,32 @@ test('a response without exact company proof is rejected for an Observatory tool
   assert.doesNotMatch(ctx.output.join(''), /succeeded/);
 });
 
+test('an oversized input record is dropped whole: its valid-looking tail is never forwarded', async () => {
+  const big = 'x'.repeat(600 * 1024);
+  const ping = (id) => JSON.stringify({ jsonrpc: '2.0', id, method: 'ping' });
+
+  // Tail alone in its chunk, newline and the next message in a later one.
+  const split = makeBridge();
+  split.stdin.write(big);
+  split.stdin.write(big);
+  split.stdin.write(ping('tail-split'));
+  await flush();
+  split.stdin.write(`\n${ping(100)}\n`);
+  await flush();
+  assert.deepEqual(split.child().received.map((entry) => entry.id), [100], 'only the message after the newline reaches the stock server');
+  assert.deepEqual(messages(split.output).map((entry) => entry.id), [100]);
+  assert.equal(split.errors.join(''), 'MCP input exceeded size limit\n');
+
+  // Tail, newline and the next message arriving together.
+  const joined = makeBridge();
+  joined.stdin.write(big);
+  joined.stdin.write(big);
+  joined.stdin.write(`${ping('tail-joined')}\n${ping(101)}\n`);
+  await flush();
+  assert.deepEqual(joined.child().received.map((entry) => entry.id), [101]);
+  assert.equal(joined.errors.join(''), 'MCP input exceeded size limit\n');
+});
+
 test('process protocol preserves stock JSON-RPC IDs and notifications while intercepting list', async (t) => {
   const serverScript = String.raw`process.stdin.setEncoding('utf8'); let b=''; process.stdin.on('data',c=>{b+=c; for(;;){const i=b.indexOf('\n'); if(i<0)break; const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; const m=JSON.parse(l); if(m.id===undefined) { process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n'); continue; } const result=m.method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{tools:{}}}:m.method==='tools/list'?{tools:[{name:'stock'}]}:{pong:true}; process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n'); }});`;
   const bridgeFile = fileURLToPath(new URL('../src/bridge.mjs', import.meta.url));
