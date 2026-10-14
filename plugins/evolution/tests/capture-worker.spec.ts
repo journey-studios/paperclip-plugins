@@ -195,15 +195,19 @@ describe("Evolution capture and metrics", () => {
   it("deduplicates the same temporal event before snapshots or sets even after native backfill and curation", async () => {
     const revisionId = "55555555-5555-4555-8555-555555555555";
     const activityId = "66666666-6666-4666-8666-666666666666";
+    // backfill-recent reads a window ending at the database's now(), so fixed dates
+    // fall out of it once they are older than the window. Keep both times recent.
+    const occurredAt = new Date(Date.now() - 60_000);
+    const revisionCreatedAt = new Date(occurredAt.getTime() + 1_000);
     await fixture.db.query(
       "INSERT INTO public.agent_config_revisions (id, company_id, agent_id, changed_keys, before_config, after_config, created_at) " +
-        "VALUES ($1, $2, $3, '[\"name\"]'::jsonb, '{\"name\":\"Old\"}'::jsonb, '{\"name\":\"New\"}'::jsonb, '2026-10-07T12:00:01Z')",
-      [revisionId, COMPANY, AGENT],
+        "VALUES ($1, $2, $3, '[\"name\"]'::jsonb, '{\"name\":\"Old\"}'::jsonb, '{\"name\":\"New\"}'::jsonb, $4)",
+      [revisionId, COMPANY, AGENT, revisionCreatedAt.toISOString()],
     );
     const event = {
       eventId: "agent-update-temporal",
       eventType: "agent.updated",
-      occurredAt: "2026-10-07T12:00:00Z",
+      occurredAt: occurredAt.toISOString(),
       companyId: COMPANY,
       actorType: "user",
       actorId: "test-user",
