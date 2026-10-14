@@ -4,7 +4,7 @@ import { TOOL_DECLARATIONS } from "./tools.js";
 
 export const PLUGIN_ID = "journeystudios.project-hierarchy";
 export const DATABASE_NAMESPACE = "plugin_project_hierarchy_f21f3d006f";
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,

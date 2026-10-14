@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-plugin-project-hierarchy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "type": "module",
   "description": "Sub-projects for Paperclip: nest projects under a parent project without changing Paperclip core",

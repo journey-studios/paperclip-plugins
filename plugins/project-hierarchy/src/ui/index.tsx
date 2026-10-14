@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import type { ProjectHierarchy, ProjectNode, ProjectTree } from "../contracts.js";
 import { ancestorIds, flattenTree } from "../tree.js";
-import { enhanceProjectLists, ensureListTreeStyle, isProjectListPath } from "./list-tree.js";
+import { enhanceProjectLists, ensureListTreeStyle, isProjectListPath, supportsVisualReadingOrder } from "./list-tree.js";
 import { styles } from "./styles.js";
 
 /** Route segment of a project page; the host resolves the company prefix. */
@@ -459,12 +459,19 @@ export function ProjectListTree({ context }: PluginSidebarProps) {
   const tree = usePluginData<ProjectTree>("tree", { companyId: context.companyId });
   const projects = tree.data?.projects ?? null;
   const refreshRef = useRef(tree.refresh);
-  refreshRef.current = tree.refresh;
+  // Only a committed render's callback may reach the long-lived observer.
+  useEffect(() => {
+    refreshRef.current = tree.refresh;
+  });
   // Survives effect re-runs so a data refresh does not count as entering the page again.
   const onListRef = useRef(false);
 
   useEffect(() => {
     if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+      return undefined;
+    }
+    if (!supportsVisualReadingOrder(globalThis.CSS)) {
+      // Reordering would split visual order from Tab and screen-reader order: keep the list flat.
       return undefined;
     }
     ensureListTreeStyle(document);

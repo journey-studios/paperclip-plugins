@@ -7,6 +7,11 @@ import { flattenTree } from "../tree.js";
  * rows the core already rendered: a CSS `order` and a depth. It never moves,
  * adds or removes nodes React owns. If core markup changes, nothing matches
  * and the list simply stays flat.
+ *
+ * CSS `order` alone moves rows only visually; Tab and screen readers would
+ * still follow the DOM. `reading-flow: flex-visual` makes both follow the
+ * visual order, so the tree is shown only where the browser supports it.
+ * Elsewhere the list stays flat and the Project tree page carries the tree.
  */
 
 export const TREE_ATTR = "data-jph-tree";
@@ -18,11 +23,16 @@ const MAX_INDENT_DEPTH = 8;
 // The core Card's base classes include flex gap utilities that its "block"
 // override keeps inert; switching to flex for `order` must zero the gap again.
 export const LIST_TREE_CSS = `
-[${TREE_ATTR}]{display:flex!important;flex-direction:column!important;gap:0!important}
+[${TREE_ATTR}]{display:flex!important;flex-direction:column!important;gap:0!important;reading-flow:flex-visual}
 [${TREE_ATTR}]>a[${DEPTH_ATTR}]{border-bottom-width:1px!important;border-bottom-style:solid!important}
 [${TREE_ATTR}]>a[${LAST_ATTR}]{border-bottom-width:0!important}
 [${TREE_ATTR}]>a[${DEPTH_ATTR}]:not([${DEPTH_ATTR}="0"])::before{content:"└";flex:none;box-sizing:border-box;width:calc(var(--jph-depth,1) * 20px);padding-right:2px;margin-right:-4px;text-align:right;color:var(--muted-foreground);font-size:12px;line-height:1}
 `;
+
+/** Whether focus and reading order can follow the visual tree order in this browser. */
+export function supportsVisualReadingOrder(css: { supports?(property: string, value: string): boolean } | undefined): boolean {
+  return Boolean(css?.supports?.("reading-flow", "flex-visual"));
+}
 
 /** True on the company's Projects list route, e.g. /JOU/projects. */
 export function isProjectListPath(pathname: string, companyPrefix: string | null | undefined): boolean {

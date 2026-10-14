@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectHierarchy, ProjectNode, ProjectTree } from "../src/contracts.js";
-import { ProjectTreePage, SubProjectsTab } from "../src/ui/index.js";
+import { ProjectListTree, ProjectTreePage, SubProjectsTab } from "../src/ui/index.js";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const host = vi.hoisted(() => ({
@@ -200,5 +200,66 @@ describe("ProjectTreePage", () => {
     expect(parentPickers).toHaveLength(4);
     await click(parentPickers[2]);
     expect(host.actions[0]?.params).toEqual({ companyId: COMPANY, projectId: api.id, parentProjectId: null });
+  });
+});
+
+describe("ProjectListTree", () => {
+  /** The core Projects list: a card made only of project row links. */
+  function renderCoreList(urlKeys: string[]): HTMLElement {
+    const card = document.createElement("div");
+    card.setAttribute("data-slot", "card");
+    for (const key of urlKeys) {
+      const row = document.createElement("a");
+      row.setAttribute("href", `/ACME/projects/${key}`);
+      row.textContent = key;
+      card.appendChild(row);
+    }
+    document.body.appendChild(card);
+    return card;
+  }
+
+  const flushFrames = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+  beforeEach(() => {
+    host.data.set("tree", { companyId: COMPANY, projects: [platform, api, billing, growth] });
+    window.history.pushState({}, "", "/ACME/projects");
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
+    vi.stubGlobal("cancelAnimationFrame", (handle: number) => clearTimeout(handle));
+  });
+
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+    document.querySelectorAll('[data-slot="card"]').forEach((card) => card.remove());
+  });
+
+  it("keeps the core list flat where focus order cannot follow the visual order", async () => {
+    vi.stubGlobal("CSS", { supports: () => false });
+    const card = renderCoreList(["billing", "growth", "platform", "platform-api"]);
+    await render(createElement(ProjectListTree, { context: pageContext } as never));
+    await flushFrames();
+    expect(card.hasAttribute("data-jph-tree")).toBe(false);
+    expect(host.refreshes).toEqual([]);
+  });
+
+  it("nests the core list where reading-flow is supported and refreshes once per visit", async () => {
+    vi.stubGlobal("CSS", { supports: (property: string, value: string) => property === "reading-flow" && value === "flex-visual" });
+    const card = renderCoreList(["billing", "growth", "platform", "platform-api"]);
+    await render(createElement(ProjectListTree, { context: pageContext } as never));
+    await flushFrames();
+    expect(card.hasAttribute("data-jph-tree")).toBe(true);
+    const order = (Array.from(card.children) as HTMLElement[])
+      .sort((a, b) => Number(a.style.order) - Number(b.style.order))
+      .map((row) => `${row.getAttribute("data-jph-depth")}:${row.textContent}`);
+    expect(order).toEqual(["0:growth", "0:platform", "1:platform-api", "2:billing"]);
+    expect(host.refreshes).toEqual(["tree"]);
+
+    // Further DOM churn on the same page must not refetch.
+    document.body.appendChild(document.createElement("span"));
+    await flushFrames();
+    expect(host.refreshes).toEqual(["tree"]);
   });
 });

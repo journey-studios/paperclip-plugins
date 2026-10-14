@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ProjectNode } from "../src/contracts.js";
-import { TREE_ATTR, enhanceProjectLists, ensureListTreeStyle, isProjectListPath, projectRefOf } from "../src/ui/list-tree.js";
+import {
+  LIST_TREE_CSS,
+  TREE_ATTR,
+  enhanceProjectLists,
+  ensureListTreeStyle,
+  isProjectListPath,
+  projectRefOf,
+  supportsVisualReadingOrder,
+} from "../src/ui/list-tree.js";
 
 const node = (id: string, name: string, parentId: string | null = null): ProjectNode => ({
   id,
@@ -134,6 +142,14 @@ describe("helpers", () => {
     issues.setAttribute("href", "/JOU/projects/tessel/issues");
     expect(projectRefOf(issues)).toBeNull();
     expect(projectRefOf(link(""))).toBeNull();
+  });
+
+  it("shows the tree only where focus and reading order can follow the visual order", () => {
+    expect(supportsVisualReadingOrder({ supports: (property, value) => property === "reading-flow" && value === "flex-visual" })).toBe(true);
+    expect(supportsVisualReadingOrder({ supports: () => false })).toBe(false);
+    expect(supportsVisualReadingOrder({})).toBe(false);
+    expect(supportsVisualReadingOrder(undefined)).toBe(false);
+    expect(LIST_TREE_CSS).toContain("reading-flow:flex-visual");
   });
 
   it("injects the stylesheet once", () => {
