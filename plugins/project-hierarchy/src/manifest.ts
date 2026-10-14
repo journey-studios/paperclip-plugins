@@ -4,7 +4,7 @@ import { TOOL_DECLARATIONS } from "./tools.js";
 
 export const PLUGIN_ID = "journeystudios.project-hierarchy";
 export const DATABASE_NAMESPACE = "plugin_project_hierarchy_f21f3d006f";
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.2.0";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -26,6 +26,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.sidebar.register",
     "ui.page.register",
     "ui.detailTab.register",
+    "ui.action.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: {
@@ -64,6 +65,14 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "SubProjectsTab",
         entityTypes: ["project"],
         order: 5,
+      },
+      {
+        // Core offers no slot on the Projects list; this invisible overlay
+        // orders and indents the rows core rendered there.
+        type: "appShellOverlay",
+        id: "project-hierarchy-list-tree",
+        displayName: "Project list tree",
+        exportName: "ProjectListTree",
       },
     ],
   },

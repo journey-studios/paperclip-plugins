@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ProjectPicker,
   useHostNavigation,
@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import type { ProjectHierarchy, ProjectNode, ProjectTree } from "../contracts.js";
 import { ancestorIds, flattenTree } from "../tree.js";
+import { enhanceProjectLists, ensureListTreeStyle, isProjectListPath } from "./list-tree.js";
 import { styles } from "./styles.js";
 
 /** Route segment of a project page; the host resolves the company prefix. */
@@ -447,4 +448,55 @@ export function ProjectTreePage({ context }: PluginPageProps) {
       {body}
     </div>
   );
+}
+
+/**
+ * App-shell overlay with no visible output: on the core Projects list it
+ * orders and indents the rows the core rendered, so the native list reads as
+ * a tree. The host keeps this mounted across navigation.
+ */
+export function ProjectListTree({ context }: PluginSidebarProps) {
+  const tree = usePluginData<ProjectTree>("tree", { companyId: context.companyId });
+  const projects = tree.data?.projects ?? null;
+  const refreshRef = useRef(tree.refresh);
+  refreshRef.current = tree.refresh;
+  // Survives effect re-runs so a data refresh does not count as entering the page again.
+  const onListRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+      return undefined;
+    }
+    ensureListTreeStyle(document);
+    let frame = 0;
+    const run = () => {
+      frame = 0;
+      const onList = isProjectListPath(window.location.pathname, context.companyPrefix);
+      if (onList && !onListRef.current) {
+        // Pick up moves made elsewhere since the last visit.
+        refreshRef.current();
+      }
+      onListRef.current = onList;
+      if (onList && projects) {
+        enhanceProjectLists(document, projects);
+      }
+    };
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(run);
+      }
+    };
+    // Row order and depth are attribute/style writes, which this childList observer ignores: no feedback loop.
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true });
+    schedule();
+    return () => {
+      observer.disconnect();
+      if (frame) {
+        cancelAnimationFrame(frame);
+      }
+    };
+  }, [projects, context.companyPrefix]);
+
+  return null;
 }

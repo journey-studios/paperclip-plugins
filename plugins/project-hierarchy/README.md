@@ -5,6 +5,7 @@ Nest Paperclip projects under a parent project without changing Paperclip core. 
 ## What it adds
 
 - **Sub-projects tab** on every project page: the project's path from the top-level project, a parent picker, "Make top-level", the direct sub-projects (with Detach), "Add an existing project…", and "Create sub-project".
+- **Tree on the core Projects list** (`/<company>/projects`): sub-projects are listed right under their parent, indented with a `└`. The list's own sort still orders each level. Core has no plugin slot on that page, so an invisible app-shell overlay sets a CSS `order` and a depth on the rows core already rendered. It never adds, moves or removes those nodes. If a Paperclip upgrade changes that markup, the list simply goes back to flat.
 - **Project tree** page (`/<company>/project-tree`, linked from the sidebar): every project as a collapsible tree, with a filter, an archived toggle, and an Organize mode that sets each project's parent in place.
 - **Agent tools**: `list_project_tree`, `get_project_hierarchy`, `set_project_parent`.
 - **REST routes** under `/api/plugins/journeystudios.project-hierarchy/api` for boards and agents (`board-or-agent`), with `?companyId=`:
@@ -24,7 +25,7 @@ Sub-projects keep their own tasks, workspaces, budget and goals. Nothing is inhe
 
 ## Limits
 
-- The core Projects list and the project sidebar stay flat: Paperclip offers no plugin slot there. Use the Project tree page.
+- The core Projects list has no collapse control and the project sidebar stays flat: Paperclip offers no plugin slot there. Use the Project tree page for collapsing and organizing.
 - "Create sub-project" creates the project through the core REST API with the signed-in board user's session, because the plugin worker has no host service that creates projects. Then it links the new project. If linking fails, the project exists at top level and the tab says so.
 - The official Paperclip MCP server does not list plugin tools. MCP clients call the REST routes with the generic request tool, for example `paperclipApiRequest` with `POST /plugins/journeystudios.project-hierarchy/api/projects/<id>/parent?companyId=<company>`.
 
