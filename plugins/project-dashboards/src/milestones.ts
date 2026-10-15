@@ -195,8 +195,10 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
   };
   await validateIssues(ctx, companyId, before.projectId, next.issueIds);
   const closing = next.status === "completed" && before.status !== "completed";
+  let completionIssues: MilestoneIssue[] = [];
   if (closing) {
     const snapshot = await issueSnapshot(ctx, companyId, before.projectId, next.issueIds);
+    completionIssues = snapshot.issues;
     const pending = snapshot.issues.filter((issue) => !completed(issue.status));
     if (!next.criteria.length || next.criteria.some((criterion) => !criterion.checked) ||
         !next.evidence.length || snapshot.notFound.length || pending.length) {
@@ -216,7 +218,7 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
     // One atomic mutation: a completed milestone cannot exist without its changelog entry.
     // Unique milestone_id prevents duplicate completion history on retry/reopen.
     const entryId = randomUUID();
-    const issueRefs = before.issues.map((issue) => issue.identifier).slice(0, 19);
+    const issueRefs = completionIssues.map((issue) => issue.identifier).slice(0, 19);
     const refs = [`milestone:${milestoneId}`, ...issueRefs];
     const body = ["### Critérios atendidos", ...next.criteria.map((criterion) => `- ${criterion.text}`)].join("\n");
     await ctx.db.execute(

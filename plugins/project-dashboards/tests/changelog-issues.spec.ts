@@ -325,16 +325,17 @@ describe("import completed issues", () => {
 describe("manifest", () => {
   it("declares the new capabilities, tools, routes and ordered tabs", async () => {
     const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.4.1");
+    expect(manifest.version).toBe("0.5.0");
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["events.subscribe", "issues.read"]));
     expect(manifest.capabilities).not.toEqual(expect.arrayContaining(["issues.create", "issues.update"]));
     expect(manifest.description).toContain("changelog");
     const tabs = (manifest.ui?.slots ?? []).filter((slot) => slot.type === "detailTab");
-    expect(tabs.map((tab) => tab.displayName)).toEqual(["Dashboard", "Changelog"]);
-    const [first, second] = tabs;
+    expect(tabs.map((tab) => tab.displayName)).toEqual(["Dashboard", "Milestones", "Changelog"]);
+    const [first, second, third] = tabs;
     expect(first?.order).toBeTypeOf("number");
     expect(second?.order).toBeGreaterThan(first?.order ?? Number.POSITIVE_INFINITY);
+    expect(third?.order).toBeGreaterThan(second?.order ?? Number.POSITIVE_INFINITY);
     expect(manifest.tools?.filter((tool) => tool.name.endsWith("changelog") || tool.name.endsWith("changelog_entry")).map((tool) => tool.name)).toEqual([
       "add_changelog_entry",
       "list_changelog",

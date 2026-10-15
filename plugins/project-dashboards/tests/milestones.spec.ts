@@ -122,6 +122,21 @@ describe("milestone progress and completion", () => {
     expect(h.activity.at(-1)?.message).toContain("Completed milestone");
   });
 
+  it("writes Changelog refs from the Issues linked in the same completion update", async () => {
+    const id = randomUUID();
+    h.issues.set(id, issue({ id, status: "done", identifier: "ACME-77" }));
+    const m = await entry(alpha({
+      criteria: [{ text: "Acceptance", checked: true }],
+      evidence: [{ label: "Live test", url: "https://example.com/proof" }],
+    }));
+    const result = await update({ milestoneId: m.id, revision: 1, status: "completed", issueIds: [id] });
+    expect(result.error).toBeUndefined();
+    const change = (await h.db.query<Record<string, unknown>>(
+      `SELECT refs FROM ${DATABASE_NAMESPACE}.changelog_entries WHERE milestone_id=$1`, [m.id],
+    )).rows[0];
+    expect(JSON.stringify(change.refs)).toContain("ACME-77");
+  });
+
   it("uses optimistic revisions to avoid lost writes or double-completing", async () => {
     const m = await entry(alpha({
       criteria: [{ text: "Ready", checked: true }],
