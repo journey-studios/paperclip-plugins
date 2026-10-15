@@ -244,7 +244,7 @@ pnpm --filter @journey-studios/paperclip-plugin-project-dashboards build
 
 Tests run the real migration on PGlite and render the UI under jsdom.
 
-## Milestones (0.5.0)
+## Milestones (0.5.1)
 
 Each **project** has a native **Milestones** tab, between Dashboard and Changelog. Unlike a changelog entry (historical record) or a Goal (strategic outcome), a Milestone is a planned, verifiable project checkpoint. It does not own execution: Issues remain the host's source of truth and are never edited by this plugin.
 
