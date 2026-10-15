@@ -54,13 +54,18 @@ describe("manifest", () => {
       "add_changelog_entry",
       "list_changelog",
       "update_changelog_entry",
+      "create_milestone",
+      "list_milestones",
+      "get_milestone",
+      "update_milestone",
     ]);
     const slots = manifest.ui?.slots ?? [];
-    expect(slots.map((slot) => slot.type)).toEqual(["sidebar", "page", "detailTab", "detailTab"]);
+    expect(slots.map((slot) => slot.type)).toEqual(["sidebar", "page", "detailTab", "detailTab", "detailTab"]);
     expect(slots.find((slot) => slot.type === "page")?.routePath).toBe("dashboards");
     const tabs = slots.filter((slot) => slot.type === "detailTab");
     expect(tabs.map((tab) => [tab.id, tab.exportName, tab.entityTypes])).toEqual([
       ["project-dashboards-tab", "ProjectDashboardTab", ["project"]],
+      ["project-milestones-tab", "ProjectMilestonesTab", ["project"]],
       ["project-changelog-tab", "ProjectChangelogTab", ["project"]],
     ]);
     expect(DATABASE_NAMESPACE).toBe("plugin_project_dashboards_54173784c0");

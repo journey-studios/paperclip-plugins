@@ -7,6 +7,10 @@ export const API_ROUTES = [
   { routeKey: "dataset-update", method: "POST", path: "/dashboards/:slug/datasets/:datasetId" },
   { routeKey: "dashboard-move", method: "POST", path: "/dashboards/:slug/project" },
   { routeKey: "spec-validate", method: "POST", path: "/validate" },
+  { routeKey: "milestones-list", method: "GET", path: "/milestones" },
+  { routeKey: "milestone-get", method: "GET", path: "/milestones/:milestoneId" },
+  { routeKey: "milestone-create", method: "POST", path: "/milestones" },
+  { routeKey: "milestone-update", method: "POST", path: "/milestones/:milestoneId" },
   { routeKey: "changelog-list", method: "GET", path: "/changelog" },
   { routeKey: "changelog-add", method: "POST", path: "/changelog" },
   // Must stay before changelog-update: the host uses the first route that matches, and "import" would match :entryId.

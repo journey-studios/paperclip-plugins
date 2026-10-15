@@ -2,6 +2,8 @@ import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin
 import { createApi } from "./api.js";
 import { registerChangelogHost } from "./changelog-host.js";
 import { registerChangelogTools } from "./changelog-tools.js";
+import { registerMilestoneHost } from "./milestones-host.js";
+import { registerMilestoneTools } from "./milestones-tools.js";
 import type { DashboardRecord } from "./contracts.js";
 import { createLinkResolver } from "./links.js";
 import { computeLiveStatus, computeStatus } from "./status.js";
@@ -214,6 +216,8 @@ const plugin = definePlugin({
     registerTools(ctx, serial, links);
     registerChangelogTools(ctx, serial);
     registerChangelogHost(ctx, serial);
+    registerMilestoneHost(ctx, serial);
+    registerMilestoneTools(ctx, serial);
   },
   async onHealth() {
     return { status: "ok", message: "Project Dashboards worker is ready" };

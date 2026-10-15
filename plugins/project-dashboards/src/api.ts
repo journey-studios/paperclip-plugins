@@ -1,6 +1,8 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext } from "@paperclipai/plugin-sdk";
 import { addEntry, listChangelog, updateEntry } from "./changelog.js";
 import { importDoneIssues } from "./changelog-issues.js";
+import { createMilestone, getMilestone, listMilestones, updateMilestone, MilestoneConflictError } from "./milestones.js";
+import { InvalidMilestoneError, parseMilestoneCreate, parseMilestonePatch } from "./milestones-input.js";
 import { InvalidEntryError, parseEntryPatch, parseNewEntry } from "./changelog-input.js";
 import type { Actor, ApiSummary, DashboardRecord, DashboardSummary, DatasetStatus } from "./contracts.js";
 import {
@@ -215,6 +217,30 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
           sections: spec.sections.length,
         });
       }
+      case "milestones-list": {
+        const projectId = oneParam(input.query.projectId, "projectId");
+        return ok(companyId, { milestones: await listMilestones(ctx, companyId, projectId) });
+      }
+      case "milestone-get": {
+        const milestone = await getMilestone(ctx, companyId, input.params.milestoneId ?? "");
+        if (!milestone) throw new NotFoundError("Milestone not found");
+        return ok(companyId, { milestone });
+      }
+      case "milestone-create": {
+        const body = requireBody(input.body);
+        const fields = parseMilestoneCreate(body, ["projectId"]);
+        const milestone = await serial(companyId, () => createMilestone(ctx, {
+          companyId, projectId: uuid(body.projectId, "projectId"), fields, actor: actorOf(input),
+        }));
+        return ok(companyId, { milestone });
+      }
+      case "milestone-update": {
+        const patch = parseMilestonePatch(requireBody(input.body));
+        const milestone = await serial(companyId, () => updateMilestone(ctx, {
+          companyId, milestoneId: input.params.milestoneId ?? "", patch, actor: actorOf(input),
+        }));
+        return ok(companyId, { milestone });
+      }
       case "changelog-list": {
         const { query } = input;
         const page = await listChangelog(ctx, companyId, {
@@ -267,6 +293,12 @@ export function createApi(ctx: PluginContext, serial: Serial, links: LinkResolve
       }
       if (error instanceof InvalidEntryError) {
         return reply(companyId, 422, { error: "invalid_entry", details: cappedDetails(error.details) });
+      }
+      if (error instanceof InvalidMilestoneError) {
+        return reply(companyId, 422, { error: "invalid_milestone", details: cappedDetails(error.details) });
+      }
+      if (error instanceof MilestoneConflictError) {
+        return reply(companyId, 409, { error: "milestone_conflict" });
       }
       if (error instanceof NotFoundError) {
         return reply(companyId, 404, { error: "not_found" });
