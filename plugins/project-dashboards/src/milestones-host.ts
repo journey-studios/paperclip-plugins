@@ -6,16 +6,16 @@ import { actionActor, type Serial } from "./tool-helpers.js";
 
 export function registerMilestoneHost(ctx: PluginContext, serial: Serial): void {
   ctx.data.register("milestones.list", (params) =>
-    listMilestones(ctx, uuid(params.companyId, "companyId"), params.projectId),
+    listMilestones(ctx, uuid(params.companyId, "companyId"), params.projectId === undefined ? undefined : uuid(params.projectId, "projectId")),
   );
   ctx.data.register("milestone.get", (params) =>
-    getMilestone(ctx, uuid(params.companyId, "companyId"), params.milestoneId),
+    getMilestone(ctx, uuid(params.companyId, "companyId"), uuid(params.milestoneId, "milestoneId")),
   );
   ctx.data.register("milestones.projectIssues", async (params) => {
     const companyId = uuid(params.companyId, "companyId");
     const projectId = uuid(params.projectId, "projectId");
     const records = await ctx.issues.list({ companyId, projectId, limit: 500 });
-    return records.map((issue) => ({ id: issue.id, identifier: issue.identifier, title: issue.title, status: issue.status }))
+    return records.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? issue.id, title: issue.title, status: issue.status }))
       .sort((a, b) => a.identifier.localeCompare(b.identifier));
   });
   ctx.actions.register("milestone.create", (params, context) => {

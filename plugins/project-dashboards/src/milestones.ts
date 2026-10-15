@@ -43,7 +43,7 @@ async function issueSnapshot(
   const records = await Promise.all(ids.map(async (id) => {
     const found = await ctx.issues.get(id, companyId);
     if (!found || found.projectId !== projectId) return null;
-    return { id, identifier: found.identifier, title: found.title, status: found.status } as MilestoneIssue;
+    return { id, identifier: found.identifier ?? found.id, title: found.title, status: found.status } as MilestoneIssue;
   }));
   return {
     issues: records.filter((record): record is MilestoneIssue => record !== null),
@@ -63,7 +63,7 @@ async function hydrate(ctx: PluginContext, companyId: string, rows: StoredMilest
     if (!issueCache.has(key)) {
       issueCache.set(key, ctx.issues.get(id, companyId).then((item) =>
         item && item.projectId === projectId
-          ? { id, identifier: item.identifier, title: item.title, status: item.status }
+          ? { id, identifier: item.identifier ?? item.id, title: item.title, status: item.status }
           : null,
       ));
     }
