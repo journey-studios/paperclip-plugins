@@ -4,6 +4,7 @@ import type {
   MilestoneCriterion, MilestoneEvidence, MilestoneIssue, MilestoneRecord, MilestoneStatus,
 } from "../contracts.js";
 import { usePolling } from "./shared.js";
+import { safeHttpUrl } from "../safe-url.js";
 
 const STATUS: Record<MilestoneStatus, { pt: string; en: string }> = {
   planned: { pt: "Planejado", en: "Planned" },
@@ -212,10 +213,10 @@ function Card({
       )}
       {record.evidence.length
         ? <div className="jpd-cl-refs">{record.evidence.map((e, i) =>
-            <a key={i} className="jpd-link" href={e.url} target="_blank" rel="noopener noreferrer">{e.label}</a>)}</div>
+            <a key={i} className="jpd-link" href={safeHttpUrl(e.url) ?? undefined} target="_blank" rel="noopener noreferrer">{e.label}</a>)}</div>
         : <span className="jpd-muted">{t.evidenceEmpty}</span>}
       {record.status === "completed" && <span className="jpd-muted">{t.changelog} · {record.completedAt?.slice(0, 10)}</span>}
-      {outstanding && record.blockers.length > 0 && (
+      {record.status !== "cancelled" && record.blockers.length > 0 && (
         <details>
           <summary>{t.pending} ({record.blockers.length})</summary>
           <ul>{record.blockers.map((item, i) => <li key={i}>{item}</li>)}</ul>
