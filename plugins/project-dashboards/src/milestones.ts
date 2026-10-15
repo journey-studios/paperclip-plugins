@@ -223,6 +223,9 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
     const issueRefs = completionIssues.map((issue) => issue.identifier).slice(0, 19);
     const refs = [`milestone:${milestoneId}`, ...issueRefs];
     const body = ["### Critérios atendidos", ...next.criteria.map((criterion) => `- ${criterion.text}`)].join("\n");
+    // Keep the first completion immutable on reopen/recompletion. A no-op
+    // upsert makes rowCount=1 when the CAS matched, even if the log existed;
+    // when the optimistic revision missed, rowCount=0.
     const changedResult = await ctx.db.execute(
       `WITH changed AS (
         UPDATE ${milestoneTable(ctx)} SET ${set}
@@ -234,9 +237,6 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
       SELECT $13::uuid, changed.company_id, changed.project_id, 'milestone', changed.title, $14,
              NULL, $15::jsonb, $16::jsonb, changed.completed_at,
              changed.id, NULL, $11, $12, $11, $12 FROM changed
-      -- Keep the first completion's content immutable on reopen/recompletion.
-      -- A no-op upsert makes rowCount=1 when changed matched, even if the log
-      -- already exists; when the optimistic revision missed, rowCount=0.
       ON CONFLICT (company_id, milestone_id) WHERE milestone_id IS NOT NULL
       DO UPDATE SET id = changelog_entries.id`,
       [...params, entryId, body, JSON.stringify(refs), JSON.stringify(next.evidence)],
