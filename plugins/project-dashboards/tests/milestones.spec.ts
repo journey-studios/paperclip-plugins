@@ -137,6 +137,19 @@ describe("milestone progress and completion", () => {
     expect(JSON.stringify(change.refs)).toContain("ACME-77");
   });
 
+  it("does not falsely claim completion when another writer advanced its revision", async () => {
+    const m = await entry(alpha({
+      criteria: [{ text: "Criteria", checked: true }],
+      evidence: [{ label: "Proof", url: "https://example.com/proof" }],
+    }));
+    h.faults.advanceRevisionBeforeCompletion = true;
+    const result = await update({ milestoneId: m.id, revision: m.revision, status: "completed" });
+    expect(result.error).toContain("refresh and retry");
+    expect((await data())[0]).toMatchObject({ status: "planned", revision: 2 });
+    const history = await h.db.query(`SELECT id FROM ${DATABASE_NAMESPACE}.changelog_entries WHERE milestone_id = $1`, [m.id]);
+    expect(history.rows).toHaveLength(0);
+  });
+
   it("uses optimistic revisions to avoid lost writes or double-completing", async () => {
     const m = await entry(alpha({
       criteria: [{ text: "Ready", checked: true }],
@@ -182,6 +195,22 @@ describe("milestone progress and completion", () => {
     expect(fresh.blockers.join("; ")).toContain("not done");
   });
 
+  it("allows ordinary edits if an Issue moved away, but still blocks completion", async () => {
+    const id = randomUUID();
+    h.issues.set(id, issue({ id, status: "done" }));
+    const m = await entry(alpha({
+      issueIds: [id],
+      criteria: [{ text: "Ready", checked: true }],
+      evidence: [{ label: "Proof", url: "https://example.com" }],
+    }));
+    h.issues.set(id, issue({ id, projectId: SECOND_PROJECT, status: "done" }));
+    const changed = (await update({ milestoneId: m.id, revision: 1, description: "Issue moved" })).data as MilestoneRecord;
+    expect(changed).toMatchObject({ revision: 2, status: "planned" });
+    expect(changed.blockers.join(" ")).toContain("no longer belongs");
+    expect((await update({ milestoneId: m.id, revision: 2, status: "completed" })).error).toContain("Cannot complete");
+    expect((await update({ milestoneId: m.id, revision: 2, issueIds: [] })).error).toBeUndefined();
+  });
+
   it("prevents moving linked Issues across projects and accepts canceled/reopened milestones", async () => {
     const id = randomUUID();
     h.issues.set(id, issue({ id, projectId: SECOND_PROJECT }));
@@ -204,6 +233,21 @@ describe("native UI transport and REST", () => {
     const updated = await h.action("milestone.update", { companyId: COMPANY, milestoneId: created.id, revision: 1, status: "in_progress" }) as MilestoneRecord;
     expect(updated.status).toBe("in_progress");
     expect((await h.data("milestone.get", { companyId: COMPANY, milestoneId: created.id }))).toMatchObject({ revision: 2 });
+  });
+
+  it("uses host action context, never client-supplied companyId, for mutations", async () => {
+    const inserted = await h.action("milestone.create", {
+      companyId: OTHER_COMPANY, projectId: PROJECT, ...alpha(),
+    }) as MilestoneRecord;
+    expect(inserted.companyId).toBe(COMPANY);
+    const modified = await h.action("milestone.update", {
+      companyId: OTHER_COMPANY, milestoneId: inserted.id, revision: 1, status: "in_progress",
+    }) as MilestoneRecord;
+    expect(modified).toMatchObject({ companyId: COMPANY, status: "in_progress", revision: 2 });
+    await expect(h.action("milestone.update", {
+      companyId: COMPANY, milestoneId: inserted.id, revision: 2, title: "attack",
+    }, { type: "user", userId: "foreign-user", agentId: null }, OTHER_COMPANY)).rejects.toThrow();
+    expect((await data())[0].title).toBe("Alpha on iPad");
   });
 
   it("REST input errors are 422, revision conflict 409, and create/update succeed", async () => {

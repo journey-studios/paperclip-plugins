@@ -193,7 +193,9 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
     issueIds: changes.issueIds ?? before.issueIds,
     evidence: changes.evidence ?? before.evidence,
   };
-  await validateIssues(ctx, companyId, before.projectId, next.issueIds);
+  // Only new assignments need membership validation. Existing refs may become missing
+  // after a host Issue is moved or deleted; do not block ordinary edits/reopen.
+  if (changes.issueIds !== undefined) await validateIssues(ctx, companyId, before.projectId, changes.issueIds);
   const closing = next.status === "completed" && before.status !== "completed";
   let completionIssues: MilestoneIssue[] = [];
   if (closing) {
@@ -221,7 +223,7 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
     const issueRefs = completionIssues.map((issue) => issue.identifier).slice(0, 19);
     const refs = [`milestone:${milestoneId}`, ...issueRefs];
     const body = ["### Critérios atendidos", ...next.criteria.map((criterion) => `- ${criterion.text}`)].join("\n");
-    await ctx.db.execute(
+    const changedResult = await ctx.db.execute(
       `WITH changed AS (
         UPDATE ${milestoneTable(ctx)} SET ${set}
         WHERE ${match} RETURNING id, company_id, project_id, title, completed_at
@@ -232,9 +234,14 @@ export async function updateMilestone(ctx: PluginContext, input: UpdateMilestone
       SELECT $13::uuid, changed.company_id, changed.project_id, 'milestone', changed.title, $14,
              NULL, $15::jsonb, $16::jsonb, changed.completed_at,
              changed.id, NULL, $11, $12, $11, $12 FROM changed
-      ON CONFLICT (company_id, milestone_id) WHERE milestone_id IS NOT NULL DO NOTHING`,
+      -- Keep the first completion's content immutable on reopen/recompletion.
+      -- A no-op upsert makes rowCount=1 when changed matched, even if the log
+      -- already exists; when the optimistic revision missed, rowCount=0.
+      ON CONFLICT (company_id, milestone_id) WHERE milestone_id IS NOT NULL
+      DO UPDATE SET id = changelog_entries.id`,
       [...params, entryId, body, JSON.stringify(refs), JSON.stringify(next.evidence)],
     );
+    if (changedResult.rowCount !== 1) throw new MilestoneConflictError();
   } else {
     const result = await ctx.db.execute(
       `UPDATE ${milestoneTable(ctx)} SET ${set} WHERE ${match}`, params,

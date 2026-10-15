@@ -95,7 +95,7 @@ export interface Harness {
   issueCalls: { get: string[]; list: Record<string, unknown>[] };
   /** Every statement ctx.db.execute ran, in order. */
   executed: { sql: string; params: unknown[] }[];
-  faults: { issueGet: boolean };
+  faults: { issueGet: boolean; advanceRevisionBeforeCompletion: boolean };
   /** Deliver a host domain event to the handlers the worker subscribed with ctx.events.on. */
   emit(eventType: string, entityId: string, companyId?: string): Promise<void>;
   api(routeKey: string, input?: ApiCall): Promise<PluginApiResponse>;
@@ -134,7 +134,7 @@ export async function createHarness(): Promise<Harness> {
   const eventHandlers = new Map<string, ((event: unknown) => Promise<void>)[]>();
   const issues = new Map<string, IssueSeed>();
   const issueCalls: Harness["issueCalls"] = { get: [], list: [] };
-  const faults = { issueGet: false };
+  const faults = { issueGet: false, advanceRevisionBeforeCompletion: false };
   const executed: Harness["executed"] = [];
   // The worker only touches this subset of the host context; the cast is confined to the test double.
   const ctx = {
@@ -147,6 +147,14 @@ export async function createHarness(): Promise<Harness> {
       execute: async (sql: string, params: unknown[] = []) => {
         assertHostAccepts("execute", sql, params);
         executed.push({ sql, params });
+        // Simulate an out-of-band writer racing between read and closing UPDATE.
+        if (faults.advanceRevisionBeforeCompletion && sql.includes("WITH changed AS")) {
+          faults.advanceRevisionBeforeCompletion = false;
+          await db.query(
+            `UPDATE ${DATABASE_NAMESPACE}.milestones SET revision=revision+1 WHERE company_id=$1 AND id=$2`,
+            [params[0], params[1]],
+          );
+        }
         return { rowCount: (await db.query(sql, params)).affectedRows ?? 0 };
       },
     },

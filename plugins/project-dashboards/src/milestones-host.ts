@@ -19,14 +19,14 @@ export function registerMilestoneHost(ctx: PluginContext, serial: Serial): void 
       .sort((a, b) => a.identifier.localeCompare(b.identifier));
   });
   ctx.actions.register("milestone.create", (params, context) => {
-    const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+    const companyId = uuid(context.companyId, "companyId");
     const fields = parseMilestoneCreate(params, ["companyId", "projectId"]);
     return serial(companyId, () => createMilestone(ctx, {
       companyId, projectId: uuid(params.projectId, "projectId"), fields, actor: actionActor(context),
     }));
   });
   ctx.actions.register("milestone.update", (params, context) => {
-    const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+    const companyId = uuid(context.companyId, "companyId");
     const patch = parseMilestonePatch(params, ["companyId", "milestoneId"]);
     return serial(companyId, () => updateMilestone(ctx, {
       companyId, milestoneId: uuid(params.milestoneId, "milestoneId"), patch, actor: actionActor(context),
