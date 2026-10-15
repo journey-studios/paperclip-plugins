@@ -136,9 +136,11 @@ function EntryRow({
       ) : null}
       <div className="jpd-cl-foot">
         {compact ? null : <span className="jpd-muted">{t("changelogBy", { who: actorLabel(entry.createdBy, t) })}</span>}
-        <button type="button" className="jpd-btn jpd-btn-danger" aria-label={t("changelogDeleteEntry", { title: entry.title })} onClick={() => onDelete(entry)}>
-          {t("changelogDelete")}
-        </button>
+        {!entry.milestoneId ? (
+          <button type="button" className="jpd-btn jpd-btn-danger" aria-label={t("changelogDeleteEntry", { title: entry.title })} onClick={() => onDelete(entry)}>
+            {t("changelogDelete")}
+          </button>
+        ) : null}
       </div>
     </li>
   );

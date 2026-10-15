@@ -9,10 +9,10 @@ export const DATABASE_NAMESPACE = "plugin_project_dashboards_54173784c0";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.4.1",
+  version: "0.5.0",
   displayName: "Project Dashboards",
   description:
-    "Agents publish project tracking dashboards (KPIs, charts, tables, Markdown, Mermaid) from a declarative spec, and keep a per-project changelog of how each project evolves, rendered natively in Paperclip.",
+    "Agents publish project tracking dashboards (KPIs, charts, tables, Markdown, Mermaid) from a declarative spec, keep a per-project changelog and track evidence-gated project milestones, rendered natively in Paperclip.",
   author: "Journey Studios",
   categories: ["ui"],
   capabilities: [
@@ -68,6 +68,14 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "ProjectDashboardTab",
         entityTypes: ["project"],
         order: 10,
+      },
+      {
+        type: "detailTab",
+        id: "project-milestones-tab",
+        displayName: "Milestones",
+        exportName: "ProjectMilestonesTab",
+        entityTypes: ["project"],
+        order: 15,
       },
       {
         type: "detailTab",

@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-plugin-project-dashboards",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": false,
   "type": "module",
   "description": "Agent-published project tracking dashboards rendered natively in Paperclip",

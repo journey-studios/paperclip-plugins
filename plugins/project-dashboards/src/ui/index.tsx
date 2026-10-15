@@ -12,6 +12,7 @@ import {
 import type { DashboardRecord, DashboardSettings, DashboardSummary, LiveStatus, RevisionSummary } from "../contracts.js";
 import { DEFAULT_SETTINGS } from "../settings.js";
 import { ChangelogTimeline, CompanyChangelog, ViewTabs } from "./changelog.js";
+import { MilestonesPanel } from "./milestones.js";
 import { GroupedList, ProjectEmpty, ProjectLine } from "./grouping.js";
 import { createTranslator, type Translate } from "./i18n.js";
 import { formatterFor, type Formatter } from "./model.js";
@@ -423,6 +424,19 @@ export function ProjectDashboardTab({ context }: PluginDetailTabProps) {
       <style>{styles}</style>
       <h2 className="jpd-h2">{settings.projectTabLabel}</h2>
       {body}
+    </div>
+  );
+}
+
+export function ProjectMilestonesTab({ context }: PluginDetailTabProps) {
+  const localized = useLocalized(context.companyId);
+  return (
+    <div className="jpd" style={{ display: "grid", gap: 16, padding: 16 }}>
+      <style>{styles}</style>
+      {context.companyId ? (
+        <MilestonesPanel companyId={context.companyId} projectId={context.entityId}
+          locale={localized.settings.locale} refreshSeconds={localized.settings.refreshIntervalSeconds} />
+      ) : <State title={localized.t("notFound")} />}
     </div>
   );
 }

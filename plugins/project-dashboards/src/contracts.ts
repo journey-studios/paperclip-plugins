@@ -291,6 +291,7 @@ export interface ChangelogEntry {
   occurredAt: string;
   /** Set only on kind "issue". */
   issueId: string | null;
+  milestoneId?: string | null;
   createdBy: Actor;
   updatedBy: Actor;
   createdAt: string;
@@ -314,4 +315,46 @@ export interface ChangelogImportResult {
 export interface ProjectOption {
   id: string;
   name: string;
+}
+
+/** Planned checkpoints within a project. Completion is explicit and evidence-gated. */
+export type MilestoneStatus = "planned" | "in_progress" | "completed" | "cancelled";
+export interface MilestoneCriterion {
+  text: string;
+  checked: boolean;
+}
+export interface MilestoneEvidence {
+  label: string;
+  url: string;
+}
+export interface MilestoneIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  status: string;
+}
+export interface MilestoneRecord {
+  id: string;
+  companyId: string;
+  projectId: string;
+  projectName: string | null;
+  title: string;
+  description: string | null;
+  status: MilestoneStatus;
+  targetDate: string | null;
+  criteria: MilestoneCriterion[];
+  issueIds: string[];
+  issues: MilestoneIssue[];
+  evidence: MilestoneEvidence[];
+  completedAt: string | null;
+  revision: number;
+  progress: number;
+  doneIssues: number;
+  verifiedCriteria: number;
+  readyToComplete: boolean;
+  blockers: string[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: Actor;
+  updatedBy: Actor;
 }

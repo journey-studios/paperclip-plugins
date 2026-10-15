@@ -27,6 +27,7 @@ interface EntryRow {
   links: unknown;
   occurred_at: unknown;
   issue_id: string | null;
+  milestone_id: string | null;
   created_by_kind: Actor["kind"];
   created_by_id: string | null;
   updated_by_kind: Actor["kind"];
@@ -36,7 +37,7 @@ interface EntryRow {
 }
 
 const COLUMNS = `e.id, e.project_id, p.name AS project_name, e.kind, e.title, e.body, e.version, e.refs, e.links,
-  e.occurred_at, e.issue_id, e.created_by_kind, e.created_by_id, e.updated_by_kind, e.updated_by_id,
+  e.occurred_at, e.issue_id, e.milestone_id, e.created_by_kind, e.created_by_id, e.updated_by_kind, e.updated_by_id,
   e.created_at, e.updated_at`;
 const FROM = (ctx: PluginContext) =>
   `${table(ctx, "changelog_entries")} e LEFT JOIN public.projects p ON p.id = e.project_id`;
@@ -82,6 +83,7 @@ function toEntry(row: EntryRow, names: Map<string, string>): ChangelogEntry {
     links: storedLinks(row.links),
     occurredAt: iso(row.occurred_at),
     issueId: row.issue_id ?? null,
+    milestoneId: row.milestone_id ?? null,
     createdBy: actorOf(row.created_by_kind, row.created_by_id, names),
     updatedBy: actorOf(row.updated_by_kind, row.updated_by_id, names),
     createdAt: iso(row.created_at),
@@ -340,6 +342,7 @@ export async function updateEntry(ctx: PluginContext, input: UpdateEntryInput): 
   if (current.kind === "issue") {
     throw new DashboardError("Entries generated from completed issues mirror the issue and cannot be edited; edit the issue instead");
   }
+  if (current.milestoneId) throw new DashboardError("Milestone history is immutable; edit its originating milestone");
   const next = {
     kind: patch.kind ?? current.kind,
     title: patch.title ?? current.title,
@@ -353,7 +356,7 @@ export async function updateEntry(ctx: PluginContext, input: UpdateEntryInput): 
     `UPDATE ${table(ctx, "changelog_entries")}
         SET kind = $3, title = $4, body = $5, version = $6, refs = $7::jsonb, links = $8::jsonb,
             occurred_at = $9::timestamptz, updated_by_kind = $10, updated_by_id = $11, updated_at = now()
-      WHERE company_id = $1 AND id = $2 AND deleted_at IS NULL AND kind <> 'issue'`,
+      WHERE company_id = $1 AND id = $2 AND deleted_at IS NULL AND kind <> 'issue' AND milestone_id IS NULL`,
     [
       companyId,
       current.id,
@@ -395,10 +398,11 @@ export async function deleteEntry(
 ): Promise<{ ok: true }> {
   const { companyId, actor } = params;
   const current = await requireEntry(ctx, companyId, uuid(params.entryId, "id"));
+  if (current.milestoneId) throw new DashboardError("Milestone history is immutable");
   await ctx.db.execute(
     `UPDATE ${table(ctx, "changelog_entries")}
         SET deleted_at = now(), updated_by_kind = $3, updated_by_id = $4, updated_at = now()
-      WHERE company_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      WHERE company_id = $1 AND id = $2 AND deleted_at IS NULL AND milestone_id IS NULL`,
     [companyId, current.id, actor.kind, actor.id],
   );
   await ctx.activity.log({

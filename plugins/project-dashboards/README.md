@@ -6,9 +6,9 @@ An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpe
 
 - New dashboards must belong to a Paperclip project; existing projectless dashboards stay editable (see [Projects](#projects)).
 - Sidebar entry and a `dashboards` page that lists dashboards grouped by project, with projectless dashboards in a separate "No project" group, and a **Dashboards | Changelog** switch.
-- A **Dashboard** tab and a **Changelog** tab on every project page.
+- Native **Dashboard**, **Milestones**, and **Changelog** tabs on every project page.
 - A per-project **changelog**: agents record milestones, releases, fixes and decisions, and completed issues are added automatically, so you can watch a project evolve (see [Changelog](#changelog)).
-- Nine agent tools: `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`, `add_changelog_entry`, `list_changelog`, `update_changelog_entry`.
+- Thirteen agent tools (nine existing dashboard/changelog tools plus four milestone tools): `upsert_dashboard`, `get_dashboard`, `list_dashboards`, `get_dashboard_status`, `update_dataset`, `validate_dashboard_spec`, `add_changelog_entry`, `list_changelog`, `update_changelog_entry`, `create_milestone`, `list_milestones`, `get_milestone`, `update_milestone`.
 - A board REST API for external clients (and the MCP bridge), with data-freshness reporting.
 - Live refresh: open dashboards poll for new revisions and show how fresh each source is.
 - Plugin-owned PostgreSQL tables with revision history (restore from the UI).
@@ -18,7 +18,7 @@ An agent never sends HTML or scripts. It sends a declarative JSON **DashboardSpe
 
 Build and pack from this monorepo (see the root README), then install the produced `@journey-studios/paperclip-plugin-project-dashboards` archive in Paperclip. The plugin id is `journeystudios.project-dashboards`.
 
-Capabilities requested (least privilege): `agent.tools.register`, `agents.read` (agent names in "updated by"), `projects.read` (validate `projectId`, project names), `issues.read` (read a completed issue and import completed issues into the changelog), `events.subscribe` (the `issue.updated` event, for automatic changelog entries), `companies.read` (company URL prefix for links), `api.routes.register` (REST API), `database.namespace.migrate|read|write`, `activity.log.write`, `ui.sidebar.register`, `ui.page.register`, `ui.detailTab.register`. It needs no artifact access, no issue write access and no host patch. Migration `001` creates `dashboards` and `dashboard_revisions`; migration `002` adds `changelog_entries`. Both live in the plugin namespace and reference `companies` and `projects` (read-only foreign keys). Upgrading from 0.3.x applies `002` and changes nothing else.
+Capabilities requested (least privilege): `agent.tools.register`, `agents.read` (agent names in "updated by"), `projects.read` (validate `projectId`, project names), `issues.read` (read a completed issue and import completed issues into the changelog), `events.subscribe` (the `issue.updated` event, for automatic changelog entries), `companies.read` (company URL prefix for links), `api.routes.register` (REST API), `database.namespace.migrate|read|write`, `activity.log.write`, `ui.sidebar.register`, `ui.page.register`, `ui.detailTab.register`. It needs no artifact access, no issue write access and no host patch. Migration `001` creates `dashboards` and `dashboard_revisions`; `002` adds `changelog_entries`; `003` adds `milestones` and a nullable `milestone_id` on changelog entries. All changes are incremental and scoped to the plugin namespace; upgrades retain existing dashboard and changelog data.
 
 ## Settings
 
@@ -243,3 +243,16 @@ pnpm --filter @journey-studios/paperclip-plugin-project-dashboards build
 ```
 
 Tests run the real migration on PGlite and render the UI under jsdom.
+
+## Milestones (0.5.0)
+
+Each **project** has a native **Milestones** tab, between Dashboard and Changelog. Unlike a changelog entry (historical record) or a Goal (strategic outcome), a Milestone is a planned, verifiable project checkpoint. It does not own execution: Issues remain the host's source of truth and are never edited by this plugin.
+
+- **Create / edit:** name, optional description and target date (YYYY-MM-DD), 1–30 verifiable criteria (checked/unchecked), up to 50 linked Issue UUIDs **belonging to the same project/company**, and up to 20 evidence links (absolute http/https URLs).
+- **Progress:** based on the number of live linked Issues with status `done` plus checked criteria, divided by all linked Issues + criteria. The percentage is a display aid, not a completion signal. If an Issue reopens or moves out of the project, the next read reflects this and flags a blocker.
+- **Completion:** an explicit actor action. Every linked Issue must be `done`; all criteria must be checked, with at least one evidence URL. Completion saves `completedAt` and records **one immutable Changelog entry** in the same database operation. No automatic completion on Issue changes. Completed milestones can only be reopened explicitly; the original changelog history is preserved if completed again.
+- **Consistency:** all writes are serialized per company within the worker and require an optimistic `revision` to avoid overwriting concurrent edits (REST returns 409 on conflict). Read and write operations are company-scoped; archived projects reject new milestones. Changelog entries originating from milestone completion cannot be edited or deleted through the ordinary Changelog controls.
+
+Agent tools: `create_milestone`, `list_milestones`, `get_milestone`, `update_milestone`. Agents may use their current Issue's project by default. Board data: `milestones.list`, `milestone.get`, `milestones.projectIssues`; actions: `milestone.create`, `milestone.update`.
+
+REST (board authenticated, requires `companyId` in query): `GET /milestones?projectId=<uuid>`, `GET /milestones/:milestoneId`, `POST /milestones` with `projectId` and fields, `POST /milestones/:milestoneId` with `revision` and edited fields. Errors: 400 bad input/domain rules, 404 inaccessible record, 409 optimistic concurrency, 422 malformed field set. Migration `003_project_milestones.sql` adds the plugin-owned table and an optional `milestone_id` to existing Changelog entries without dropping legacy data. Deploy requires a backed-up DB and compatible pinned SDK; do not replace custom Paperclip images with upstream ones.

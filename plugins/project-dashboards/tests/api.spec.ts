@@ -38,8 +38,8 @@ const post = (_path: string, payload: unknown, extra: ApiCall = {}) => {
 };
 
 describe("manifest declarations", () => {
-  it("declares the eleven board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.4.1");
+  it("declares the 15 board routes with company resolution from the query", () => {
+    expect(manifest.version).toBe("0.5.0");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
@@ -49,12 +49,16 @@ describe("manifest declarations", () => {
       ["dataset-update", "POST", "/dashboards/:slug/datasets/:datasetId"],
       ["dashboard-move", "POST", "/dashboards/:slug/project"],
       ["spec-validate", "POST", "/validate"],
+      ["milestones-list", "GET", "/milestones"],
+      ["milestone-get", "GET", "/milestones/:milestoneId"],
+      ["milestone-create", "POST", "/milestones"],
+      ["milestone-update", "POST", "/milestones/:milestoneId"],
       ["changelog-list", "GET", "/changelog"],
       ["changelog-add", "POST", "/changelog"],
       ["changelog-import", "POST", "/changelog/import"],
       ["changelog-update", "POST", "/changelog/:entryId"],
     ]);
-    expect(API_ROUTES).toHaveLength(11);
+    expect(API_ROUTES).toHaveLength(15);
     for (const route of manifest.apiRoutes ?? []) {
       expect(route).toMatchObject({ auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } });
     }

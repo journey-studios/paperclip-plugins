@@ -55,6 +55,30 @@ const projectIdSchema = {
     "Project UUID of this company (not archived). Every dashboard belongs to a project. Optional: a new dashboard defaults to the current run's project (error project_required if the run has none); an existing dashboard keeps its project (or lack of one) when omitted, and a UUID moves it.",
 };
 
+const milestoneFields = {
+  title: { type: "string", minLength: 1, maxLength: 200 },
+  description: { type: ["string", "null"], maxLength: 10000 },
+  status: { type: "string", enum: ["planned", "in_progress", "completed", "cancelled"] },
+  targetDate: { type: ["string", "null"], description: "YYYY-MM-DD (nullable)." },
+  criteria: {
+    type: "array", minItems: 1, maxItems: 30,
+    items: {
+      type: "object", additionalProperties: false, required: ["text", "checked"],
+      properties: { text: { type: "string", minLength: 1, maxLength: 300 }, checked: { type: "boolean" } },
+    },
+  },
+  issueIds: { type: "array", maxItems: 50, items: { type: "string", format: "uuid" } },
+  evidence: {
+    type: "array", maxItems: 20,
+    items: {
+      type: "object", additionalProperties: false, required: ["label", "url"],
+      properties: { label: { type: "string", maxLength: 100 }, url: { type: "string", maxLength: 2000 } },
+    },
+  },
+} as const;
+
+const milestoneGuide = "Milestones are explicit project checkpoints, not Goals, Issues or changelog entries. Attach existing Issue UUIDs of the same project; mark criteria checked only after verification, and attach evidence URLs. Completing a milestone requires every linked Issue to be done, all criteria checked and at least one evidence URL; issue completion never automatically completes milestones. Updates require the revision returned by get_milestone to prevent lost writes. A completed milestone is immutable until explicitly reopened to in_progress; its first completion appears once in the project's changelog.";
+
 export const TOOL_DECLARATIONS: PluginToolDeclaration[] = [
   {
     name: "upsert_dashboard",
@@ -181,6 +205,45 @@ export const TOOL_DECLARATIONS: PluginToolDeclaration[] = [
         ...changelogFieldSchemas,
         body: { type: ["string", "null"], maxLength: 20000, description: "Markdown; null removes it." },
         version: { type: ["string", "null"], minLength: 1, maxLength: 64, description: "Version label; null removes it." },
+      },
+    },
+  },
+  {
+    name: "create_milestone",
+    displayName: "Create project milestone",
+    description: `Create a verifiable project checkpoint. ${milestoneGuide}`,
+    parametersSchema: {
+      type: "object", additionalProperties: false, required: ["title", "criteria"],
+      properties: {
+        projectId: { type: "string", description: "Project UUID; defaults to the current run's project." },
+        ...milestoneFields, status: { type: "string", enum: ["planned", "in_progress"] },
+      },
+    },
+  },
+  {
+    name: "list_milestones",
+    displayName: "List project milestones",
+    description: "List project checkpoints with progress, blockers, dates, links and evidence. Defaults to current project, or all company projects outside an issue.",
+    parametersSchema: { type: "object", additionalProperties: false,
+      properties: { projectId: { type: "string", description: "Project UUID filter." } } },
+  },
+  {
+    name: "get_milestone",
+    displayName: "Inspect milestone",
+    description: "Read live Issue statuses, verification gates and current revision for a milestone.",
+    parametersSchema: { type: "object", additionalProperties: false, required: ["milestoneId"],
+      properties: { milestoneId: { type: "string", description: "Milestone UUID." } } },
+  },
+  {
+    name: "update_milestone",
+    displayName: "Update/complete milestone",
+    description: `Edit a milestone, verify criteria, attach evidence, or explicitly complete it. ${milestoneGuide}`,
+    parametersSchema: {
+      type: "object", additionalProperties: false, required: ["milestoneId", "revision"],
+      properties: {
+        milestoneId: { type: "string", description: "Milestone UUID." },
+        revision: { type: "integer", minimum: 1, description: "Current revision from get_milestone." },
+        ...milestoneFields,
       },
     },
   },
