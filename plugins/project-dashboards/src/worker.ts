@@ -184,11 +184,11 @@ const plugin = definePlugin({
     ctx.data.register("dashboard.revisions", (params) => listRevisions(ctx, params));
 
     ctx.actions.register("dashboard.delete", (params, context) => {
-      const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+      const companyId = uuid(context.companyId, "companyId");
       return serial(companyId, () => deleteDashboard(ctx, { companyId, id: params.id }));
     });
     ctx.actions.register("dashboard.restoreRevision", (params, context) => {
-      const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+      const companyId = uuid(context.companyId, "companyId");
       return serial(companyId, async () =>
         restoreRevision(ctx, {
           companyId,
@@ -201,7 +201,7 @@ const plugin = definePlugin({
     });
 
     ctx.actions.register("dashboard.setProject", (params, context) => {
-      const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+      const companyId = uuid(context.companyId, "companyId");
       return serial(companyId, async () =>
         setDashboardProject(ctx, {
           companyId,

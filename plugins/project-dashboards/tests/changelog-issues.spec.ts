@@ -307,6 +307,25 @@ describe("import completed issues", () => {
     expect(h.executed.filter((statement) => statement.sql.includes("INSERT INTO")).map((statement) => statement.params.length / 13)).toEqual([100, 100, 50]);
   });
 
+  it("uses host action context, never client-supplied companyId, for importIssues", async () => {
+    const foreignId = randomUUID();
+    h.issues.set(foreignId, issue({ id: foreignId, companyId: OTHER_COMPANY, projectId: OTHER_PROJECT, status: "done" }));
+    const localId = randomUUID();
+    h.issues.set(localId, issue({ id: localId, status: "done" }));
+    const withSpoofedParam = (await h.action("changelog.importIssues", {
+      companyId: OTHER_COMPANY,
+      projectId: PROJECT,
+    })) as ChangelogImportResult;
+    expect(withSpoofedParam.imported).toBe(1);
+    expect((await entries()).map((entry) => entry.issueId)).toEqual([localId]);
+    await expect(
+      h.action("changelog.importIssues", { companyId: COMPANY, projectId: PROJECT }, undefined, OTHER_COMPANY),
+    ).rejects.toThrow("Project not found in this company");
+    await expect(
+      h.action("changelog.importIssues", { companyId: OTHER_COMPANY, projectId: PROJECT }, undefined, null as unknown as string),
+    ).rejects.toThrow("companyId must be a UUID");
+  });
+
   it("validates the project and keeps companies apart", async () => {
     await expect(h.action("changelog.importIssues", { projectId: OTHER_PROJECT })).rejects.toThrow("Project not found in this company");
     await expect(h.action("changelog.importIssues", { projectId: "nope" })).rejects.toThrow("projectId must be a UUID");

@@ -261,6 +261,43 @@ describe("update_dataset", () => {
   });
 });
 
+describe("host action context for dashboard mutations", () => {
+  it("uses host action context, never client-supplied companyId, for mutations", async () => {
+    await upsert({ slug: "ctx", spec: spec("Ctx") });
+    const record = (await h.data("dashboard.get", { companyId: COMPANY, slug: "ctx" })) as DashboardRecord;
+
+    await h.action("dashboard.setProject", { companyId: OTHER_COMPANY, id: record.id, projectId: SECOND_PROJECT });
+    const afterSetProject = (await h.data("dashboard.get", { companyId: COMPANY, id: record.id })) as DashboardRecord;
+    expect(afterSetProject.projectId).toBe(SECOND_PROJECT);
+    expect((await h.data("dashboard.get", { companyId: OTHER_COMPANY, id: record.id }))).toBeNull();
+
+    await upsert({ slug: "ctx2", spec: spec("Ctx2") });
+    const record2 = (await h.data("dashboard.get", { companyId: COMPANY, slug: "ctx2" })) as DashboardRecord;
+    await upsert({ slug: "ctx2", spec: spec("Ctx2 v2", 2) });
+    const restored = (await h.action("dashboard.restoreRevision", {
+      companyId: OTHER_COMPANY,
+      id: record2.id,
+      revision: 1,
+    })) as DashboardRecord;
+    expect(restored.companyId).toBe(COMPANY);
+    expect(restored.revision).toBe(3);
+
+    await upsert({ slug: "ctx-del", spec: spec("Del") });
+    const toDelete = (await h.data("dashboard.get", { companyId: COMPANY, slug: "ctx-del" })) as DashboardRecord;
+    await h.action("dashboard.delete", { companyId: OTHER_COMPANY, id: toDelete.id });
+    expect(await h.data("dashboard.get", { companyId: COMPANY, id: toDelete.id })).toBeNull();
+
+    await expect(
+      h.action("dashboard.delete", { companyId: COMPANY, id: record.id }, { type: "user", userId: "foreign", agentId: null }, OTHER_COMPANY),
+    ).rejects.toThrow("Dashboard not found");
+    expect(await h.data("dashboard.get", { companyId: COMPANY, id: record.id })).not.toBeNull();
+
+    expect(() =>
+      h.action("dashboard.setProject", { companyId: OTHER_COMPANY, id: record.id, projectId: PROJECT }, undefined, null as unknown as string),
+    ).toThrow("companyId must be a UUID");
+  });
+});
+
 describe("company isolation", () => {
   it("never exposes or mutates another company's dashboards", async () => {
     await upsert({ slug: "secret", spec: spec("Secret") });

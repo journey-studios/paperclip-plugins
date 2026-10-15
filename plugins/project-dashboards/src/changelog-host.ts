@@ -18,11 +18,11 @@ export function registerChangelogHost(ctx: PluginContext, serial: Serial): void 
   });
 
   ctx.actions.register("changelog.delete", async (params, context) => {
-    const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+    const companyId = uuid(context.companyId, "companyId");
     return serial(companyId, () => deleteEntry(ctx, { companyId, entryId: params.id, actor: actionActor(context) }));
   });
   ctx.actions.register("changelog.importIssues", async (params, context) => {
-    const companyId = uuid(context.companyId ?? params.companyId, "companyId");
+    const companyId = uuid(context.companyId, "companyId");
     return serial(companyId, async () =>
       importDoneIssues(ctx, {
         companyId,
