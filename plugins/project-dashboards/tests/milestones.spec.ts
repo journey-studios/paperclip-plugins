@@ -250,6 +250,21 @@ describe("native UI transport and REST", () => {
     expect((await data())[0].title).toBe("Alpha on iPad");
   });
 
+  it("accepts host-injected renderEnvironment on native UI create/update actions", async () => {
+    const created = await h.action("milestone.create", {
+      companyId: COMPANY, projectId: PROJECT, ...alpha(),
+      renderEnvironment: null,
+    }) as MilestoneRecord;
+    expect(created).toMatchObject({ projectId: PROJECT, status: "planned", revision: 1 });
+    const edited = await h.action("milestone.update", {
+      companyId: COMPANY, milestoneId: created.id, revision: 1,
+      renderEnvironment: { surface: "project-detail", entityId: PROJECT },
+      status: "in_progress",
+    }) as MilestoneRecord;
+    expect(edited).toMatchObject({ id: created.id, status: "in_progress", revision: 2 });
+    expect((await data()).map((m) => m.id)).toEqual([created.id]);
+  });
+
   it("REST input errors are 422, revision conflict 409, and create/update succeed", async () => {
     const bad = await h.api("milestone-create", { method: "POST", body: { projectId: PROJECT, title: "No checks" } });
     expect(bad.status).toBe(422);

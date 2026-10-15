@@ -20,14 +20,14 @@ export function registerMilestoneHost(ctx: PluginContext, serial: Serial): void 
   });
   ctx.actions.register("milestone.create", (params, context) => {
     const companyId = uuid(context.companyId, "companyId");
-    const fields = parseMilestoneCreate(params, ["companyId", "projectId"]);
+    const fields = parseMilestoneCreate(params, ["companyId", "projectId", "renderEnvironment"]);
     return serial(companyId, () => createMilestone(ctx, {
       companyId, projectId: uuid(params.projectId, "projectId"), fields, actor: actionActor(context),
     }));
   });
   ctx.actions.register("milestone.update", (params, context) => {
     const companyId = uuid(context.companyId, "companyId");
-    const patch = parseMilestonePatch(params, ["companyId", "milestoneId"]);
+    const patch = parseMilestonePatch(params, ["companyId", "milestoneId", "renderEnvironment"]);
     return serial(companyId, () => updateMilestone(ctx, {
       companyId, milestoneId: uuid(params.milestoneId, "milestoneId"), patch, actor: actionActor(context),
     }));
