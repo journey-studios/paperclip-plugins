@@ -38,6 +38,18 @@ export async function enqueueReview(ctx, companyId, route, event) {
       event.title, event.baseRef, event.authorLogin,
     ],
   );
+  if (inserted.rowCount === 0) {
+    // A converted draft or closed PR may later become reviewable at the
+    // same SHA. Reopen only when GitHub reports a newer lifecycle event.
+    await ctx.db.execute(
+      `UPDATE ${name} SET status='queued',remote_updated_at=$5::timestamptz,
+       next_attempt_at=now(),attempts=0,last_error=NULL,updated_at=now()
+       WHERE company_id=$1 AND repository=$2 AND pr_number=$3
+         AND head_sha=$4 AND status IN ('closed','superseded')
+         AND remote_updated_at<$5::timestamptz`,
+      [companyId, event.repository, event.number, event.sha, event.updatedAt],
+    );
+  }
   // A delayed GitHub delivery must not replace a newer head with an old SHA.
   await ctx.db.execute(
     `UPDATE ${name} newer SET status='superseded',updated_at=now()
