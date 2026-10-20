@@ -52,7 +52,7 @@ export const plugin = definePlugin({
       const issueId = eventIssueId(event);
       if (!issueId || !configuredCompanies.get(event.companyId)?.enabled) return;
       const issue = await ctx.issues.get(issueId, event.companyId);
-      if (issue?.status === "done" || issue?.status === "in_review") {
+      if (issue?.status === "done") {
         await handleReviewEvent(ctx, event, true);
       } else if (issue?.status === "cancelled") {
         await handleReviewEvent(ctx, event, false);
