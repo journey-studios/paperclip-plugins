@@ -5,6 +5,7 @@ import {
   closeReview,
   dispatchQueued,
   enqueueReview,
+  finishByRunId,
   finishReview,
   reconcileCompany,
 } from "./queue.js";
@@ -25,9 +26,12 @@ function eventIssueId(event) {
 async function handleReviewEvent(ctx, event, outcome) {
   const companyId = event?.companyId;
   const config = configuredCompanies.get(companyId);
+  if (!config?.enabled) return;
   const issueId = eventIssueId(event);
-  if (!config?.enabled || !issueId) return;
-  const result = await finishReview(ctx, companyId, issueId, outcome, config.maxAttempts);
+  const runId = typeof event?.entityId === "string" ? event.entityId : null;
+  const result = issueId
+    ? await finishReview(ctx, companyId, issueId, outcome, config.maxAttempts)
+    : await finishByRunId(ctx, companyId, runId, outcome, config.maxAttempts);
   if (result.updated) {
     await dispatchQueued(ctx, companyId, { maxAttempts: config.maxAttempts });
   }
