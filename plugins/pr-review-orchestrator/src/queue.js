@@ -222,24 +222,35 @@ export async function finishReview(ctx, companyId, issueId, succeeded, maxAttemp
   const job = rows[0];
   if (!job) return { updated: false };
   if (succeeded) {
-    await ctx.db.execute(
+    const updated = await ctx.db.execute(
       `UPDATE ${table(ctx)} SET status='awaiting_publication',updated_at=now()
          WHERE id=$1 AND company_id=$2 AND status='running'`,
       [job.id, companyId],
     );
     // The JOU-490 publisher is authoritative for GitHub review receipts.
-    return { updated: true, awaitingPublication: true };
+    return { updated: updated.rowCount > 0, awaitingPublication: updated.rowCount > 0 };
   }
   const attempts = Number(job.attempts);
   const mayRetry = attempts < maxAttempts;
-  await ctx.db.execute(
+  const updated = await ctx.db.execute(
     `UPDATE ${table(ctx)}
        SET status=$3,next_attempt_at=now()+interval '2 minutes',
            last_error='Reviewer run failed or cancelled',updated_at=now()
        WHERE id=$1 AND company_id=$2 AND status='running'`,
     [job.id, companyId, mayRetry ? "queued" : "failed"],
   );
-  return { updated: true, retry: mayRetry };
+  return { updated: updated.rowCount > 0, retry: mayRetry };
+}
+
+export async function finishByRunId(ctx, companyId, runId, succeeded, maxAttempts = 2) {
+  if (!runId) return { updated: false };
+  const rows = await ctx.db.query(
+    `SELECT issue_id FROM ${table(ctx)}
+       WHERE company_id=$1 AND wake_run_id=$2 AND status='running' LIMIT 1`,
+    [companyId, runId],
+  );
+  if (!rows[0]?.issue_id) return { updated: false };
+  return finishReview(ctx, companyId, rows[0].issue_id, succeeded, maxAttempts);
 }
 
 export async function reconcileCompany(ctx, companyId, options = {}) {
