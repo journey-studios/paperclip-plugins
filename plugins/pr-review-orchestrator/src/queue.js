@@ -8,8 +8,7 @@ function table(ctx) {
   }
   return `${ctx.db.namespace}.review_jobs`;
 }
-const active = ["dispatching", "running"];
-const MAX_QUEUE_SCAN = 20;
+const MAX_QUEUE_SCAN = 40;
 
 function isUniqueConflict(error) {
   return error?.code === "23505" || /duplicate key|unique constraint/i.test(String(error?.message ?? error));
@@ -83,11 +82,19 @@ export async function closeReview(ctx, companyId, event, status = "closed") {
 }
 
 async function loadReady(ctx, companyId) {
+  const name = table(ctx);
   return ctx.db.query(
-    `SELECT * FROM ${table(ctx)}
-       WHERE company_id=$1 AND status='queued'
-         AND next_attempt_at<=now()
-       ORDER BY priority DESC,created_at ASC LIMIT ${MAX_QUEUE_SCAN}`,
+    `SELECT candidate.* FROM ${name} candidate
+       WHERE candidate.company_id=$1 AND candidate.status='queued'
+         AND candidate.next_attempt_at<=now()
+         AND NOT EXISTS (
+           SELECT 1 FROM ${name} running
+           WHERE running.company_id=candidate.company_id
+             AND running.reviewer_agent_id=candidate.reviewer_agent_id
+             AND running.status IN ('dispatching','running')
+         )
+       ORDER BY candidate.priority DESC,candidate.created_at ASC
+       LIMIT ${MAX_QUEUE_SCAN}`,
     [companyId],
   );
 }
@@ -173,14 +180,23 @@ async function failDispatch(ctx, job, error, maxAttempts) {
 
 async function dispatchOne(ctx, job, maxAttempts) {
   if (!await claim(ctx, job)) return false;
+  let wakeOutcomeUncertain = false;
   try {
     const issue = await findOrCreateIssue(ctx, job);
     await saveIssue(ctx, job, issue.id);
-    const wake = await ctx.issues.requestWakeup(issue.id, job.company_id, {
-      reason: "github_pull_request_review",
-      contextSource: "pr-review-orchestrator",
-      idempotencyKey: `pr-review:${job.repository}#${job.pr_number}@${job.head_sha}`,
-    });
+    let wake;
+    try {
+      wake = await ctx.issues.requestWakeup(issue.id, job.company_id, {
+        reason: "github_pull_request_review",
+        contextSource: "pr-review-orchestrator",
+        idempotencyKey: `pr-review:${job.repository}#${job.pr_number}@${job.head_sha}`,
+      });
+    } catch (error) {
+      // The RPC may have queued the run before the response was lost.
+      // Leave the slot locked until reconciliation inspects the Issue.
+      wakeOutcomeUncertain = true;
+      throw error;
+    }
     if (!wake.queued && !wake.runId) {
       throw new Error("Paperclip declined the review wakeup");
     }
@@ -193,7 +209,19 @@ async function dispatchOne(ctx, job, maxAttempts) {
     );
     return true;
   } catch (error) {
-    await failDispatch(ctx, job, error, maxAttempts);
+    if (wakeOutcomeUncertain) {
+      await ctx.db.execute(
+        `UPDATE ${table(ctx)}
+           SET attempts=attempts+1,
+             dispatch_lease_until=now()+interval '3 minutes',
+             last_error='Wakeup outcome uncertain; awaiting reconciliation',
+             updated_at=now()
+           WHERE id=$1 AND company_id=$2 AND status='dispatching'`,
+        [job.id, job.company_id],
+      );
+    } else {
+      await failDispatch(ctx, job, error, maxAttempts);
+    }
     ctx.logger.warn("PR review dispatch failed", {
       companyId: job.company_id,
       repository: job.repository,
@@ -272,11 +300,13 @@ export async function reconcileCompany(ctx, companyId, options = {}) {
         [job.id, companyId, issue.status === "in_progress" ? "running" : "awaiting_publication"],
       );
     } else {
+      const exhausted = Number(job.attempts) >= maxAttempts;
       await ctx.db.execute(
-        `UPDATE ${name} SET status='queued',dispatch_lease_until=NULL,
-         next_attempt_at=now()+interval '30 seconds',updated_at=now()
+        `UPDATE ${name}
+         SET status=$3,dispatch_lease_until=NULL,
+             next_attempt_at=now()+interval '30 seconds',updated_at=now()
          WHERE id=$1 AND company_id=$2 AND status='dispatching'`,
-        [job.id, companyId],
+        [job.id, companyId, exhausted ? "failed" : "queued"],
       );
     }
   }
