@@ -187,6 +187,19 @@ test("concurrent dispatch attempts cannot wake the same reviewer twice", async (
   assert.equal((await h.jobs()).filter((j) => j.status === "running").length, 1);
 });
 
+test("an Issue awaiting review does not release the agent early", async (t) => {
+  const h = await createHarness();
+  t.after(() => h.close());
+  await enqueueReview(h.ctx, COMPANY, route, pr(373, "a".repeat(40)));
+  await enqueueReview(h.ctx, COMPANY, route, pr(374, "b".repeat(40)));
+  assert.equal((await dispatchQueued(h.ctx, COMPANY)).dispatched, 1);
+  const running = (await h.jobs()).find((j) => j.status === "running");
+  h.issues.get(running.issue_id).status = "in_review";
+  await reconcileCompany(h.ctx, COMPANY);
+  assert.equal((await h.jobs()).find((j) => j.id === running.id).status, "running");
+  assert.equal(h.wakeups.length, 1);
+});
+
 test("terminal run events resolve the correct review by wake run ID", async (t) => {
   const h = await createHarness();
   t.after(() => h.close());
