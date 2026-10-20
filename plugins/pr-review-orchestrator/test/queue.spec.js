@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { after, test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import {
   closeReview,
@@ -29,11 +28,19 @@ const pr = (number, sha, updatedAt = "2026-10-20T10:00:00Z") => ({
   authorLogin: "developer",
 });
 
+let sharedPg = null;
+after(async () => { if (sharedPg) await sharedPg.close(); });
+
 async function createHarness() {
-  const pg = new PGlite();
-  await pg.exec(`CREATE SCHEMA ${NAMESPACE}`);
-  const sql = await readFile(new URL("../migrations/001_pr_reviews.sql", import.meta.url), "utf8");
-  await pg.exec(sql);
+  if (!sharedPg) {
+    sharedPg = new PGlite();
+    await sharedPg.exec(`CREATE SCHEMA ${NAMESPACE}`);
+    const sql = await readFile(new URL("../migrations/001_pr_reviews.sql", import.meta.url), "utf8");
+    await sharedPg.exec(sql);
+  } else {
+    await sharedPg.exec(`TRUNCATE ${NAMESPACE}.review_jobs`);
+  }
+  const pg = sharedPg;
   const issues = new Map();
   const wakeups = [];
   const logs = [];
@@ -94,7 +101,7 @@ async function createHarness() {
       return (await pg.query(`SELECT * FROM ${NAMESPACE}.review_jobs ORDER BY created_at,id`)).rows;
     },
     async setFailure() { failNextWakeup = true; },
-    async close() { await pg.close(); },
+    async close() { /* Shared PGlite database is closed by the suite hook. */ },
   };
 }
 
