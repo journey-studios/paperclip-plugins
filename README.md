@@ -26,6 +26,7 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 - [`@journey-studios/paperclip-evolution`](plugins/evolution/README.md): Change Intelligence for agent/skill diffs, Audit provenance, evidence, metrics, and conclusions.
 - [`@journey-studios/paperclip-storage-manager`](plugins/storage-manager/README.md): read-only VPS disk, Docker storage, growth and operator-configured warnings via the native local-folder API and a [separate host collector](services/storage-collector/README.md).
 - [`@journey-studios/paperclip-plugin-project-dashboards`](plugins/project-dashboards/README.md): agents publish project tracking dashboards (KPIs, charts, filterable tables, Markdown, Mermaid) from a declarative spec, rendered natively, with provenance and revision history.
+- [`@journey-studios/paperclip-pr-review-orchestrator`](plugins/pr-review-orchestrator/README.md): GitHub webhook-triggered code review Issues, persistent per-agent queue, SHA deduplication and on-demand Thermo dispatch; official GitHub reviews remain with JOU-490.
 
 ## Administrative MCP tools
 
