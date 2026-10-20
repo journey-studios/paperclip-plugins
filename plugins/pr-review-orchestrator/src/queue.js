@@ -265,7 +265,7 @@ export async function reconcileCompany(ctx, companyId, options = {}) {
   );
   for (const job of expiring) {
     const issue = job.issue_id ? await ctx.issues.get(job.issue_id, companyId) : null;
-    if (issue && ["in_progress", "in_review", "done"].includes(issue.status)) {
+    if (issue && ["in_progress", "done"].includes(issue.status)) {
       await ctx.db.execute(
         `UPDATE ${name} SET status=$3,dispatch_lease_until=NULL,updated_at=now()
            WHERE id=$1 AND company_id=$2 AND status='dispatching'`,
@@ -289,7 +289,7 @@ export async function reconcileCompany(ctx, companyId, options = {}) {
   for (const job of running) {
     if (!job.issue_id) continue;
     const issue = await ctx.issues.get(job.issue_id, companyId);
-    if (issue?.status === "done" || issue?.status === "in_review") {
+    if (issue?.status === "done") {
       await finishReview(ctx, companyId, issue.id, true, maxAttempts);
     } else if (issue?.status === "cancelled") {
       await finishReview(ctx, companyId, issue.id, false, maxAttempts);
