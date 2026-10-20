@@ -55,7 +55,9 @@ export function parsePullRequestDelivery(input, payload) {
   const pr = payload.pull_request;
   const number = Number(payload.number);
   const sha = pr.head?.sha;
-  if (!Number.isSafeInteger(number) || number <= 0 || !SHA.test(sha ?? "")) {
+  const updatedAt = pr.updated_at;
+  if (!Number.isSafeInteger(number) || number <= 0 || !SHA.test(sha ?? "") ||
+      typeof updatedAt !== "string" || !Number.isFinite(Date.parse(updatedAt))) {
     throw new Error("Invalid PR number or head SHA");
   }
   const repository = payload.repository.full_name.toLowerCase();
@@ -69,6 +71,7 @@ export function parsePullRequestDelivery(input, payload) {
     repository,
     number,
     sha,
+    updatedAt,
     title: text(pr.title, 180) || `PR #${number}`,
     baseRef: text(pr.base?.ref, 150),
     authorLogin: text(pr.user?.login, 100),
