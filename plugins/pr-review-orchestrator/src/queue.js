@@ -22,21 +22,32 @@ export async function enqueueReview(ctx, companyId, route, event) {
   await ctx.db.execute(
     `UPDATE ${name} SET status='superseded', updated_at=now()
      WHERE company_id=$1 AND repository=$2 AND pr_number=$3
-       AND head_sha<>$4 AND status='queued'`,
-    [companyId, event.repository, event.number, event.sha],
+       AND head_sha<>$4 AND remote_updated_at <= $5::timestamptz AND status='queued'`,
+    [companyId, event.repository, event.number, event.sha, event.updatedAt],
   );
   const id = randomUUID();
   const inserted = await ctx.db.execute(
     `INSERT INTO ${name}
-      (id,company_id,project_id,reviewer_agent_id,repository,pr_number,head_sha,
+      (id,company_id,project_id,reviewer_agent_id,repository,pr_number,head_sha,remote_updated_at,
        pr_url,pr_title,base_ref,author_login,status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued')
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10,$11,$12,'queued')
      ON CONFLICT (company_id,repository,pr_number,head_sha) DO NOTHING`,
     [
       id, companyId, route.projectId, route.reviewerAgentId,
-      event.repository, event.number, event.sha, event.url,
+      event.repository, event.number, event.sha, event.updatedAt, event.url,
       event.title, event.baseRef, event.authorLogin,
     ],
+  );
+  // A delayed GitHub delivery must not replace a newer head with an old SHA.
+  await ctx.db.execute(
+    `UPDATE ${name} newer SET status='superseded',updated_at=now()
+     WHERE newer.company_id=$1 AND newer.repository=$2 AND newer.pr_number=$3
+       AND newer.head_sha=$4 AND newer.status='queued'
+       AND EXISTS (SELECT 1 FROM ${name} latest
+         WHERE latest.company_id=newer.company_id AND latest.repository=newer.repository
+           AND latest.pr_number=newer.pr_number
+           AND latest.remote_updated_at>newer.remote_updated_at)`,
+    [companyId, event.repository, event.number, event.sha],
   );
   return { created: inserted.rowCount > 0, id };
 }
@@ -48,8 +59,8 @@ export async function closeReview(ctx, companyId, event, status = "closed") {
     `UPDATE ${name}
        SET status=$4, updated_at=now(), last_error='PR became inactive'
        WHERE company_id=$1 AND repository=$2 AND pr_number=$3
-         AND status='queued'`,
-    [companyId, event.repository, event.number, status],
+         AND status='queued' AND remote_updated_at<=$5::timestamptz`,
+    [companyId, event.repository, event.number, status, event.updatedAt],
   );
   await ctx.db.execute(
     `UPDATE ${name} SET last_error='PR became inactive during review',updated_at=now()
