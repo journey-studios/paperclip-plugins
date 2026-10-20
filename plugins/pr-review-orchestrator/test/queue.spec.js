@@ -7,6 +7,7 @@ import {
   closeReview,
   dispatchQueued,
   enqueueReview,
+  finishByRunId,
   finishReview,
   queueStats,
   reconcileCompany,
@@ -184,6 +185,28 @@ test("concurrent dispatch attempts cannot wake the same reviewer twice", async (
   ]);
   assert.equal(h.wakeups.length, 1);
   assert.equal((await h.jobs()).filter((j) => j.status === "running").length, 1);
+});
+
+test("terminal run events resolve the correct review by wake run ID", async (t) => {
+  const h = await createHarness();
+  t.after(() => h.close());
+  await enqueueReview(h.ctx, COMPANY, route, pr(373, "a".repeat(40)));
+  await dispatchQueued(h.ctx, COMPANY);
+  const running = (await h.jobs()).find((j) => j.status === "running");
+  assert.ok(running.wake_run_id);
+  assert.deepEqual(
+    await finishByRunId(h.ctx, COMPANY, "unrelated-run", true),
+    { updated: false },
+  );
+  assert.deepEqual(
+    await finishByRunId(h.ctx, COMPANY, running.wake_run_id, true),
+    { updated: true, awaitingPublication: true },
+  );
+  assert.deepEqual(
+    await finishByRunId(h.ctx, COMPANY, running.wake_run_id, true),
+    { updated: false },
+  );
+  assert.equal((await h.jobs())[0].status, "awaiting_publication");
 });
 
 test("failed wakeup retries reuse the existing Paperclip Issue", async (t) => {
