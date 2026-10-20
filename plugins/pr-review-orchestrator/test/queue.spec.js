@@ -46,6 +46,7 @@ async function createHarness() {
   const wakeups = [];
   const logs = [];
   let failNextWakeup = false;
+  let failAfterWakeStarted = false;
   const ctx = {
     db: {
       namespace: NAMESPACE,
@@ -85,6 +86,12 @@ async function createHarness() {
           throw new Error("Simulated transient wakeup failure");
         }
         const issue = issues.get(id);
+        if (failAfterWakeStarted) {
+          failAfterWakeStarted = false;
+          issue.status = "in_progress";
+          wakeups.push({ issueId: id, ...options });
+          throw new Error("Wakeup response lost after a run started");
+        }
         assert.equal(issue?.companyId, companyId);
         issue.status = "in_progress";
         wakeups.push({ issueId: id, ...options });
@@ -102,6 +109,7 @@ async function createHarness() {
       return (await pg.query(`SELECT * FROM ${NAMESPACE}.review_jobs ORDER BY created_at,id`)).rows;
     },
     async setFailure() { failNextWakeup = true; },
+    async setUncertainStartedFailure() { failAfterWakeStarted = true; },
     async close() { /* Shared PGlite database is closed by the suite hook. */ },
   };
 }
@@ -222,15 +230,38 @@ test("terminal run events resolve the correct review by wake run ID", async (t) 
   assert.equal((await h.jobs())[0].status, "awaiting_publication");
 });
 
+test("an uncertain wake response never queues another concurrent reviewer", async (t) => {
+  const h = await createHarness();
+  t.after(() => h.close());
+  await enqueueReview(h.ctx, COMPANY, route, pr(373, "a".repeat(40)));
+  await h.setUncertainStartedFailure();
+  await dispatchQueued(h.ctx, COMPANY);
+  assert.equal((await h.jobs())[0].status, "dispatching");
+  assert.equal(h.wakeups.length, 1);
+  await h.ctx.db.execute(
+    `UPDATE ${NAMESPACE}.review_jobs
+     SET dispatch_lease_until=now()-interval '1 minute'`,
+  );
+  await reconcileCompany(h.ctx, COMPANY);
+  assert.equal((await h.jobs())[0].status, "running");
+  assert.equal(h.wakeups.length, 1);
+});
+
 test("failed wakeup retries reuse the existing Paperclip Issue", async (t) => {
   const h = await createHarness();
   t.after(() => h.close());
   await enqueueReview(h.ctx, COMPANY, route, pr(373, "a".repeat(40)));
   await h.setFailure();
   await dispatchQueued(h.ctx, COMPANY);
-  assert.equal((await h.jobs())[0].status, "queued");
+  assert.equal((await h.jobs())[0].status, "dispatching");
   assert.equal((await h.jobs())[0].attempts, 1);
   assert.equal(h.issues.size, 1);
+  await h.ctx.db.execute(
+    `UPDATE ${NAMESPACE}.review_jobs
+     SET dispatch_lease_until=now()-interval '1 minute'`,
+  );
+  await reconcileCompany(h.ctx, COMPANY);
+  assert.equal((await h.jobs())[0].status, "queued");
   await h.ctx.db.execute(
     `UPDATE ${NAMESPACE}.review_jobs SET next_attempt_at=now()-interval '1 minute'`,
   );
