@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertTrustedConfigFile, collect, cpuUsagePercent, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
+import { assertTrustedConfigFile, collect, collectWorkers, cpuUsagePercent, parseContainerState, parseContainerStats, parseWorkerConfig, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -219,4 +219,70 @@ test("the directory allowlist file must be a root-owned regular file that others
 });
 test("the default directories satisfy the same rules as an operator config", () => {
   assert.deepEqual(parseDirectoryConfig(JSON.stringify(DIRECTORIES)).map((row) => row.id), DIRECTORIES.map((row) => row.id));
+});
+const statsJson = [
+  JSON.stringify({ Name: "runner-base", CPUPerc: "0.01%", MemUsage: "1.812MiB / 3GiB", MemPerc: "0.06%", PIDs: "2" }),
+  JSON.stringify({ Name: "runner-browser", CPUPerc: "152.40%", MemUsage: "1.5GiB / 5GiB", MemPerc: "30.0%", PIDs: "41" }),
+].join("\n");
+const runner = { id: "runner-base", label: "Runner base", container: "runner-base" };
+const browser = { id: "runner-browser", label: "Runner browser", container: "runner-browser" };
+test("container state and stats parse strictly and reject unknown values", () => {
+  assert.deepEqual(parseContainerState("running|healthy|2026-10-21T00:30:38.087695723Z|2|false"),
+    { state: "running", health: "healthy", startedAt: "2026-10-21T00:30:38.087Z", restartCount: 2, oomKilled: false });
+  assert.equal(parseContainerState("exited||0001-01-01T00:00:00Z|0|true").startedAt, null);
+  assert.equal(parseContainerState("running||2026-10-21T00:30:38Z|0|false").health, null);
+  for (const bad of ["running|healthy|x", "weird||2026-10-21T00:00:00Z|0|false", "running|sick|2026-10-21T00:00:00Z|0|false", "running||2026-10-21T00:00:00Z|-1|false", "running||2026-10-21T00:00:00Z|0|maybe"]) {
+    assert.throws(() => parseContainerState(bad));
+  }
+  const stats = parseContainerStats(statsJson);
+  assert.deepEqual(stats.get("runner-base"), { cpuPercent: 0, memoryUsedBytes: Math.round(1.812 * 1024 ** 2), memoryLimitBytes: 3 * 1024 ** 3, memoryPercent: 0.1, pids: 2 });
+  assert.equal(stats.get("runner-browser").cpuPercent, 152.4);
+  assert.throws(() => parseContainerStats(JSON.stringify({ Name: "x", CPUPerc: "n/a", MemUsage: "1MiB / 2MiB", MemPerc: "1%", PIDs: "1" })));
+});
+test("worker config is an allowlist of valid, unique container names", () => {
+  assert.deepEqual(parseWorkerConfig(JSON.stringify([runner, browser])).map((row) => row.container), ["runner-base", "runner-browser"]);
+  for (const bad of [
+    [], "nope", [{ ...runner, container: "-rf" }], [{ ...runner, container: "a/b" }], [{ ...runner, container: "x y" }],
+    [runner, { ...browser, container: "runner-base" }], [runner, { ...browser, id: "runner-base" }],
+    [{ ...runner, label: "/etc" }], [{ ...runner, id: "Bad Id" }],
+    Array.from({ length: 13 }, (_, i) => ({ id: "w" + i, label: "W", container: "c" + i })),
+  ]) assert.throws(() => parseWorkerConfig(typeof bad === "string" ? bad : JSON.stringify(bad)));
+});
+test("workers report state, health, restarts and resource use, isolating a missing or broken container", async () => {
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[0] === "inspect") {
+      const name = args.at(-1);
+      if (name === "ghost") throw Object.assign(new Error("Command failed"), { stderr: "Error: No such object: ghost" });
+      if (name === "broken") throw Object.assign(new Error("Command failed"), { stderr: "permission denied" });
+      return name === "runner-browser" ? "exited||2026-10-20T00:00:00Z|3|true\n" : "running|healthy|2026-10-21T00:30:38.087695723Z|0|false\n";
+    }
+    return statsJson;
+  };
+  const { rows, issues } = await collectWorkers({ run, workers: [runner, browser, { id: "g", label: "Ghost", container: "ghost" }, { id: "b", label: "Broken", container: "broken" }] });
+  assert.deepEqual(rows.map((row) => [row.id, row.state]), [["runner-base", "running"], ["runner-browser", "exited"], ["g", "missing"], ["b", "unknown"]]);
+  assert.equal(rows[0].health, "healthy");
+  assert.equal(rows[0].memoryLimitBytes, 3 * 1024 ** 3);
+  assert.equal(rows[1].oomKilled, true);
+  assert.equal(rows[1].cpuPercent, null);
+  assert.deepEqual(issues, [{ source: "workers", code: "command_failed" }]);
+  // Only read-only docker verbs run, container names come after "--", and only running containers are sampled.
+  assert.ok(calls.every(([cmd, verb]) => cmd === "docker" && (verb === "inspect" || verb === "stats")));
+  assert.ok(calls.every((call) => call[call.length - 2] === "--" || call.includes("--")));
+  assert.deepEqual(calls.find((call) => call[1] === "stats").slice(-2), ["--", "runner-base"]);
+});
+test("a failed stats call keeps the worker state and marks coverage partial", async () => {
+  const run = async (cmd, args) => { if (args[0] === "stats") throw new Error("boom"); return "running||2026-10-21T00:30:38Z|0|false"; };
+  const { rows, issues } = await collectWorkers({ run, workers: [runner] });
+  assert.equal(rows[0].state, "running");
+  assert.equal(rows[0].cpuPercent, null);
+  assert.deepEqual(issues, [{ source: "workers", code: "stats_failed" }]);
+});
+test("collect puts workers in the snapshot and reports their issues as partial coverage", async () => {
+  const run = async (cmd, args) => cmd === "df" ? df : cmd === "docker" && args[0] === "system" ? docker : args[0] === "inspect" ? "running||2026-10-21T00:30:38Z|0|false" : (() => { throw new Error("no stats"); })();
+  const value = await collect({ ...host, run, now: () => date, directories: [], workers: [runner] });
+  assert.equal(value.workers[0].state, "running");
+  assert.deepEqual(value.coverage.issues, [{ source: "workers", code: "stats_failed" }]);
+  assert.equal((await collect({ ...host, run, now: () => date, directories: [] })).workers.length, 0);
 });

@@ -34,9 +34,22 @@ Without configuration the collector measures a generic set (`/var/lib/docker`, `
 
 Rules, enforced at startup (the collector refuses to run on a violation): 1 to 30 entries; `id` is lowercase letters, digits and hyphens, unique; `label` is at most 70 characters and must not contain `/` (labels are shown in the UI); `path` is absolute, normalized (no `..`, `//` or trailing `/`) and not `/` itself. The file is an operator allowlist, never user input: the collector refuses to start unless it is a regular file owned by root and not group- or world-writable.
 
+## Workers (optional)
+
+To show the runner containers that execute agents, point `VPS_STATUS_WORKERS_FILE` at a **root-owned** JSON allowlist (same ownership rules as the directories file; nothing is discovered automatically):
+
+```json
+[
+  { "id": "runner-base", "label": "Runner base", "container": "runner-base" },
+  { "id": "runner-browser", "label": "Runner browser", "container": "runner-browser" }
+]
+```
+
+1 to 12 entries; `id` is lowercase letters, digits and hyphens; `container` is a plain Docker container name (no `/` or leading `-`); `label` follows the directory label rules. For each entry the collector runs only `docker inspect` (state, health, start time, restart count, OOM flag) and one `docker stats --no-stream` for the running ones, always passing names after `--`. A container that does not exist is reported as `missing`, and a failed probe as `unknown` with a `workers` coverage issue. CPU is per container: 100% is one core. Without the file the `workers` list is empty and the page hides the section.
+
 ## Snapshot schema 2
 
-Adds `cpu` (`cores`, `usagePercent`, `load1/5/15`), `memory` (`totalBytes`, `availableBytes`, `usedBytes`, `usedPercent`, `swapTotalBytes`, `swapUsedBytes`) and `uptimeSeconds`. A failed CPU or memory probe leaves that field `null` and adds a `cpu`/`memory` `read_failed` coverage issue; disk metrics are unaffected. History entries gain optional `cpuPercent` and `memoryUsedBytes`. The plugin still reads schema 1.
+Adds an optional `workers` list (see above) and `cpu` (`cores`, `usagePercent`, `load1/5/15`), `memory` (`totalBytes`, `availableBytes`, `usedBytes`, `usedPercent`, `swapTotalBytes`, `swapUsedBytes`) and `uptimeSeconds`. A failed CPU or memory probe leaves that field `null` and adds a `cpu`/`memory` `read_failed` coverage issue; disk metrics are unaffected. History entries gain optional `cpuPercent` and `memoryUsedBytes`. The plugin still reads schema 1.
 
 ## Operating boundaries
 

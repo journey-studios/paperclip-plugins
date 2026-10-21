@@ -85,3 +85,19 @@ test("the sidebar entry is labelled VPS Status", async () => {
   const text = await render(withMetrics, "StorageSidebar", "a");
   assert.equal(text.trim(), "VPS Status");
 });
+
+test("the Workers section lists runner state, health, CPU and memory, and is hidden when none are configured", async () => {
+  const workers = [
+    { id: "runner-base", label: "Runner base", state: "running", health: "healthy", startedAt: "2026-10-20T11:00:00.000Z", restartCount: 0, oomKilled: false,
+      cpuPercent: 152.4, memoryUsedBytes: 1024 ** 3, memoryLimitBytes: 3 * 1024 ** 3, memoryPercent: 33.3, pids: 41 },
+    { id: "runner-browser", label: "Runner browser", state: "exited", health: null, startedAt: null, restartCount: 3, oomKilled: true,
+      cpuPercent: null, memoryUsedBytes: null, memoryLimitBytes: null, memoryPercent: null, pids: null },
+  ];
+  const text = await render({ ...withMetrics, workers }, "StoragePage");
+  assert.match(text, /Workers/);
+  assert.match(text, /1 de 2 rodando/);
+  assert.match(text, /Runner baseRodando · saudável1 d 1 h152,4%1 GiB \/ 3 GiB410/);
+  assert.match(text, /Runner browserParadoOOM—————?3|Runner browserParadoOOM—+3/);
+  const none = await render(withMetrics, "StoragePage");
+  assert.doesNotMatch(none, /Contêineres de execução/);
+});

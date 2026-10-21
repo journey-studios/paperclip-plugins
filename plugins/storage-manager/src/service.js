@@ -64,8 +64,38 @@ function sanitizeMemory(input) {
     return { totalBytes, availableBytes, usedBytes, usedPercent: percent(memory.usedPercent, "memory percent"), swapTotalBytes, swapUsedBytes };
   } catch { return null; }
 }
+const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+const WORKER_STATES = new Set(["created", "running", "paused", "restarting", "removing", "exited", "dead", "missing", "unknown"]);
+const WORKER_HEALTH = new Set(["healthy", "unhealthy", "starting"]);
+function optionalPercent(value, max = 100000) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= max ? Math.round(value * 10) / 10 : null;
+}
+function optionalCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+// Workers are operator-listed containers; usage fields are optional and degrade to null one by one.
+function sanitizeWorkers(input) {
+  return (Array.isArray(input) ? input : []).slice(0, 12).flatMap((row) => {
+    if (!object(row) || typeof row.id !== "string" || !WORKER_ID.test(row.id) || !WORKER_STATES.has(row.state)) return [];
+    const startedAt = typeof row.startedAt === "string" && Number.isFinite(Date.parse(row.startedAt)) ? new Date(row.startedAt).toISOString() : null;
+    return [{
+      id: row.id,
+      label: typeof row.label === "string" && row.label.length <= 70 && !row.label.includes("/") ? row.label : row.id,
+      state: row.state,
+      health: WORKER_HEALTH.has(row.health) ? row.health : null,
+      startedAt: row.state === "running" ? startedAt : null,
+      restartCount: optionalCount(row.restartCount) ?? 0,
+      oomKilled: row.oomKilled === true,
+      cpuPercent: optionalPercent(row.cpuPercent),
+      memoryUsedBytes: optionalCount(row.memoryUsedBytes),
+      memoryLimitBytes: optionalCount(row.memoryLimitBytes),
+      memoryPercent: optionalPercent(row.memoryPercent, 100),
+      pids: optionalCount(row.pids),
+    }];
+  });
+}
 function empty(companyId, status, reason) {
-  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
+  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, workers: [], docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
 }
 function safeCoverage(raw) {
   const coverage = object(raw);
@@ -137,6 +167,7 @@ export function sanitizeSnapshot(input, now = Date.now()) {
     cpu: sanitizeCpu(raw.cpu),
     memory: sanitizeMemory(raw.memory),
     uptimeSeconds: Number.isSafeInteger(raw.uptimeSeconds) && raw.uptimeSeconds >= 0 ? raw.uptimeSeconds : null,
+    workers: sanitizeWorkers(raw.workers),
     directories, docker, history, alerts, coverage: safeCoverage(raw.coverage),
   };
 }

@@ -137,3 +137,24 @@ test("invalid optional thresholds do not become arbitrary automatic warnings", (
   const noPolicy = sanitizeSnapshot({ ...raw, alertPolicy: undefined }, now);
   assert.deepEqual(noPolicy.alerts, []);
 });
+test("workers keep only listed shapes and degrade usage fields one by one", () => {
+  const value = sanitizeSnapshot({ ...raw, schemaVersion: 2, workers: [
+    { id: "runner-base", label: "Runner base", state: "running", health: "healthy", startedAt: "2026-10-21T00:30:38.087Z", restartCount: 2, oomKilled: false,
+      cpuPercent: 152.44, memoryUsedBytes: 100, memoryLimitBytes: 300, memoryPercent: 33.3, pids: 4, hidden: "never-return" },
+    { id: "runner-browser", label: "/srv/secret", state: "exited", health: "sick", startedAt: "2026-10-21T00:00:00.000Z", cpuPercent: 999999, memoryUsedBytes: -1, pids: 1.5 },
+    { id: "../escape", label: "Bad", state: "running" },
+    { id: "weird", label: "Weird", state: "levitating" },
+    "not-an-object",
+  ] }, now);
+  assert.deepEqual(value.workers.map((row) => row.id), ["runner-base", "runner-browser"]);
+  assert.deepEqual(value.workers[0], { id: "runner-base", label: "Runner base", state: "running", health: "healthy", startedAt: "2026-10-21T00:30:38.087Z", restartCount: 2, oomKilled: false,
+    cpuPercent: 152.4, memoryUsedBytes: 100, memoryLimitBytes: 300, memoryPercent: 33.3, pids: 4 });
+  assert.equal(value.workers[1].label, "runner-browser");
+  assert.equal(value.workers[1].health, null);
+  assert.equal(value.workers[1].startedAt, null);
+  assert.equal(value.workers[1].cpuPercent, null);
+  assert.equal(value.workers[1].memoryUsedBytes, null);
+  assert.equal(value.workers[1].pids, null);
+  assert.ok(!JSON.stringify(value).includes("never-return"));
+  assert.deepEqual(sanitizeSnapshot(raw, now).workers, []);
+});

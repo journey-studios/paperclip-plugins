@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { access, chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig } from "./lib.mjs";
+import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig, parseWorkerConfig } from "./lib.mjs";
 
 const exec = promisify(execFile);
 const outDir = process.env.STORAGE_OUTPUT_DIR || "/var/lib/paperclip-storage-manager";
@@ -37,8 +37,13 @@ const directoriesFile = process.env.VPS_STATUS_DIRECTORIES_FILE;
 if (directoriesFile && (!isAbsolute(directoriesFile) || directoriesFile.includes(".."))) throw new Error("Invalid directories file path");
 if (directoriesFile) assertTrustedConfigFile(await stat(directoriesFile));
 const directories = directoriesFile ? parseDirectoryConfig(await readFile(directoriesFile, "utf8")) : DIRECTORIES;
+// Optional root-owned list of containers to report as workers (none by default).
+const workersFile = process.env.VPS_STATUS_WORKERS_FILE;
+if (workersFile && (!isAbsolute(workersFile) || workersFile.includes(".."))) throw new Error("Invalid workers file path");
+if (workersFile) assertTrustedConfigFile(await stat(workersFile));
+const workers = workersFile ? parseWorkerConfig(await readFile(workersFile, "utf8")) : [];
 const snapshot = await collect({
-  run, alertPolicy: policy, directories,
+  run, alertPolicy: policy, directories, workers,
   readText: (path) => readFile(path, "utf8"),
   inspect: (path) => inspectDirectory(path, access),
 });

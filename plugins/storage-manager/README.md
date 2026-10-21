@@ -5,6 +5,7 @@ Paperclip Plugin SDK v1 plugin for **read-only** VPS observability: disk, CPU, m
 ## Features
 
 - Sidebar **VPS Status** and page `/storage`: CPU usage, load and core count, RAM (from `MemAvailable`) and swap, uptime, exact filesystem capacity (df), recorded host directories (du), Docker CLI accounting, collection freshness, optional configured alerts, and bounded history for disk, CPU and memory.
+- **Workers** table (when the collector lists them): runner container state and health, uptime, CPU, memory against its limit, processes and restarts.
 - Native agent tools: `vps_status` (disk, CPU, memory, uptime), `storage_overview` and `storage_hotspots`.
 - CPU and memory are optional in the snapshot: a snapshot from an older collector (schema 1) or a failed probe shows them as "not collected" without invalidating the disk metrics.
 - Authenticated, company-resolved GET plugin API routes: `/overview`, `/hotspots`, `/tools`. The host owns the API prefix and board authentication.

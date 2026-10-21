@@ -17,6 +17,7 @@ function summarize(data) {
   if (data.cpu) parts.push("CPU " + data.cpu.usagePercent + "% of " + data.cpu.cores + " cores, load " + data.cpu.load1 + "/" + data.cpu.load5 + "/" + data.cpu.load15);
   if (data.memory) parts.push("memory " + data.memory.usedPercent + "% (" + gib(data.memory.usedBytes) + " of " + gib(data.memory.totalBytes) + "), swap " + gib(data.memory.swapUsedBytes) + " of " + gib(data.memory.swapTotalBytes));
   if (data.uptimeSeconds !== null) parts.push("uptime " + Math.floor(data.uptimeSeconds / 3600) + "h");
+  if (data.workers?.length) parts.push("workers " + data.workers.map((worker) => worker.label + " " + worker.state + (worker.health ? " (" + worker.health + ")" : "") + (worker.cpuPercent !== null ? ", CPU " + worker.cpuPercent + "%" : "") + (worker.memoryUsedBytes !== null ? ", mem " + gib(worker.memoryUsedBytes) : "")).join("; "));
   return "VPS " + data.status + ": " + parts.join("; ") + "; collected " + data.generatedAt + ". Docker sizes may overlap.";
 }
 

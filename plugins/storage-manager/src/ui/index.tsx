@@ -9,6 +9,13 @@ import {
 type SizeRow = { id: string; label: string; bytes: number | null; status: "ok" | "missing" | "unavailable" };
 type DockerRow = { id: string; label: string; sizeBytes: number; reclaimableBytes: number; count: number; active: number; approximate: boolean };
 type HistoryPoint = { at: string; usedBytes: number; availableBytes: number; cpuPercent?: number; memoryUsedBytes?: number };
+type WorkerRow = {
+  id: string; label: string;
+  state: "created" | "running" | "paused" | "restarting" | "removing" | "exited" | "dead" | "missing" | "unknown";
+  health: "healthy" | "unhealthy" | "starting" | null;
+  startedAt: string | null; restartCount: number; oomKilled: boolean;
+  cpuPercent: number | null; memoryUsedBytes: number | null; memoryLimitBytes: number | null; memoryPercent: number | null; pids: number | null;
+};
 type CpuInfo = { cores: number; usagePercent: number; load1: number; load5: number; load15: number };
 type MemoryInfo = { totalBytes: number; availableBytes: number; usedBytes: number; usedPercent: number; swapTotalBytes: number; swapUsedBytes: number };
 type StorageSnapshot = {
@@ -20,6 +27,7 @@ type StorageSnapshot = {
   cpu: CpuInfo | null;
   memory: MemoryInfo | null;
   uptimeSeconds: number | null;
+  workers?: WorkerRow[];
   directories: SizeRow[];
   docker: DockerRow[];
   history: HistoryPoint[];
@@ -46,6 +54,7 @@ const styles = [
   ".jsm th,.jsm td{padding:.72rem 1rem;border-bottom:1px solid var(--border)}.jsm td:nth-child(n+2){font-variant-numeric:tabular-nums}",
   ".jsm tbody tr:last-child td{border-bottom:0}.jsm .hotspot{display:flex;gap:.7rem;align-items:center;justify-content:space-between;padding:.7rem 1rem;border-bottom:1px solid var(--border);font-size:.8rem}",
   ".jsm .hotspot:last-child{border-bottom:0}.jsm .hotspot strong{font-variant-numeric:tabular-nums;white-space:nowrap}.jsm .bar{height:.35rem;border-radius:.4rem;background:var(--muted);overflow:hidden;margin-top:.4rem}.jsm .bar span{background:var(--primary);height:100%;display:block}",
+  ".jsm .pill{display:inline-block;padding:.1rem .55rem;border-radius:1rem;font-size:.72rem;border:1px solid var(--border);background:var(--muted);white-space:nowrap}.jsm .pill.ok{border-color:var(--primary);color:var(--primary)}.jsm .pill.bad{border-color:var(--destructive);color:var(--destructive)}",
   ".jsm .grow{flex:1;min-width:0}.jsm .graph{width:100%;height:145px;display:block}.jsm .chart{padding:1rem}.jsm .legend{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:.45rem}",
   ".jsm .side-link{display:flex;align-items:center;gap:.55rem;padding:.55rem .65rem;text-decoration:none;color:var(--muted-foreground);border-radius:.4rem;font-size:.82rem}",
   ".jsm .side-link:hover,.jsm .side-link[aria-current=page]{background:var(--accent);color:var(--foreground)}.jsm .side-link svg{width:1rem;height:1rem;flex:none}",
@@ -59,6 +68,15 @@ function formatBytes(bytes: number | null | undefined): string {
   const order = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)));
   const unit = ["B", "KiB", "MiB", "GiB", "TiB"][order];
   return (bytes / (1024 ** order)).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " " + unit;
+}
+const WORKER_STATE_LABEL: Record<WorkerRow["state"], string> = {
+  created: "Criado", running: "Rodando", paused: "Pausado", restarting: "Reiniciando", removing: "Removendo",
+  exited: "Parado", dead: "Falhou", missing: "Não encontrado", unknown: "Desconhecido",
+};
+const WORKER_HEALTH_LABEL = { healthy: "saudável", unhealthy: "com falha", starting: "iniciando" } as const;
+function workerTone(worker: WorkerRow): "ok" | "bad" | "" {
+  if (worker.state === "running") return worker.health === "unhealthy" ? "bad" : "ok";
+  return worker.state === "paused" || worker.state === "created" ? "" : "bad";
 }
 function formatTime(value: string | null): string {
   if (!value) return "—";
@@ -195,6 +213,18 @@ function StorageDashboard({ companyId }: { companyId: string }) {
           <ResourceCard label="Tempo ligado" value={formatUptime(snapshot.uptimeSeconds)} />
         </div>
       </section>
+      {snapshot.workers && snapshot.workers.length > 0 && <section className="section" aria-label="Workers"><div className="section-header"><div><h2>Workers</h2><p className="sub">Contêineres de execução dos agentes (runners). CPU de contêiner: 100% equivale a um núcleo, então pode passar de 100%.</p></div><span className="small muted">{snapshot.workers.filter((w) => w.state === "running").length} de {snapshot.workers.length} rodando</span></div>
+        <div className="table-wrap"><table><thead><tr><th>Worker</th><th>Estado</th><th>Ativo há</th><th>CPU</th><th>Memória</th><th>Processos</th><th>Reinícios</th></tr></thead>
+        <tbody>{snapshot.workers.map((worker) => <tr key={worker.id}>
+          <td>{worker.label}</td>
+          <td><span className={"pill " + workerTone(worker)}>{WORKER_STATE_LABEL[worker.state]}{worker.health ? " · " + WORKER_HEALTH_LABEL[worker.health] : ""}</span>{worker.oomKilled && <span className="pill bad" style={{ marginLeft: ".4rem" }}>OOM</span>}</td>
+          <td>{worker.startedAt && snapshot.generatedAt ? formatUptime((Date.parse(snapshot.generatedAt) - Date.parse(worker.startedAt)) / 1000) : "—"}</td>
+          <td>{worker.cpuPercent == null ? "—" : formatPercent(worker.cpuPercent)}</td>
+          <td>{worker.memoryUsedBytes == null ? "—" : formatBytes(worker.memoryUsedBytes) + (worker.memoryLimitBytes ? " / " + formatBytes(worker.memoryLimitBytes) : "")}</td>
+          <td>{worker.pids ?? "—"}</td>
+          <td>{worker.restartCount}</td>
+        </tr>)}</tbody></table></div>
+      </section>}
       <h2 style={{ margin: "1.2rem 0 .8rem" }}>Disco</h2>
       <div className="cards">
         <article className="card"><p className="label">Capacidade</p><p className="value">{formatBytes(fs.totalBytes)}</p></article>
