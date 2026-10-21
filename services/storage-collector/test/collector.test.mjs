@@ -155,9 +155,9 @@ test("directory sources are static and cannot escape the allowlist", () => {
     }
   }
 });
-test("every layout exposes only ids the plugin accepts", () => {
-  const legacyIds = new Set(LAYOUTS.legacy.map((r) => r.id));
-  for (const dir of LAYOUTS.srv) assert.ok(legacyIds.has(dir.id), dir.id);
+test("every layout exposes exactly the same directory ids", () => {
+  const ids = (dirs) => dirs.map((r) => r.id).sort();
+  assert.deepEqual(ids(LAYOUTS.srv), ids(LAYOUTS.legacy));
 });
 test("layout selection defaults to legacy and rejects unknown names", () => {
   assert.equal(directoriesForLayout(undefined), LAYOUTS.legacy);

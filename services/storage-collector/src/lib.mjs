@@ -28,6 +28,10 @@ const SRV_DIRECTORIES = Object.freeze([
   { id: "repos", label: "Repositórios Git", path: "/srv/data/repos" },
   { id: "paperclip-backups", label: "Paperclip · backups", path: "/srv/backups" },
   { id: "builds", label: "Paperclip · builds", path: "/srv/build" },
+  // Same ids as legacy: a toolchain installed later on this host must be measured, and absent ones
+  // are reported as "missing", which the plugin UI does not render.
+  { id: "rust-toolchain", label: "Rust toolchains", path: "/root/.rustup" },
+  { id: "emsdk", label: "Emscripten SDK", path: "/opt/emsdk" },
   { id: "root-home", label: "Host · /root", path: "/root" },
 ]);
 export const LAYOUTS = Object.freeze({ legacy: LEGACY_DIRECTORIES, srv: SRV_DIRECTORIES });
