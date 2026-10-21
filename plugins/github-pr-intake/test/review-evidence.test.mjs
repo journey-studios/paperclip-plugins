@@ -154,5 +154,20 @@ test("after the waiting window a still-pending CI is reported as such, once", as
   await f.engine.reconcile();
   const updates = f.comments.filter((c) => /CI update for/.test(c.body));
   assert.equal(updates.length, 1);
-  assert.match(updates[0].body, /still pending after the waiting window/);
+  assert.match(updates[0].body, /still pending or unreadable after the waiting window/);
+});
+
+test("a transient error while following the CI does not end the follow-up", async () => {
+  const f = fixture();
+  f.setCi(checks(run("build", "in_progress")));
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+
+  f.failCi();
+  await f.engine.reconcile();
+  assert.equal(f.comments.length, 0, "no error comment for a transient failure");
+
+  f.failCi(false);
+  f.setCi(checks(run("build", "completed", "success")));
+  await f.engine.reconcile();
+  assert.equal(f.comments.filter((c) => /CI update for/.test(c.body)).length, 1, "the follow-up still happens once CI can be read");
 });

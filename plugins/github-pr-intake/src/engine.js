@@ -3,7 +3,7 @@ import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
 import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
-import { ciPending, buildCiUpdateComment } from "./review-evidence.js";
+import { buildCiUpdateComment, ciPending, ciUnavailable } from "./review-evidence.js";
 import { TRIAGE_MARKER, createTriageClient, formatTriageComment } from "./triage.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
@@ -365,8 +365,9 @@ export function createEngine(ctx, deps = {}) {
         if (!token) continue;
         const ci = await readCi(token, owner, name, entry.sha);
         const timedOut = now() - entry.startedAt > CI_WATCH_GIVE_UP_MS;
-        if (ciPending(ci) && !timedOut) continue;
-        await ctx.issues.createComment(entry.issueId, buildCiUpdateComment({ sha: entry.sha, ci, final: !ciPending(ci) }), entry.companyId);
+        // A read error or a momentarily unreadable CI is not a result: try again until the window closes.
+        if ((ciPending(ci) || ciUnavailable(ci)) && !timedOut) continue;
+        await ctx.issues.createComment(entry.issueId, buildCiUpdateComment({ sha: entry.sha, ci, final: !ciPending(ci) && !ciUnavailable(ci) }), entry.companyId);
         await store.saveCiWatch(key, { ...entry, status: "posted", postedAt: now() });
       } catch (error) {
         log.warn("github-pr-intake: CI watch step failed", { key, error: message(error) });

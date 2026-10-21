@@ -95,7 +95,7 @@ export function buildCiSection(ci, { final = false } = {}) {
 
 export function buildCiUpdateComment({ sha, ci, final }) {
   return [
-    `CI update for \`${sha.slice(0, 12)}\`${final ? "" : " (some checks still pending after the waiting window)"}.`,
+    `CI update for \`${sha.slice(0, 12)}\`${final ? "" : " (checks still pending or unreadable after the waiting window)"}.`,
     "",
     buildCiSection(ci, { final: true }).split("\n").slice(2).join("\n"),
   ].join("\n");
