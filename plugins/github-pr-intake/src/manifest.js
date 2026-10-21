@@ -67,7 +67,7 @@ const repository = {
 const manifest = {
   id: PLUGIN_KEY,
   apiVersion: 1,
-  version: "0.4.0",
+  version: "0.5.0",
   displayName: "GitHub PR intake",
   description:
     "Listen to GitHub pull requests (webhook plus reconciliation) and route each one to a Paperclip review agent.",

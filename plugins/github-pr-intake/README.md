@@ -82,6 +82,19 @@ publisher may use. The pull request itself is passed as untrusted data, never as
 
 Instead of static tokens, set `githubApp: { appId, privateKeyRef }` (the key is a Paperclip secret holding the PEM). The plugin then mints a short-lived installation token per repository and never falls back to `githubTokenRefs` if the App cannot. The App needs Pull requests (read/write), Contents (read) and Metadata (read), and the `pull_request` event pointed at this plugin's webhook.
 
+## What the reviewer receives
+
+The review issue is self-contained, so the reviewing agent needs no GitHub credentials:
+
+- the pull request's **diff** (bounded: 6000 characters per file, about 48000 in total; binary or very large files are
+  listed as having no textual diff), fenced so nothing in it can close the fence, with HTML comment delimiters neutralized;
+- the **CI evidence** at the head commit (check runs and commit statuses). If checks are still running, the plugin adds
+  one comment to the issue with their final result (waiting up to 45 minutes); nothing is added to a finished issue or
+  for a head that is no longer under review. If the CI cannot be read, the package says so and asks for a PARTIAL gate.
+
+Reading checks needs the GitHub App permissions **Checks: Read-only** and **Commit statuses: Read-only**. Without them
+the package states that CI is unavailable and the review proceeds.
+
 ## Quick triage (optional)
 
 A repository can also get a fast, advisory comment from a second reviewer (PR-Agent, served by `services/pr-triage`).

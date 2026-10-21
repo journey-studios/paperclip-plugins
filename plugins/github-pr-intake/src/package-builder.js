@@ -1,4 +1,5 @@
 import { INTAKE_MARKER, VERDICT_MARKER } from "./constants.js";
+import { buildCiSection, buildDiffSection } from "./review-evidence.js";
 
 const MAX_LISTED_FILES = 60;
 const OUTCOMES_BY_AUTHORITY = {
@@ -68,7 +69,7 @@ function verdictInstructions(pull, repoCfg) {
   ];
 }
 
-export function buildIssueBody({ pull, files, repoCfg, round, filesTruncated = false }) {
+export function buildIssueBody({ pull, files, repoCfg, round, filesTruncated = false, ci }) {
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
   const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
   return [
@@ -87,19 +88,24 @@ export function buildIssueBody({ pull, files, repoCfg, round, filesTruncated = f
     "## Changed files",
     ...fileLines(files),
     "",
+    buildCiSection(ci),
+    "",
+    buildDiffSection(files),
+    "",
     "## Review package notes",
     repoCfg.deliveryNotes ||
-      "Check the PR's CI/checks on GitHub when they exist. If none are available, run lint, typecheck and tests yourself in an isolated workspace and report the results.",
+      "The diff and the CI evidence are included above, so no GitHub access is needed. If something you need is missing from this package, report it (PARTIAL or BLOCKED) instead of looking for credentials; never read server code or decrypt secrets. Run lint, typecheck and tests yourself in an isolated workspace when they apply.",
     "",
     ...verdictInstructions(pull, repoCfg),
   ].join("\n");
 }
 
-export function buildNewHeadComment({ pull, round, maxRounds }) {
+export function buildNewHeadComment({ pull, round, maxRounds, files, ci }) {
   return [
     `New commits were pushed to ${pull.url}.`,
     `Review round ${round} of ${maxRounds}: head is now \`${pull.headSha}\`.`,
     "Any earlier verdict no longer applies. Re-review this SHA and post a new verdict block.",
+    ...(files ? ["", buildCiSection(ci), "", buildDiffSection(files)] : []),
   ].join("\n");
 }
 

@@ -1,6 +1,9 @@
 const API = "https://api.github.com";
 const MAX_FILE_PAGES = 10;
 const MAX_LIST_PAGES = 3;
+// Patches are kept only up to a total budget: the review package shows a bounded diff anyway.
+const MAX_PATCH_PER_FILE = 20_000;
+const MAX_PATCH_TOTAL = 120_000;
 
 function headers(token, extra = {}) {
   return {
@@ -41,6 +44,7 @@ export function createGithubClient(ctx) {
     /** @returns {Promise<{ files: object[], truncated: boolean }>} `truncated` means more files exist than were read. */
     async listPullFiles(token, owner, repo, number) {
       const files = [];
+      let patchBudget = MAX_PATCH_TOTAL;
       let truncated = false;
       for (let page = 1; page <= MAX_FILE_PAGES; page += 1) {
         const response = await get(token, `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`);
@@ -52,12 +56,39 @@ export function createGithubClient(ctx) {
             status: String(file.status ?? ""),
             additions: Number(file.additions ?? 0),
             deletions: Number(file.deletions ?? 0),
+            // Binary and very large files come without a patch.
+            patch: typeof file.patch === "string" && patchBudget > 0 ? file.patch.slice(0, Math.min(MAX_PATCH_PER_FILE, patchBudget)) : undefined,
           });
+          if (typeof file.patch === "string") patchBudget -= Math.min(file.patch.length, MAX_PATCH_PER_FILE);
         }
         if (batch.length < 100) break;
         if (page === MAX_FILE_PAGES) truncated = true;
       }
       return { files, truncated };
+    },
+
+    /**
+     * Check runs of a commit. Without the App's "Checks" permission GitHub answers 403/404: that is reported as
+     * unavailable (the review package says so) instead of failing the review request.
+     */
+    async listCheckRuns(token, owner, repo, sha) {
+      const response = await get(token, `/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`);
+      if (response.status === 403 || response.status === 404) return { available: false };
+      if (!response.ok) throw await failure(response, "check runs fetch");
+      const body = await response.json();
+      return {
+        available: true,
+        runs: (body.check_runs ?? []).map((run) => ({ name: String(run.name ?? ""), status: String(run.status ?? ""), conclusion: run.conclusion ?? null })),
+      };
+    },
+
+    /** Legacy commit statuses (some CI systems report only these). Same 403/404 handling as `listCheckRuns`. */
+    async getCommitStatus(token, owner, repo, sha) {
+      const response = await get(token, `/repos/${owner}/${repo}/commits/${sha}/status?per_page=100`);
+      if (response.status === 403 || response.status === 404) return { available: false };
+      if (!response.ok) throw await failure(response, "commit status fetch");
+      const body = await response.json();
+      return { available: true, statuses: (body.statuses ?? []).map((s) => ({ context: String(s.context ?? ""), state: String(s.state ?? "") })) };
     },
 
     /** Comments of a pull request's conversation (the issue-comments API), newest page last. */

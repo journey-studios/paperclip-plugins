@@ -122,6 +122,8 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
 
   const calls = { getPull: 0, tokens: [] };
   const issueComments = [];
+  let ci = { checks: { available: true, runs: [] }, statuses: { available: true, statuses: [] } };
+  let ciFails = false;
   const github = {
     getPull: async (token, _o, _r, number) => {
       calls.getPull += 1;
@@ -132,11 +134,16 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
     listPullFiles: async (_t, _o, _r, number) => {
       const entry = files.get(number);
       return {
-        files: structuredClone(entry?.list ?? [{ filename: "src/app.ts", status: "modified", additions: 3, deletions: 1 }]),
+        files: structuredClone(entry?.list ?? [{ filename: "src/app.ts", status: "modified", additions: 3, deletions: 1, patch: "@@ -1,2 +1,2 @@\n-const a = 1\n+const a = 2" }]),
         truncated: entry?.truncated ?? false,
       };
     },
     listOpenPulls: async () => structuredClone(listing),
+    listCheckRuns: async () => {
+      if (ciFails) throw new Error("GitHub down");
+      return structuredClone(ci.checks);
+    },
+    getCommitStatus: async () => structuredClone(ci.statuses),
     // The pull request conversation, as GitHub's issue-comments API shows it.
     listIssueComments: async () => structuredClone(issueComments),
     createIssueComment: async (_t, _o, _r, number, body) => {
@@ -159,6 +166,8 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
     dropPull: (number) => pulls.delete(number),
     setFiles: (number, list, truncated = false) => files.set(number, { list, truncated }),
     setListing: (next) => { listing = next; },
+    setCi: (next) => { ci = { ...ci, ...next }; },
+    failCi: (value = true) => { ciFails = value; },
     setToken: (available) => { tokenAvailable = available; },
     advance: (ms) => { clock.t += ms; },
     // Opens a PR end to end: stores it on the fake GitHub, delivers the event and processes the queue.
