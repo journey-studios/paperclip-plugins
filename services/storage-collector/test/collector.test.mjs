@@ -217,3 +217,6 @@ test("the directory allowlist file must be a root-owned regular file that others
   assert.throws(() => assertTrustedConfigFile(file(0o100644, 1000)), /root/);
   assert.throws(() => assertTrustedConfigFile(file(0o040755, 0, false)), /regular/);
 });
+test("the default directories satisfy the same rules as an operator config", () => {
+  assert.deepEqual(parseDirectoryConfig(JSON.stringify(DIRECTORIES)).map((row) => row.id), DIRECTORIES.map((row) => row.id));
+});

@@ -7,11 +7,11 @@ export const DIRECTORIES = Object.freeze([
   { id: "docker-data", label: "Docker · dados", path: "/var/lib/docker" },
   { id: "containerd", label: "Containerd", path: "/var/lib/containerd" },
   { id: "logs", label: "Logs do sistema", path: "/var/log" },
-  { id: "home", label: "Usuários (/home)", path: "/home" },
-  { id: "root-home", label: "Host · /root", path: "/root" },
-  { id: "opt", label: "Aplicações (/opt)", path: "/opt" },
-  { id: "srv", label: "Serviços (/srv)", path: "/srv" },
-  { id: "www", label: "Sites (/var/www)", path: "/var/www" },
+  { id: "home", label: "Usuários (home)", path: "/home" },
+  { id: "root-home", label: "Host · root", path: "/root" },
+  { id: "opt", label: "Aplicações (opt)", path: "/opt" },
+  { id: "srv", label: "Serviços (srv)", path: "/srv" },
+  { id: "www", label: "Sites (www)", path: "/var/www" },
 ]);
 export const MAX_DIRECTORIES = 30;
 const DIRECTORY_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
