@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-storage-manager",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Read-only VPS status (disk, CPU, memory, Docker) for Paperclip",
