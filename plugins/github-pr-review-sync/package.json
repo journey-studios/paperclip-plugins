@@ -1,12 +1,12 @@
 {
   "name": "@journey-studios/github-pr-review-sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Sync Paperclip native review decisions to formal GitHub pull request reviews (JOU-490).",
   "license": "MIT",
   "engines": { "node": ">=24.11.0" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "migrations", "README.md"],
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test",
