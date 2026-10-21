@@ -1,5 +1,8 @@
 // Host collector: a strictly allowlisted, read-only inventory. No arbitrary user paths.
-export const DIRECTORIES = Object.freeze([
+// Allowlists per host layout. "legacy" is the original GreenCloud VPS (Docker named volumes + /opt);
+// "srv" is the Contabo VPS where Paperclip data lives in bind mounts under /srv. Ids stay identical
+// across layouts because the plugin only accepts a fixed set of directory ids.
+const LEGACY_DIRECTORIES = Object.freeze([
   { id: "containerd", label: "Containerd", path: "/var/lib/containerd" },
   { id: "containerd-snapshots", label: "Containerd · snapshots", path: "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs" },
   { id: "containerd-content", label: "Containerd · blobs", path: "/var/lib/containerd/io.containerd.content.v1.content" },
@@ -14,6 +17,27 @@ export const DIRECTORIES = Object.freeze([
   { id: "emsdk", label: "Emscripten SDK", path: "/opt/emsdk" },
   { id: "root-home", label: "Host · /root", path: "/root" },
 ]);
+const SRV_DIRECTORIES = Object.freeze([
+  { id: "containerd", label: "Containerd", path: "/var/lib/containerd" },
+  { id: "containerd-snapshots", label: "Containerd · snapshots", path: "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs" },
+  { id: "containerd-content", label: "Containerd · blobs", path: "/var/lib/containerd/io.containerd.content.v1.content" },
+  { id: "docker-volumes", label: "Docker · volumes", path: "/var/lib/docker/volumes" },
+  { id: "paperclip-data", label: "Paperclip · dados persistentes", path: "/srv/data/paperclip_data" },
+  { id: "paperclip-pnpm", label: "Paperclip · pnpm store", path: "/srv/data/paperclip_data/.local/share/pnpm/store" },
+  { id: "paperclip-projects", label: "Paperclip · projetos", path: "/srv/data/paperclip_data/instances/default/projects" },
+  { id: "repos", label: "Repositórios Git", path: "/srv/data/repos" },
+  { id: "paperclip-backups", label: "Paperclip · backups", path: "/srv/backups" },
+  { id: "builds", label: "Paperclip · builds", path: "/srv/build" },
+  { id: "root-home", label: "Host · /root", path: "/root" },
+]);
+export const LAYOUTS = Object.freeze({ legacy: LEGACY_DIRECTORIES, srv: SRV_DIRECTORIES });
+export const DIRECTORIES = LEGACY_DIRECTORIES;
+// An unknown layout must fail loudly: silently falling back would report missing directories as real data.
+export function directoriesForLayout(name) {
+  const layout = name === undefined || name === "" ? "legacy" : name;
+  if (!Object.hasOwn(LAYOUTS, layout)) throw new Error("Unknown STORAGE_LAYOUT");
+  return LAYOUTS[layout];
+}
 const DOCKER_KINDS = {
   Images: { id: "images", label: "Imagens" },
   Containers: { id: "containers", label: "Containers" },

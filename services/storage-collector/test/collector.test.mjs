@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDocker, parseDu, parseHumanBytes } from "../src/lib.mjs";
+import { collect, DIRECTORIES, directoriesForLayout, inspectDirectory, LAYOUTS, makeHistory, parseAlertPolicy, parseDf, parseDocker, parseDu, parseHumanBytes } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -145,10 +145,24 @@ test("alert thresholds are explicitly opted in and ordered", () => {
   assert.throws(() => parseAlertPolicy({ STORAGE_WARN_FREE_BYTES: "2", STORAGE_CRITICAL_FREE_BYTES: "5" }), /exceed/);
 });
 test("directory sources are static and cannot escape the allowlist", () => {
-  assert.equal(DIRECTORIES.length, new Set(DIRECTORIES.map((r) => r.id)).size);
-  for (const dir of DIRECTORIES) {
-    assert.ok(dir.path.startsWith("/"));
-    assert.ok(!dir.path.includes(".."));
-    assert.ok(!/\/\/(?:$|[^/])/.test(dir.path));
+  assert.equal(DIRECTORIES, LAYOUTS.legacy);
+  for (const [name, dirs] of Object.entries(LAYOUTS)) {
+    assert.equal(dirs.length, new Set(dirs.map((r) => r.id)).size, name);
+    for (const dir of dirs) {
+      assert.ok(dir.path.startsWith("/"));
+      assert.ok(!dir.path.includes(".."));
+      assert.ok(!/\/\/(?:$|[^/])/.test(dir.path));
+    }
   }
+});
+test("every layout exposes only ids the plugin accepts", () => {
+  const legacyIds = new Set(LAYOUTS.legacy.map((r) => r.id));
+  for (const dir of LAYOUTS.srv) assert.ok(legacyIds.has(dir.id), dir.id);
+});
+test("layout selection defaults to legacy and rejects unknown names", () => {
+  assert.equal(directoriesForLayout(undefined), LAYOUTS.legacy);
+  assert.equal(directoriesForLayout(""), LAYOUTS.legacy);
+  assert.equal(directoriesForLayout("srv"), LAYOUTS.srv);
+  assert.throws(() => directoriesForLayout("../etc"), /Unknown STORAGE_LAYOUT/);
+  assert.throws(() => directoriesForLayout("toString"), /Unknown STORAGE_LAYOUT/);
 });

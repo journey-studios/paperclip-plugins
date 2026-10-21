@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { access, chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { collect, inspectDirectory, makeHistory, parseAlertPolicy } from "./lib.mjs";
+import { collect, directoriesForLayout, inspectDirectory, makeHistory, parseAlertPolicy } from "./lib.mjs";
 
 const exec = promisify(execFile);
 const outDir = process.env.STORAGE_OUTPUT_DIR || "/var/lib/paperclip-storage-manager";
@@ -34,6 +34,7 @@ async function save(snapshot) {
 const policy = parseAlertPolicy(process.env);
 const snapshot = await collect({
   run, alertPolicy: policy,
+  directories: directoriesForLayout(process.env.STORAGE_LAYOUT),
   inspect: (path) => inspectDirectory(path, access),
 });
 snapshot.history = makeHistory(await current(), snapshot);

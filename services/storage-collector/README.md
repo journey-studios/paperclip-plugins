@@ -21,6 +21,12 @@ A standalone VPS-side collector for [Storage Manager](../../plugins/storage-mana
    Merge this entry with existing volumes. Validate `docker compose config` before any recreation; preserve existing runtime image, adapter, mounts and env. **No host root, Docker socket, /var/lib/docker, or /var/lib/containerd is mounted.**
 7. Install the packaged Storage Manager plugin and configure its declared **storage-snapshot** local folder via native Paperclip Plugin Settings to `/run/paperclip-storage` for the intended company, read-only. Validate `/storage`, native tool calls and company isolation. Unconfigured state is an expected first-run result.
 
+## Hosts that keep data under `/srv`
+
+Set `STORAGE_LAYOUT=srv` to scan the bind-mount layout (`/srv/data/paperclip_data`, `/srv/data/repos`, `/srv/backups`, `/srv/build`) instead of the original Docker-volume paths. The default (`legacy`) is unchanged, and an unknown value aborts the run instead of reporting missing directories. The plugin only accepts a fixed set of directory ids, so both layouts use the same ids.
+
+[`systemd/srv-layout.conf`](systemd/srv-layout.conf) is a ready drop-in that also points `STORAGE_OUTPUT_DIR` at `/srv/data/storage-manager` (already mounted read-only into the app as `/run/paperclip-storage`, so the Compose file does not change) and at a Node binary under `/opt/node`.
+
 ## Operating boundaries
 
 - Read-only monitoring is the only shipped capability. No automatic cleanup or retention changes.
