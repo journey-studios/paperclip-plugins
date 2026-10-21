@@ -33,7 +33,6 @@ const repository = {
   additionalProperties: false,
   properties: {
     fullName: { type: "string", title: "owner/repo" },
-    companyId: { type: "string", title: "Paperclip company id" },
     projectId: { type: "string", title: "Project for the review issues (optional)" },
     defaultReviewerAgentId: { type: "string", title: "Default reviewer agent id" },
     rules: { type: "array", items: rule, title: "Routing rules" },
@@ -51,14 +50,19 @@ const repository = {
     maxRoundsPerPr: { type: "integer", minimum: 1, default: 3, title: "Review rounds per PR" },
     killSwitch: { type: "boolean", default: false, title: "Pause reviews for this repository" },
     deliveryNotes: { type: "string", title: "Extra notes added to every review package" },
+    reviewExistingPullRequests: {
+      type: "boolean",
+      default: false,
+      title: "Also review pull requests that were already open when the repository was added",
+    },
   },
-  required: ["fullName", "companyId", "defaultReviewerAgentId"],
+  required: ["fullName", "defaultReviewerAgentId"],
 };
 
 const manifest = {
   id: PLUGIN_KEY,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "GitHub PR intake",
   description:
     "Listen to GitHub pull requests (webhook plus reconciliation) and route each one to a Paperclip review agent.",
@@ -66,6 +70,7 @@ const manifest = {
   categories: ["automation", "connector"],
   capabilities: [
     "webhooks.receive",
+    "companies.read",
     "secrets.read-ref",
     "http.outbound",
     "jobs.schedule",
@@ -97,7 +102,7 @@ const manifest = {
     type: "object",
     additionalProperties: false,
     properties: {
-      killSwitch: { type: "boolean", default: false, title: "Pause every review" },
+      killSwitch: { type: "boolean", default: false, title: "Pause every repository of this company" },
       webhookSecretRef: { ...secretRef, title: "GitHub webhook secret" },
       githubTokenRefs: {
         type: "object",

@@ -1,5 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { normalizeConfig, validateConfig } from "./config.js";
+import { loadConfig } from "./company-config.js";
+import { validateConfig } from "./config.js";
 import { createEngine } from "./engine.js";
 import { handleWebhook } from "./webhook.js";
 
@@ -28,12 +29,11 @@ const plugin = definePlugin({
 
   async onHealth() {
     if (!current) return { status: "degraded", message: "worker not ready" };
-    const config = normalizeConfig(await current.ctx.config.get());
+    const { repositories } = await loadConfig(current.ctx);
+    const paused = [...repositories.values()].filter((repo) => repo.killSwitch).length;
     return {
       status: "ok",
-      message: config.killSwitch
-        ? "Paused (global kill switch)"
-        : `Listening for ${config.repositories.size} configured repositor${config.repositories.size === 1 ? "y" : "ies"}`,
+      message: `Listening for ${repositories.size} configured repositor${repositories.size === 1 ? "y" : "ies"}${paused ? ` (${paused} paused)` : ""}`,
     };
   },
 });

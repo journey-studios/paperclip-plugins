@@ -7,9 +7,9 @@ const TOP_LEVEL_KEYS = new Set([
   "maxConcurrentReviews",
   "repositories",
 ]);
+// The company is the one the configuration belongs to (the host stores plugin config per company).
 const REPO_KEYS = new Set([
   "fullName",
-  "companyId",
   "projectId",
   "defaultReviewerAgentId",
   "rules",
@@ -22,6 +22,7 @@ const REPO_KEYS = new Set([
   "maxRoundsPerPr",
   "killSwitch",
   "deliveryNotes",
+  "reviewExistingPullRequests",
 ]);
 const RULE_KEYS = new Set(["reviewerAgentId", "paths", "labels", "authors", "baseBranches"]);
 
@@ -72,12 +73,14 @@ export function validateConfig(value) {
     } else {
       seen.add(r.fullName.toLowerCase());
     }
-    if (typeof r.companyId !== "string" || !r.companyId) errors.push(`${at}.companyId is required`);
     if (typeof r.defaultReviewerAgentId !== "string" || !r.defaultReviewerAgentId) {
       errors.push(`${at}.defaultReviewerAgentId is required`);
     }
     if (r.authority !== undefined && !AUTHORITIES.includes(r.authority)) {
       errors.push(`${at}.authority must be one of ${AUTHORITIES.join(", ")}`);
+    }
+    if (r.reviewExistingPullRequests !== undefined && typeof r.reviewExistingPullRequests !== "boolean") {
+      errors.push(`${at}.reviewExistingPullRequests must be a boolean`);
     }
     if (
       r.debounceSeconds !== undefined &&
@@ -98,16 +101,30 @@ export function validateConfig(value) {
   return { ok: errors.length === 0, errors };
 }
 
-/** Applies defaults and indexes repositories by lower-cased full name. */
-export function normalizeConfig(raw) {
+/**
+ * Applies defaults to one company's configuration and indexes its repositories by lower-cased full name.
+ * Company-wide settings (token refs, concurrency cap, kill switch) are copied onto each repository so
+ * the rest of the plugin only ever deals with a repository.
+ */
+export function normalizeConfig(raw, companyId) {
   const config = record(raw);
   const repositories = new Map();
+  const tokenRefs = {};
+  for (const [owner, ref] of Object.entries(record(config.githubTokenRefs))) {
+    if (isSecretRef(ref)) tokenRefs[owner.toLowerCase()] = ref;
+  }
+  const maxConcurrentReviews =
+    Number.isInteger(config.maxConcurrentReviews) && config.maxConcurrentReviews >= 1
+      ? config.maxConcurrentReviews
+      : 3;
   for (const item of Array.isArray(config.repositories) ? config.repositories : []) {
     const r = record(item);
     if (typeof r.fullName !== "string") continue;
     repositories.set(r.fullName.toLowerCase(), {
       fullName: r.fullName,
-      companyId: r.companyId,
+      companyId,
+      tokenRefs,
+      maxConcurrentReviews,
       projectId: typeof r.projectId === "string" ? r.projectId : undefined,
       defaultReviewerAgentId: r.defaultReviewerAgentId,
       rules: (Array.isArray(r.rules) ? r.rules : []).map((rule) => ({
@@ -127,22 +144,33 @@ export function normalizeConfig(raw) {
           ? Math.min(r.debounceSeconds, MAX_DEBOUNCE_SECONDS)
           : 60,
       maxRoundsPerPr: Number.isInteger(r.maxRoundsPerPr) && r.maxRoundsPerPr >= 1 ? r.maxRoundsPerPr : 3,
-      killSwitch: r.killSwitch === true,
+      // The company-wide kill switch pauses every repository of that company.
+      killSwitch: r.killSwitch === true || config.killSwitch === true,
       deliveryNotes: typeof r.deliveryNotes === "string" ? r.deliveryNotes : "",
+      reviewExistingPullRequests: r.reviewExistingPullRequests === true,
     });
   }
-  const tokenRefs = {};
-  for (const [owner, ref] of Object.entries(record(config.githubTokenRefs))) {
-    if (isSecretRef(ref)) tokenRefs[owner.toLowerCase()] = ref;
-  }
   return {
-    killSwitch: config.killSwitch === true,
+    companyId,
     webhookSecretRef: isSecretRef(config.webhookSecretRef) ? config.webhookSecretRef : null,
-    githubTokenRefs: tokenRefs,
-    maxConcurrentReviews:
-      Number.isInteger(config.maxConcurrentReviews) && config.maxConcurrentReviews >= 1
-        ? config.maxConcurrentReviews
-        : 3,
     repositories,
   };
+}
+
+/**
+ * Combines the per-company configurations. A repository belongs to one company: if two companies
+ * list it, the first wins and the duplicate is reported rather than silently shared.
+ */
+export function mergeCompanyConfigs(configs) {
+  const repositories = new Map();
+  const webhookSecrets = [];
+  const duplicates = [];
+  for (const config of configs) {
+    if (config.webhookSecretRef) webhookSecrets.push({ companyId: config.companyId, ref: config.webhookSecretRef });
+    for (const [key, repo] of config.repositories) {
+      if (repositories.has(key)) duplicates.push(repo.fullName);
+      else repositories.set(key, repo);
+    }
+  }
+  return { repositories, webhookSecrets, duplicates };
 }

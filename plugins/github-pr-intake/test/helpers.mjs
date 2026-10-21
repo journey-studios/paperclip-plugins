@@ -7,16 +7,21 @@ export const CEO = "agent-ceo";
 const TOKEN_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000001" };
 const WEBHOOK_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000002" };
 export const WEBHOOK_SECRET = "test-webhook-secret";
+export const OTHER_COMPANY = "company-b";
+export const OTHER_WEBHOOK_SECRET = "other-company-secret";
+export const OTHER_WEBHOOK_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000003" };
+export const OTHER_TOKEN_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000004" };
 
 export function repoConfig(overrides = {}) {
   return {
     fullName: "wallynm/tesselapp",
-    companyId: COMPANY,
     projectId: "project-1",
     defaultReviewerAgentId: THERMO,
     authority: "approve",
     debounceSeconds: 60,
     maxRoundsPerPr: 3,
+    // Most tests exercise the review flow; the baseline behaviour has its own tests.
+    reviewExistingPullRequests: true,
     ...overrides,
   };
 }
@@ -40,7 +45,7 @@ export function pullEvent(action, raw, deliveryId = `d-${Math.random()}`, repo =
 }
 
 /** Builds an engine on top of in-memory fakes with a controllable clock. */
-export function fixture({ config = {}, wakeQueued = true } = {}) {
+export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } = {}) {
   const clock = { t: 1_000_000 };
   const state = new Map();
   const issues = [];
@@ -60,11 +65,21 @@ export function fixture({ config = {}, wakeQueued = true } = {}) {
     ...config,
   };
 
+  // Mirrors the real host: configuration is per company and every call that needs a company says so.
   const ctx = {
-    config: { get: async () => cfg },
+    companies: { list: async () => [{ id: COMPANY }, ...Object.keys(otherCompanies).map((id) => ({ id }))] },
+    config: {
+      get: async (companyId) => {
+        if (!companyId) throw new Error('Plugin is not allowed to perform "config.get": company context is required');
+        if (companyId === COMPANY) return cfg;
+        return otherCompanies[companyId] ?? {};
+      },
+    },
     secrets: {
-      resolve: async (ref) => {
+      resolve: async (ref, options) => {
+        if (!options?.companyId) throw new Error("secrets.resolve: company context is required");
         if (ref.secretId === WEBHOOK_REF.secretId) return WEBHOOK_SECRET;
+        if (ref.secretId === OTHER_WEBHOOK_REF.secretId) return OTHER_WEBHOOK_SECRET;
         return tokenAvailable ? "gh-token" : "";
       },
     },

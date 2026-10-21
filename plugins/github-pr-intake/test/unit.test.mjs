@@ -4,7 +4,7 @@ import { createHmac } from "node:crypto";
 import { verifyGithubSignature, headerValue } from "../src/signature.js";
 import { globToRegExp, matchesAny } from "../src/glob.js";
 import { normalizeWebhook, normalizePull } from "../src/events.js";
-import { normalizeConfig, validateConfig } from "../src/config.js";
+import { mergeCompanyConfigs, normalizeConfig, validateConfig } from "../src/config.js";
 import { decideReview } from "../src/routing.js";
 import { buildIssueBody, issueTitle } from "../src/package-builder.js";
 import { rawPull, repoConfig, THERMO, CEO } from "./helpers.mjs";
@@ -75,8 +75,9 @@ test("validateConfig reports each problem and normalizeConfig applies safe defau
   const dup = validateConfig({ repositories: [repoConfig(), repoConfig({ fullName: "WALLYNM/tesselapp" })] });
   assert.ok(dup.errors.some((e) => e.includes("duplicated")));
 
-  const config = normalizeConfig({ repositories: [{ fullName: "A/B", companyId: "c", defaultReviewerAgentId: "x" }] });
+  const config = normalizeConfig({ repositories: [{ fullName: "A/B", defaultReviewerAgentId: "x" }] }, "company-a");
   const repo = config.repositories.get("a/b");
+  assert.equal(repo.companyId, "company-a", "the company comes from where the configuration is stored");
   assert.equal(repo.authority, "comment", "default authority is the least privileged");
   assert.deepEqual(repo.skipLabels, ["skip-review"]);
   assert.equal(repo.debounceSeconds, 60);
@@ -92,7 +93,7 @@ test("debounceSeconds is capped at 600 in validation, normalization and the mani
     assert.equal(check(bad).ok, false, `${String(bad)} must be rejected`);
     assert.ok(check(bad).errors.some((e) => e.includes("debounceSeconds")));
   }
-  const repo = (value) => normalizeConfig({ repositories: [repoConfig({ debounceSeconds: value })] }).repositories.get("wallynm/tesselapp");
+  const repo = (value) => normalizeConfig({ repositories: [repoConfig({ debounceSeconds: value })] }, "company-a").repositories.get("wallynm/tesselapp");
   assert.equal(repo(99_999).debounceSeconds, 600, "an out-of-range stored value is clamped");
   assert.equal(repo(30).debounceSeconds, 30);
   assert.equal(repo(undefined).debounceSeconds, 60);
@@ -103,10 +104,10 @@ test("debounceSeconds is capped at 600 in validation, normalization and the mani
   assert.equal(schema.default, 60);
 });
 
-const config = (repo = {}) => normalizeConfig({ repositories: [repoConfig(repo)] });
+const config = (repo = {}) => normalizeConfig({ repositories: [repoConfig(repo)] }, "company-a");
 const decide = (repo, raw, files) => {
   const c = config(repo);
-  return decideReview(c, c.repositories.get("wallynm/tesselapp"), normalizePull("wallynm/tesselapp", raw), files);
+  return decideReview(c.repositories.get("wallynm/tesselapp"), normalizePull("wallynm/tesselapp", raw), files);
 };
 
 test("routing skips drafts, closed PRs, skip labels, bots, other base branches and ignored-only changes", () => {
@@ -124,8 +125,9 @@ test("routing skips drafts, closed PRs, skip labels, bots, other base branches a
 });
 
 test("routing honours the kill switches", () => {
-  const c = normalizeConfig({ killSwitch: true, repositories: [repoConfig()] });
-  assert.equal(decideReview(c, c.repositories.get("wallynm/tesselapp"), normalizePull("wallynm/tesselapp", rawPull()), null).reason, "kill_switch");
+  // The company-wide switch pauses every repository of that company.
+  const c = normalizeConfig({ killSwitch: true, repositories: [repoConfig()] }, "company-a");
+  assert.equal(decideReview(c.repositories.get("wallynm/tesselapp"), normalizePull("wallynm/tesselapp", rawPull()), null).reason, "kill_switch");
   assert.equal(decide({ killSwitch: true }, rawPull()).reason, "kill_switch");
 });
 
@@ -157,4 +159,44 @@ test("issue package carries the PR as data, the authority cap and the verdict co
   assert.match(body, /untrusted/i);
   assert.doesNotMatch(issueTitle(pull), /\n/);
   assert.ok(issueTitle(normalizePull("o/r", rawPull({ title: "x".repeat(500) }))).length < 160);
+});
+
+test("company configurations merge: a repository belongs to one company and secrets stay with their company", () => {
+  const a = normalizeConfig({ webhookSecretRef: { type: "secret_ref", secretId: "s-a" }, repositories: [repoConfig()] }, "company-a");
+  const b = normalizeConfig(
+    { webhookSecretRef: { type: "secret_ref", secretId: "s-b" }, repositories: [repoConfig(), repoConfig({ fullName: "o/other" })] },
+    "company-b",
+  );
+  const merged = mergeCompanyConfigs([a, b]);
+  assert.equal(merged.repositories.get("wallynm/tesselapp").companyId, "company-a", "the first company keeps a shared repository");
+  assert.equal(merged.repositories.get("o/other").companyId, "company-b");
+  assert.deepEqual(merged.duplicates, ["wallynm/tesselapp"]);
+  assert.deepEqual(merged.webhookSecrets.map((s) => s.companyId), ["company-a", "company-b"]);
+  assert.equal(validateConfig({ repositories: [{ fullName: "o/r", companyId: "x", defaultReviewerAgentId: "a" }] }).ok, false, "companyId is no longer a repository setting");
+});
+
+test("company configurations are read concurrently but merged in company order", async () => {
+  const { loadConfig } = await import("../src/company-config.js");
+  const delays = { "company-a": 30, "company-b": 1 }; // B answers first
+  const started = [];
+  const finished = [];
+  const ctx = {
+    companies: { list: async () => [{ id: "company-a" }, { id: "company-b" }, { id: "company-empty" }] },
+    config: {
+      get: async (id) => {
+        started.push(id);
+        await new Promise((resolve) => setTimeout(resolve, delays[id] ?? 0));
+        finished.push(id);
+        if (id === "company-empty") return {};
+        return { webhookSecretRef: { type: "secret_ref", secretId: `s-${id}` }, repositories: [repoConfig()] };
+      },
+    },
+    logger: { warn() {} },
+  };
+  const merged = await loadConfig(ctx);
+  assert.deepEqual(started, ["company-a", "company-b", "company-empty"]);
+  assert.ok(finished.indexOf("company-b") < finished.indexOf("company-a"), "B finished before A: the reads overlapped instead of running one after another");
+  assert.deepEqual(merged.webhookSecrets.map((s) => s.companyId), ["company-a", "company-b"], "company order is kept");
+  assert.equal(merged.repositories.get("wallynm/tesselapp").companyId, "company-a", "the first company wins the duplicate even if the second answered first");
+  assert.deepEqual(merged.duplicates, ["wallynm/tesselapp"]);
 });
