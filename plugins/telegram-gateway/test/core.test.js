@@ -921,6 +921,40 @@ test("marked plugin comments are ignored to prevent event loops", async () => {
   assert.deepEqual(ctx.inspect.wakes, []);
 });
 
+test("FOUNDER_ATTENTION comment on issue wakes liaison with P1 founder.attention", async () => {
+  const ctx = makeContext({
+    companyA: {
+      liaisonAgentId: "liaison-a",
+      founderUserId: "founder-a",
+      conversationIssueId: "chat-a",
+      publicationEnabled: true,
+    },
+  }, {
+    "companyA:chat-a": chat("chat-a", "source:telegram:room-a"),
+    "companyA:issue-a": {
+      id: "issue-a",
+      companyId: "companyA",
+      identifier: "JOU-124",
+      comments: [{
+        id: "storage-comment",
+        body: "FOUNDER_ATTENTION: Storage watch\n\nDisk pressure details.",
+      }],
+    },
+  });
+  await processEvent(ctx, {
+    eventId: "storage-attention-event",
+    eventType: "issue.comment.created",
+    entityId: "issue-a",
+    companyId: "companyA",
+    payload: { commentId: "storage-comment" },
+  });
+  assert.equal(ctx.inspect.wakes.length, 1);
+  assert.equal(ctx.inspect.wakes[0].options.reason, "founder_comms_event");
+  assert.match(ctx.inspect.comments[0].body, /priority=P1/);
+  assert.match(ctx.inspect.comments[0].body, /event=founder\.attention/);
+  assert.match(ctx.inspect.comments[0].body, /Storage watch/);
+});
+
 const founderCommsEvent = { eventId: "retry-event", eventType: "budget.incident.opened", entityId: "incident-a", companyId: "companyA" };
 const founderCommsConfig = { companyA: { liaisonAgentId: "liaison-a", founderUserId: "founder-a", conversationIssueId: "chat-a" } };
 const founderCommsIssues = () => ({ "companyA:chat-a": chat("chat-a", "source:telegram:room-a") });
