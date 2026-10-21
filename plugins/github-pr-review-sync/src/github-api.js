@@ -15,6 +15,7 @@ export async function fetchPull(ctx, token, owner, repo, number) {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${token}`,
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "journey-studios-github-pr-review-sync",
       },
     },
   );
@@ -38,6 +39,7 @@ export async function fetchAuthenticatedLogin(ctx, token) {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "journey-studios-github-pr-review-sync",
     },
   });
   if (!response.ok) return null;
@@ -64,6 +66,7 @@ export async function submitFormalReview(ctx, input) {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${token}`,
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "journey-studios-github-pr-review-sync",
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
