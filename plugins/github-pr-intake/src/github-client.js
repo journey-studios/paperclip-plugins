@@ -4,6 +4,8 @@ const MAX_LIST_PAGES = 3;
 
 function headers(token, extra = {}) {
   return {
+    // GitHub rejects requests without a User-Agent with a 403.
+    "User-Agent": "journey-studios-github-pr-intake",
     Accept: "application/vnd.github+json",
     Authorization: `Bearer ${token}`,
     "X-GitHub-Api-Version": "2022-11-28",
