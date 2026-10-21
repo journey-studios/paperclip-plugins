@@ -32,7 +32,7 @@ Without configuration the collector measures a generic set (`/var/lib/docker`, `
 ]
 ```
 
-Rules, enforced at startup (the collector refuses to run on a violation): 1 to 30 entries; `id` is lowercase letters, digits and hyphens, unique; `label` is at most 70 characters and must not contain `/` (labels are shown in the UI); `path` is absolute, normalized (no `..`, `//` or trailing `/`) and not `/` itself. The file is an operator allowlist, never user input: keep it root-owned and not writable by the Paperclip application.
+Rules, enforced at startup (the collector refuses to run on a violation): 1 to 30 entries; `id` is lowercase letters, digits and hyphens, unique; `label` is at most 70 characters and must not contain `/` (labels are shown in the UI); `path` is absolute, normalized (no `..`, `//` or trailing `/`) and not `/` itself. The file is an operator allowlist, never user input: the collector refuses to start unless it is a regular file owned by root and not group- or world-writable.
 
 ## Snapshot schema 2
 

@@ -129,6 +129,12 @@ export function parseDirectoryConfig(text) {
     return Object.freeze({ id, label: label.trim(), path });
   }));
 }
+// The allowlist decides which paths root measures, so it must not be editable by anyone else.
+export function assertTrustedConfigFile(stat, uid = 0) {
+  if (!stat.isFile()) throw new Error("Directory config must be a regular file");
+  if (stat.uid !== uid) throw new Error("Directory config must be owned by root");
+  if ((stat.mode & 0o022) !== 0) throw new Error("Directory config must not be group- or world-writable");
+}
 export function parseMeminfo(text) {
   const values = new Map();
   for (const line of String(text).split(/\r?\n/)) {

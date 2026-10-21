@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig } from "./lib.mjs";
+import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig } from "./lib.mjs";
 
 const exec = promisify(execFile);
 const outDir = process.env.STORAGE_OUTPUT_DIR || "/var/lib/paperclip-storage-manager";
@@ -35,6 +35,7 @@ const policy = parseAlertPolicy(process.env);
 // Optional root-owned allowlist; without it the generic defaults apply.
 const directoriesFile = process.env.VPS_STATUS_DIRECTORIES_FILE;
 if (directoriesFile && (!isAbsolute(directoriesFile) || directoriesFile.includes(".."))) throw new Error("Invalid directories file path");
+if (directoriesFile) assertTrustedConfigFile(await stat(directoriesFile));
 const directories = directoriesFile ? parseDirectoryConfig(await readFile(directoriesFile, "utf8")) : DIRECTORIES;
 const snapshot = await collect({
   run, alertPolicy: policy, directories,

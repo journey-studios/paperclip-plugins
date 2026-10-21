@@ -11,7 +11,7 @@ Group=root
 UMask=0022
 Environment=STORAGE_OUTPUT_DIR=/var/lib/paperclip-storage-manager
 EnvironmentFile=-/etc/paperclip-storage-manager.env
-# Optional: Environment=VPS_STATUS_DIRECTORIES_FILE=/etc/paperclip-storage-manager.directories.json
+# Optional (must be root-owned, not group/world-writable): Environment=VPS_STATUS_DIRECTORIES_FILE=/etc/paperclip-storage-manager.directories.json
 ExecStart=/usr/bin/node /opt/paperclip-storage-collector/src/collect.mjs
 NoNewPrivileges=yes
 PrivateTmp=yes

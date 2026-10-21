@@ -68,6 +68,15 @@ test("schema 2 exposes cpu, memory and uptime and strips unknown fields", () => 
   assert.equal(value.history[0].memoryUsedBytes, 6000);
   assert.ok(!JSON.stringify(value).includes("never-return"));
 });
+test("a malformed optional history metric is omitted without losing the disk sample", () => {
+  const value = sanitizeSnapshot({ ...raw, schemaVersion: 2, history: [
+    { at: generatedAt, usedBytes: 8000, availableBytes: 2000, cpuPercent: 140, memoryUsedBytes: "lots" },
+  ] }, now);
+  assert.equal(value.history.length, 1);
+  assert.equal(value.history[0].usedBytes, 8000);
+  assert.equal("cpuPercent" in value.history[0], false);
+  assert.equal("memoryUsedBytes" in value.history[0], false);
+});
 test("schema 1 snapshots and bad cpu or memory degrade to null without invalidating disk metrics", () => {
   const legacy = sanitizeSnapshot(raw, now);
   assert.equal(legacy.cpu, null);

@@ -116,8 +116,9 @@ export function sanitizeSnapshot(input, now = Date.now()) {
         const at = iso(item.at, "history at").getTime();
         if (at > now + MAX_FUTURE_SKEW_MS || at > timestamp) return [];
         const point = { at: new Date(at).toISOString(), usedBytes: bytes(item.usedBytes, "history used"), availableBytes: bytes(item.availableBytes, "history available") };
-        if (item.cpuPercent !== undefined) point.cpuPercent = percent(item.cpuPercent, "history cpu");
-        if (item.memoryUsedBytes !== undefined) point.memoryUsedBytes = bytes(item.memoryUsedBytes, "history memory");
+        // Optional metrics are omitted when invalid; they never discard the required disk sample.
+        try { if (item.cpuPercent !== undefined) point.cpuPercent = percent(item.cpuPercent, "history cpu"); } catch { /* omit */ }
+        try { if (item.memoryUsedBytes !== undefined) point.memoryUsedBytes = bytes(item.memoryUsedBytes, "history memory"); } catch { /* omit */ }
         return [point];
       } catch { return []; }
     }).sort((a, b) => a.at.localeCompare(b.at));

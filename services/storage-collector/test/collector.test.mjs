@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collect, cpuUsagePercent, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
+import { assertTrustedConfigFile, collect, cpuUsagePercent, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -207,4 +207,13 @@ test("operator directory config is validated: absolute, normalized, unique, boun
     [{ id: "x", label: "X", path: "/a" }, { id: "x", label: "Y", path: "/b" }],
     Array.from({ length: 31 }, (_, i) => ({ id: "d" + i, label: "D", path: "/d" + i })),
   ]) assert.throws(() => parseDirectoryConfig(typeof bad === "string" ? bad : JSON.stringify(bad)));
+});
+test("the directory allowlist file must be a root-owned regular file that others cannot write", () => {
+  const file = (mode, uid = 0, regular = true) => ({ isFile: () => regular, uid, mode });
+  assertTrustedConfigFile(file(0o100644));
+  assertTrustedConfigFile(file(0o100600));
+  assert.throws(() => assertTrustedConfigFile(file(0o100664)), /writable/);
+  assert.throws(() => assertTrustedConfigFile(file(0o100646)), /writable/);
+  assert.throws(() => assertTrustedConfigFile(file(0o100644, 1000)), /root/);
+  assert.throws(() => assertTrustedConfigFile(file(0o040755, 0, false)), /regular/);
 });
