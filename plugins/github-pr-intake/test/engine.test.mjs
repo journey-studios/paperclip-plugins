@@ -262,6 +262,27 @@ test("the listing ETag is saved only after the listing was fully handled", async
   assert.equal(f.calls.getPull, before, "once handled, an unchanged listing costs nothing");
 });
 
+test("a PR dropped after repeated GitHub failures is queued again by the next reconcile", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ debounceSeconds: 0 })] } });
+  const raw = rawPull({ number: 5, sha: SHA1 });
+  f.setListing({ notModified: false, etag: "e1", honorEtag: true, pulls: [raw] });
+
+  // GitHub does not know PR 5 yet (lookups fail): reconcile queues it and every attempt fails.
+  assert.equal((await f.engine.reconcile()).enqueued, 1);
+  for (let i = 0; i < 8; i += 1) {
+    f.advance(16 * 60_000);
+    await f.engine.processDue();
+  }
+  assert.equal(f.issues.length, 0);
+  assert.equal(await f.engine.processDue(), 0, "the entry was dropped after the last attempt");
+
+  // The listing is unchanged. Without clearing the ETag this would be a 304 and the PR would be lost.
+  f.setPull(raw);
+  const summary = await f.engine.reconcile();
+  assert.equal(summary.enqueued, 1, "the repository was listed again and the PR queued");
+  assert.equal(f.issues.length, 1, "and it is reviewed once GitHub answers");
+});
+
 test("a truncated file list is never read as 'only ignored paths'", async () => {
   const docs = [{ filename: "docs/a.md", status: "modified", additions: 1, deletions: 0 }];
   const config = { repositories: [repoConfig({ ignorePaths: ["docs/**"], debounceSeconds: 0 })] };

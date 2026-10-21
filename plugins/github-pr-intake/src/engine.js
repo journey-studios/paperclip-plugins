@@ -156,8 +156,14 @@ export function createEngine(ctx, deps = {}) {
     } catch (error) {
       const attempts = (entry.attempts ?? 0) + 1;
       log.warn("github-pr-intake: GitHub fetch failed", { key, attempts, error: message(error) });
-      if (attempts >= MAX_FETCH_ATTEMPTS) await store.dequeue(key);
-      else await store.retryLater(key, entry, now() + Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS));
+      if (attempts >= MAX_FETCH_ATTEMPTS) {
+        await store.dequeue(key);
+        // The PR leaves the queue unreviewed. Forget the listing ETag so the next reconcile lists the
+        // repository again (instead of a 304) and queues this head once GitHub answers.
+        await store.clearEtag(repoCfg.fullName.toLowerCase());
+      } else {
+        await store.retryLater(key, entry, now() + Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS));
+      }
       return "fetch_failed";
     }
 

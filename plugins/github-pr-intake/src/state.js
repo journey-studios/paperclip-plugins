@@ -69,5 +69,6 @@ export function createStore(ctx) {
 
     getEtag: (repoKey) => read(`etag:${repoKey}`),
     setEtag: (repoKey, etag) => write(`etag:${repoKey}`, etag),
+    clearEtag: (repoKey) => remove(`etag:${repoKey}`),
   };
 }
