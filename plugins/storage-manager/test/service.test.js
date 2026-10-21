@@ -174,3 +174,26 @@ test("worktrees keep only safe names and roots, and are sorted by size", () => {
   assert.ok(!JSON.stringify(value).includes("never-return"));
   assert.deepEqual(sanitizeSnapshot(raw, now).worktrees, []);
 });
+test("real size fields are kept only when consistent, and the summary and pools are validated", () => {
+  const value = sanitizeSnapshot({ ...raw, schemaVersion: 2,
+    worktrees: [
+      { rootId: "tessel", rootLabel: "Tessel", name: "big-shared", status: "ok", bytes: 900, apparentBytes: 900, exclusiveBytes: 100, sharedBytes: 12345, modifiedAt: generatedAt },
+      { rootId: "tessel", rootLabel: "Tessel", name: "mostly-own", status: "ok", bytes: 500, apparentBytes: 500, exclusiveBytes: 450, modifiedAt: generatedAt },
+      { rootId: "tessel", rootLabel: "Tessel", name: "inconsistent", status: "ok", bytes: 800, apparentBytes: 50, exclusiveBytes: 700, modifiedAt: generatedAt },
+      { rootId: "tessel", rootLabel: "Tessel", name: "legacy", status: "ok", bytes: 300, modifiedAt: generatedAt },
+    ],
+    sharedPools: [{ id: "pnpm-store", label: "pnpm store", apparentBytes: 6000, exclusiveBytes: 5000, secret: "never-return" }, { id: "Bad Id", label: "x", apparentBytes: 1, exclusiveBytes: 1 }],
+    spaceAttribution: { collectedAt: generatedAt, durationMs: 4200, physicalBytes: 7000, apparentBytes: 9000, savedByHardlinksBytes: 2000, sharedBetweenBytes: 1500, externallyLinkedBytes: 0, extra: "never-return" },
+  }, now);
+  assert.deepEqual(value.worktrees.map((row) => row.name), ["mostly-own", "big-shared", "inconsistent", "legacy"].sort((a, b) => {
+    const size = { "mostly-own": 450, "big-shared": 100, inconsistent: 800, legacy: 300 }; return size[b] - size[a];
+  }));
+  const by = Object.fromEntries(value.worktrees.map((row) => [row.name, row]));
+  assert.deepEqual([by["big-shared"].apparentBytes, by["big-shared"].exclusiveBytes, by["big-shared"].sharedBytes], [900, 100, 800]);
+  assert.deepEqual([by.inconsistent.apparentBytes, by.inconsistent.exclusiveBytes, by.inconsistent.sharedBytes], [null, null, null]);
+  assert.equal(by.legacy.exclusiveBytes, null);
+  assert.deepEqual(value.sharedPools, [{ id: "pnpm-store", label: "pnpm store", apparentBytes: 6000, exclusiveBytes: 5000, sharedBytes: 1000 }]);
+  assert.deepEqual(value.spaceAttribution, { collectedAt: generatedAt, durationMs: 4200, physicalBytes: 7000, apparentBytes: 9000, savedByHardlinksBytes: 2000, sharedBetweenBytes: 1500, externallyLinkedBytes: 0 });
+  assert.ok(!JSON.stringify(value).includes("never-return"));
+  assert.equal(sanitizeSnapshot({ ...raw, spaceAttribution: { collectedAt: generatedAt, physicalBytes: 10, apparentBytes: 5, savedByHardlinksBytes: 0, sharedBetweenBytes: 0, externallyLinkedBytes: 0 } }, now).spaceAttribution, null);
+});

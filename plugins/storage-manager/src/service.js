@@ -108,11 +108,34 @@ function sanitizeWorktrees(input) {
       rootId: row.rootId,
       rootLabel: typeof row.rootLabel === "string" && row.rootLabel.length <= 70 && !row.rootLabel.includes("/") ? row.rootLabel : row.rootId,
       name: row.name, status: ok ? "ok" : "unavailable", bytes: bytesValue, modifiedAt: modified,
+      ...sizeTriple(ok ? row : {}),
     }];
-  }).sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1) || a.name.localeCompare(b.name));
+  }).sort((a, b) => (b.exclusiveBytes ?? b.bytes ?? -1) - (a.exclusiveBytes ?? a.bytes ?? -1) || a.name.localeCompare(b.name));
+}
+// apparent = what du reports for the tree; exclusive = what deleting it frees; shared = kept alive by other trees.
+function sizeTriple(row) {
+  const apparent = optionalCount(row.apparentBytes);
+  const exclusive = optionalCount(row.exclusiveBytes);
+  if (apparent === null || exclusive === null || exclusive > apparent) return { apparentBytes: null, exclusiveBytes: null, sharedBytes: null };
+  return { apparentBytes: apparent, exclusiveBytes: exclusive, sharedBytes: apparent - exclusive };
+}
+function sanitizeSharedPools(input) {
+  return (Array.isArray(input) ? input : []).slice(0, 6).flatMap((row) => {
+    if (!object(row) || typeof row.id !== "string" || !DIRECTORY_ID.test(row.id)) return [];
+    return [{ id: row.id, label: typeof row.label === "string" && row.label.length <= 70 && !row.label.includes("/") ? row.label : row.id, ...sizeTriple(row) }];
+  });
+}
+function sanitizeSpaceAttribution(input) {
+  const raw = object(input);
+  if (!raw) return null;
+  const at = typeof raw.collectedAt === "string" && Number.isFinite(Date.parse(raw.collectedAt)) ? new Date(raw.collectedAt).toISOString() : null;
+  const fields = ["physicalBytes", "apparentBytes", "savedByHardlinksBytes", "sharedBetweenBytes", "externallyLinkedBytes"].map((key) => optionalCount(raw[key]));
+  if (!at || fields.some((value) => value === null) || fields[0] > fields[1]) return null;
+  const [physicalBytes, apparentBytes, savedByHardlinksBytes, sharedBetweenBytes, externallyLinkedBytes] = fields;
+  return { collectedAt: at, durationMs: optionalCount(raw.durationMs), physicalBytes, apparentBytes, savedByHardlinksBytes, sharedBetweenBytes, externallyLinkedBytes };
 }
 function empty(companyId, status, reason) {
-  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, workers: [], worktrees: [], docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
+  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, workers: [], worktrees: [], sharedPools: [], spaceAttribution: null, docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
 }
 function safeCoverage(raw) {
   const coverage = object(raw);
@@ -186,6 +209,8 @@ export function sanitizeSnapshot(input, now = Date.now()) {
     uptimeSeconds: Number.isSafeInteger(raw.uptimeSeconds) && raw.uptimeSeconds >= 0 ? raw.uptimeSeconds : null,
     workers: sanitizeWorkers(raw.workers),
     worktrees: sanitizeWorktrees(raw.worktrees),
+    sharedPools: sanitizeSharedPools(raw.sharedPools),
+    spaceAttribution: sanitizeSpaceAttribution(raw.spaceAttribution),
     directories, docker, history, alerts, coverage: safeCoverage(raw.coverage),
   };
 }

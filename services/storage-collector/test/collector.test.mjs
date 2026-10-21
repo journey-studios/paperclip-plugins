@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertTrustedConfigFile, collect, collectWorkers, collectWorktrees, cpuUsagePercent, parseContainerState, parseContainerStats, parseWorkerConfig, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
+import { assertTrustedConfigFile, parseWorktreeConfig, reusableAttribution, collect, collectWorkers, collectWorktrees, cpuUsagePercent, parseContainerState, parseContainerStats, parseWorkerConfig, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -331,4 +331,60 @@ test("collect adds worktrees to the snapshot, and the root list reuses the direc
   assert.deepEqual((await collect({ ...host, run, now: () => date, directories: [] })).worktrees, []);
   assert.equal(parseDirectoryConfig(JSON.stringify([root]), 6).length, 1);
   assert.throws(() => parseDirectoryConfig(JSON.stringify(Array.from({ length: 7 }, (_, i) => ({ id: "r" + i, label: "R", path: "/r" + i }))), 6), /1 to 6/);
+});
+const shared = { id: "pnpm-store", label: "pnpm store", path: "/srv/store", kind: "shared" };
+const attributionResult = {
+  items: [
+    { key: "worktree:tessel/JOU-9", apparentBytes: 1000, exclusiveBytes: 200, sharedBytes: 800, entries: 5, unreadable: 0 },
+    { key: "shared:pnpm-store", apparentBytes: 5000, exclusiveBytes: 4000, sharedBytes: 1000, entries: 9, unreadable: 0 },
+  ],
+  totals: { physicalBytes: 5200, apparentBytes: 6000, savedByHardlinksBytes: 800, sharedBetweenBytes: 800, externallyLinkedBytes: 0 },
+};
+const trees = { run: async (cmd) => cmd === "df" ? df : cmd === "docker" ? docker : "100\t/x\n", listDir: async () => [entry("JOU-9")], modifiedAt: async () => "2026-10-20T00:00:00.000Z" };
+test("worktree config accepts worktree roots and shared trees, and rejects unknown kinds", () => {
+  const rows = parseWorktreeConfig(JSON.stringify([root, { ...shared }, { ...root, id: "second", kind: "worktrees" }]));
+  assert.deepEqual(rows.map((row) => [row.id, row.kind]), [["tessel", "worktrees"], ["pnpm-store", "shared"], ["second", "worktrees"]]);
+  assert.throws(() => parseWorktreeConfig(JSON.stringify([{ ...root, kind: "other" }])), /kind/);
+  assert.throws(() => parseWorktreeConfig(JSON.stringify(Array.from({ length: 7 }, (_, i) => ({ id: "w" + i, label: "W", path: "/w" + i })))), /At most 6/);
+  assert.throws(() => parseWorktreeConfig(JSON.stringify([{ ...shared, path: "/" }])));
+});
+test("collect attributes real size to each worktree and shared tree, with the walk's own totals", async () => {
+  const calls = [];
+  const value = await collect({ ...host, ...trees, now: () => date, directories: [], worktreeRoots: [root], sharedRoots: [shared],
+    attribute: (input) => { calls.push(input); return attributionResult; } });
+  assert.deepEqual(value.worktrees[0], { rootId: "tessel", rootLabel: "Tessel", name: "JOU-9", modifiedAt: "2026-10-20T00:00:00.000Z", status: "ok", bytes: 100, apparentBytes: 1000, exclusiveBytes: 200, sharedBytes: 800 });
+  assert.deepEqual(value.sharedPools, [{ id: "pnpm-store", label: "pnpm store", apparentBytes: 5000, exclusiveBytes: 4000, sharedBytes: 1000 }]);
+  assert.equal(value.spaceAttribution.physicalBytes, 5200);
+  assert.equal(value.spaceAttribution.collectedAt, date.toISOString());
+  assert.deepEqual(calls[0].items.map((item) => item.path), [root.path + "/JOU-9", "/srv/store"]);
+  assert.ok(calls[0].excludePaths.includes(root.path));
+  assert.ok(calls[0].excludePaths.includes("/srv/store"));
+});
+test("a failed or expired attribution keeps the du sizes and reports partial coverage", async () => {
+  for (const [message, code] of [["attribution deadline exceeded", "deadline_exceeded"], ["boom private", "failed"]]) {
+    const value = await collect({ ...host, ...trees, now: () => date, directories: [], worktreeRoots: [root], sharedRoots: [shared], attribute: () => { throw new Error(message); } });
+    assert.equal(value.worktrees[0].bytes, 100);
+    assert.equal(value.worktrees[0].exclusiveBytes, null);
+    assert.equal(value.spaceAttribution, null);
+    assert.deepEqual(value.coverage.issues, [{ source: "attribution", code }]);
+    assert.ok(!JSON.stringify(value).includes("private"));
+  }
+});
+test("a recent attribution of the same trees is reused instead of walking again", async () => {
+  const first = await collect({ ...host, ...trees, now: () => date, directories: [], worktreeRoots: [root], sharedRoots: [shared], attribute: () => attributionResult });
+  let walked = 0;
+  const later = new Date(date.getTime() + 10 * 60_000);
+  const second = await collect({ ...host, ...trees, now: () => later, directories: [], worktreeRoots: [root], sharedRoots: [shared], previous: first, attribute: () => { walked += 1; return attributionResult; } });
+  assert.equal(walked, 0);
+  assert.equal(second.worktrees[0].exclusiveBytes, 200);
+  assert.equal(second.spaceAttribution.collectedAt, date.toISOString());
+  const expired = await collect({ ...host, ...trees, now: () => new Date(date.getTime() + 2 * 3_600_000), directories: [], worktreeRoots: [root], sharedRoots: [shared], previous: first, attribute: () => { walked += 1; return attributionResult; } });
+  assert.equal(walked, 1);
+  assert.equal(expired.spaceAttribution.collectedAt, new Date(date.getTime() + 2 * 3_600_000).toISOString());
+  const keys = ["worktree:tessel/JOU-9", "shared:pnpm-store"];
+  assert.ok(reusableAttribution(first, keys, date.getTime(), 3_600_000));
+  assert.equal(reusableAttribution(first, [...keys, "shared:other"], date.getTime(), 3_600_000), null);
+  assert.equal(reusableAttribution(first, ["worktree:tessel/JOU-OTHER", "shared:pnpm-store"], date.getTime(), 3_600_000), null);
+  assert.equal(reusableAttribution(null, keys, date.getTime(), 3_600_000), null);
+  assert.equal(reusableAttribution(first, keys, date.getTime(), 0) === null, false);
 });

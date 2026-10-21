@@ -20,7 +20,10 @@ function summarize(data) {
   if (data.workers?.length) parts.push("workers " + data.workers.map((worker) => worker.label + " " + worker.state + (worker.health ? " (" + worker.health + ")" : "") + (worker.cpuPercent !== null ? ", CPU " + worker.cpuPercent + "%" : "") + (worker.memoryUsedBytes !== null ? ", mem " + gib(worker.memoryUsedBytes) : "")).join("; "));
   if (data.worktrees?.length) {
     const measured = data.worktrees.filter((row) => row.bytes !== null);
-    parts.push("worktrees " + measured.length + " measured, " + gib(measured.reduce((sum, row) => sum + row.bytes, 0)) + " total (overlaps hardlinks), largest " + data.worktrees[0].name + " " + gib(data.worktrees[0].bytes ?? 0));
+    const real = data.spaceAttribution
+      ? "real disk " + gib(data.spaceAttribution.physicalBytes) + " (apparent " + gib(data.spaceAttribution.apparentBytes) + ", " + gib(data.spaceAttribution.savedByHardlinksBytes) + " saved by hardlinks); largest by real size " + data.worktrees[0].name + " " + gib(data.worktrees[0].exclusiveBytes ?? data.worktrees[0].bytes ?? 0) + " exclusive"
+      : gib(measured.reduce((sum, row) => sum + row.bytes, 0)) + " apparent (overlaps hardlinks), largest " + data.worktrees[0].name + " " + gib(data.worktrees[0].bytes ?? 0);
+    parts.push("worktrees " + measured.length + " measured, " + real);
   }
   return "VPS " + data.status + ": " + parts.join("; ") + "; collected " + data.generatedAt + ". Docker sizes may overlap.";
 }

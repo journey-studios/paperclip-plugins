@@ -1,4 +1,5 @@
 // Host collector: a strictly allowlisted, read-only inventory. No arbitrary user paths.
+import { attributeUsage } from "./attribution.mjs";
 import { cpus as osCpus, loadavg as osLoadavg, uptime as osUptime } from "node:os";
 
 // Generic defaults for any Linux VPS; paths that do not exist are reported as "missing".
@@ -267,6 +268,48 @@ export async function collectWorktrees({ run, roots, listDir, modifiedAt, clock 
   }
   return { rows, issues };
 }
+// Worktree config: roots whose children are worktrees (default) and "shared" trees (pnpm store, main
+// checkout) that only take part in the real-size accounting.
+export function parseWorktreeConfig(text) {
+  let rows;
+  try { rows = JSON.parse(String(text)); } catch { throw new Error("Directory config is not valid JSON"); }
+  if (!Array.isArray(rows)) throw new Error("Directory config must be a list");
+  const kinds = rows.map((row) => {
+    const kind = row?.kind ?? "worktrees";
+    if (kind !== "worktrees" && kind !== "shared") throw new Error("Invalid kind for " + row?.id);
+    return kind;
+  });
+  const parsed = parseDirectoryConfig(JSON.stringify(rows.map(({ id, label, path }) => ({ id, label, path }))), MAX_WORKTREE_ROOTS * 2);
+  const result = parsed.map((row, index) => ({ ...row, kind: kinds[index] }));
+  if (result.filter((row) => row.kind === "worktrees").length > MAX_WORKTREE_ROOTS || result.filter((row) => row.kind === "shared").length > MAX_WORKTREE_ROOTS) {
+    throw new Error("At most " + MAX_WORKTREE_ROOTS + " roots of each kind");
+  }
+  return Object.freeze(result);
+}
+const attributionKey = {
+  worktree: (row) => "worktree:" + row.rootId + "/" + row.name,
+  shared: (root) => "shared:" + root.id,
+};
+// Reuse a recent attribution when the same trees are measured: the walk is the most expensive probe.
+export function reusableAttribution(previous, keys, nowMs, maxAgeMs) {
+  const stamp = Date.parse(previous?.spaceAttribution?.collectedAt ?? "");
+  if (!Number.isFinite(stamp) || nowMs - stamp > maxAgeMs || nowMs < stamp) return null;
+  const rows = [
+    ...(previous.worktrees ?? []).filter((row) => row.status === "ok").map((row) => [attributionKey.worktree(row), row]),
+    ...(previous.sharedPools ?? []).map((row) => [attributionKey.shared(row), row]),
+  ];
+  if (rows.length !== keys.length || !keys.every((key) => rows.some(([known]) => known === key))) return null;
+  if (!rows.every(([, row]) => Number.isSafeInteger(row.apparentBytes) && Number.isSafeInteger(row.exclusiveBytes))) return null;
+  return { byKey: new Map(rows), summary: previous.spaceAttribution };
+}
+export function applyAttribution({ rows, sharedRoots, result }) {
+  const byKey = new Map(result.items.map((item) => [item.key, item]));
+  const pick = (key) => { const item = byKey.get(key); return item ? { apparentBytes: item.apparentBytes, exclusiveBytes: item.exclusiveBytes, sharedBytes: item.sharedBytes } : { apparentBytes: null, exclusiveBytes: null, sharedBytes: null }; };
+  return {
+    worktrees: rows.map((row) => row.status === "ok" ? { ...row, ...pick(attributionKey.worktree(row)) } : { ...row, apparentBytes: null, exclusiveBytes: null, sharedBytes: null }),
+    sharedPools: sharedRoots.map((root) => ({ id: root.id, label: root.label, ...pick(attributionKey.shared(root)) })),
+  };
+}
 export function parseMeminfo(text) {
   const values = new Map();
   for (const line of String(text).split(/\r?\n/)) {
@@ -310,7 +353,7 @@ export async function sampleCpu({ cpus = osCpus, loadavg = osLoadavg, sleep = (m
   return { cores: after.length, usagePercent: cpuUsagePercent(before, after), load1, load5, load15 };
 }
 
-export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {}, workers = [], worktreeRoots = [], listDir = async () => [], modifiedAt = async () => null, readText = async () => { throw new Error("readText not provided"); }, cpuSampler = sampleCpu, uptime = osUptime }) {
+export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {}, workers = [], worktreeRoots = [], sharedRoots = [], attribute = attributeUsage, previous = null, attributionMaxAgeMs = 3_600_000, listDir = async () => [], modifiedAt = async () => null, readText = async () => { throw new Error("readText not provided"); }, cpuSampler = sampleCpu, uptime = osUptime }) {
   const generatedAt = now().toISOString();
   const filesystem = parseDf(await run("df", ["-B1", "--output=size,used,avail,pcent", "--", "/"], 15000));
   const coverage = { partial: false, issues: [] };
@@ -331,6 +374,37 @@ export async function collect({ run, inspect = async () => true, now = () => new
     const result = await collectWorktrees({ run, roots: worktreeRoots, listDir, modifiedAt, clock });
     worktreeRows = result.rows;
     for (const item of result.issues) issue(item.source, item.code);
+  }
+  let sharedPools = [];
+  let spaceAttribution = null;
+  if (worktreeRows.some((row) => row.status === "ok") || sharedRoots.length) {
+    const okRows = worktreeRows.filter((row) => row.status === "ok");
+    const keys = [...okRows.map(attributionKey.worktree), ...sharedRoots.map(attributionKey.shared)];
+    const reuse = reusableAttribution(previous, keys, now().getTime(), attributionMaxAgeMs);
+    if (reuse) {
+      const fake = { items: keys.map((key) => ({ key, ...reuse.byKey.get(key) })) };
+      ({ worktrees: worktreeRows, sharedPools } = applyAttribution({ rows: worktreeRows, sharedRoots, result: fake }));
+      spaceAttribution = reuse.summary;
+    } else {
+      try {
+        const started = clock();
+        const result = attribute({
+          items: [
+            ...okRows.map((row) => ({ key: attributionKey.worktree(row), path: worktreeRoots.find((root) => root.id === row.rootId).path + "/" + row.name })),
+            ...sharedRoots.map((root) => ({ key: attributionKey.shared(root), path: root.path })),
+          ],
+          // Never enter a worktree root or another measured tree: each byte belongs to one walk.
+          excludePaths: [...worktreeRoots.map((root) => root.path), ...okRows.map((row) => worktreeRoots.find((root) => root.id === row.rootId).path + "/" + row.name), ...sharedRoots.map((root) => root.path)],
+          clock, budgetMs: 150_000,
+        });
+        ({ worktrees: worktreeRows, sharedPools } = applyAttribution({ rows: worktreeRows, sharedRoots, result }));
+        spaceAttribution = { collectedAt: generatedAt, durationMs: Math.max(0, clock() - started), ...result.totals };
+        if (result.items.some((item) => item.unreadable > 0)) issue("attribution", "unreadable_entries");
+      } catch (error) {
+        issue("attribution", /deadline/.test(String(error?.message)) ? "deadline_exceeded" : "failed");
+        ({ worktrees: worktreeRows, sharedPools } = applyAttribution({ rows: worktreeRows, sharedRoots, result: { items: [] } }));
+      }
+    }
   }
   let docker = [];
   try { docker = parseDocker(await run("docker", ["system", "df", "--format", "{{json .}}"], 20000)); }
@@ -372,6 +446,6 @@ export async function collect({ run, inspect = async () => true, now = () => new
   return {
     schemaVersion: 2, generatedAt, filesystem, cpu, memory,
     uptimeSeconds: Number.isSafeInteger(uptimeSeconds) && uptimeSeconds >= 0 ? uptimeSeconds : null,
-    workers: workerRows, worktrees: worktreeRows, docker, directories: readings, alertPolicy, coverage, history: [],
+    workers: workerRows, worktrees: worktreeRows, sharedPools, spaceAttribution, docker, directories: readings, alertPolicy, coverage, history: [],
   };
 }

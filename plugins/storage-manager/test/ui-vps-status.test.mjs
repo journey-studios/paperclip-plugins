@@ -116,3 +116,31 @@ test("the Worktrees section lists each worktree with its size and warns that har
   assert.match(text, /hardlink/);
   assert.doesNotMatch(await render(withMetrics, "StoragePage"), /Espaço de cada worktree/);
 });
+
+test("with real-size data the page shows exclusive and shared sizes, the grouped space and the real total", async () => {
+  const gib = (n) => Math.round(n * 1024 ** 3);
+  const worktrees = [
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-647", status: "ok", bytes: gib(3), apparentBytes: gib(3), exclusiveBytes: gib(0.2), sharedBytes: gib(2.8), modifiedAt: "2026-10-20T12:00:00.000Z" },
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-118", status: "ok", bytes: gib(2.5), apparentBytes: gib(2.5), exclusiveBytes: gib(0.4), sharedBytes: gib(2.1), modifiedAt: null },
+  ];
+  const sharedPools = [
+    { id: "pnpm-store", label: "pnpm store", apparentBytes: gib(6), exclusiveBytes: gib(1), sharedBytes: gib(5) },
+    { id: "checkout", label: "Checkout principal", apparentBytes: gib(3), exclusiveBytes: gib(0.3), sharedBytes: gib(2.7) },
+  ];
+  const spaceAttribution = { collectedAt: "2026-10-21T12:00:00.000Z", durationMs: 4000, physicalBytes: gib(7), apparentBytes: gib(14.5), savedByHardlinksBytes: gib(7.5), sharedBetweenBytes: gib(5.1), externallyLinkedBytes: 0 };
+  const text = await render({ ...withMetrics, worktrees, sharedPools, spaceAttribution }, "StoragePage");
+  assert.match(text, /Espaço real em disco7 GiB/);
+  assert.match(text, /Soma aparente14,5 GiB/);
+  assert.match(text, /Economia por hardlinks7,5 GiB/);
+  assert.match(text, /Compartilhado entre árvores5,1 GiB/);
+  assert.match(text, /Espaço agrupado · 7 GiB reais no total/);
+  assert.match(text, /pnpm store1 GiB · 14,3%/);
+  assert.match(text, /Worktrees \(só delas\)614,4 MiB · 8,6%/);
+  assert.match(text, /Real \(libera ao apagar\)/);
+  assert.match(text, /JOU-647Tessel204,8 MiB2,8 GiB3 GiB/);
+  assert.match(text, /árvore compartilhada · não é worktree/);
+  assert.match(text, /2 worktrees · 614,4 MiB reais/);
+  const apparentOnly = await render({ ...withMetrics, worktrees: worktrees.map(({ apparentBytes, exclusiveBytes, sharedBytes, ...rest }) => rest) }, "StoragePage");
+  assert.doesNotMatch(apparentOnly, /Real \(libera ao apagar\)/);
+  assert.match(apparentOnly, /somados/);
+});

@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { access, chmod, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, MAX_WORKTREE_ROOTS, parseDirectoryConfig, parseWorkerConfig } from "./lib.mjs";
+import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig, parseWorkerConfig, parseWorktreeConfig } from "./lib.mjs";
 
 const exec = promisify(execFile);
 const outDir = process.env.STORAGE_OUTPUT_DIR || "/var/lib/paperclip-storage-manager";
@@ -46,15 +46,21 @@ const workers = workersFile ? parseWorkerConfig(await readFile(workersFile, "utf
 const worktreesFile = process.env.VPS_STATUS_WORKTREES_FILE;
 if (worktreesFile && (!isAbsolute(worktreesFile) || worktreesFile.includes(".."))) throw new Error("Invalid worktrees file path");
 if (worktreesFile) assertTrustedConfigFile(await stat(worktreesFile));
-const worktreeRoots = worktreesFile ? parseDirectoryConfig(await readFile(worktreesFile, "utf8"), MAX_WORKTREE_ROOTS) : [];
+const worktreeConfig = worktreesFile ? parseWorktreeConfig(await readFile(worktreesFile, "utf8")) : [];
+const worktreeRoots = worktreeConfig.filter((row) => row.kind === "worktrees");
+const sharedRoots = worktreeConfig.filter((row) => row.kind === "shared");
+// A real-size walk is the costliest probe: reuse the last one for up to this many minutes (default 60).
+const attributionMinutes = process.env.VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES === undefined ? 60 : Number(process.env.VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES);
+if (!Number.isFinite(attributionMinutes) || attributionMinutes < 0 || attributionMinutes > 1440) throw new Error("Invalid VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES");
+const previous = await current();
 const snapshot = await collect({
-  run, alertPolicy: policy, directories, workers, worktreeRoots,
+  run, alertPolicy: policy, directories, workers, worktreeRoots, sharedRoots, previous, attributionMaxAgeMs: attributionMinutes * 60_000,
   listDir: async (path) => (await readdir(path, { withFileTypes: true })).map((entry) => ({ name: entry.name, isDirectory: entry.isDirectory(), isSymlink: entry.isSymbolicLink() })),
   modifiedAt: async (path) => (await stat(path)).mtime.toISOString(),
   readText: (path) => readFile(path, "utf8"),
   inspect: (path) => inspectDirectory(path, access),
 });
-snapshot.history = makeHistory(await current(), snapshot);
+snapshot.history = makeHistory(previous, snapshot);
 await save(snapshot);
 process.stdout.write("vps status snapshot saved: " + snapshot.generatedAt +
   "; capacity used bytes " + snapshot.filesystem.usedBytes +

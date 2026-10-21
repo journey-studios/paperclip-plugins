@@ -57,7 +57,21 @@ To measure each git worktree on its own, point `VPS_STATUS_WORKTREES_FILE` at a 
 ]
 ```
 
-For each root the collector lists the direct children, ignores files and symlinks, skips names outside `[A-Za-z0-9._-]` (reported as an `invalid_name` coverage issue), keeps the 40 most recently modified (`truncated` otherwise) and runs `du -x -s -B1` on each, under a shared two-minute budget (`deadline_exceeded` marks the rest unavailable). The snapshot's `worktrees` list carries the name, size and last-modified time. Sizes are per worktree: files shared by hardlink (such as a pnpm store) count in every worktree, so the sum can exceed real disk use. The unit's `TimeoutStartSec` is 420 s to leave room for this scan.
+For each root the collector lists the direct children, ignores files and symlinks, skips names outside `[A-Za-z0-9._-]` (reported as an `invalid_name` coverage issue), keeps the 40 most recently modified (`truncated` otherwise) and runs `du -x -s -B1` on each, under a shared two-minute budget (`deadline_exceeded` marks the rest unavailable). The snapshot's `worktrees` list carries the name, size and last-modified time. Sizes are per worktree: files shared by hardlink (such as a pnpm store) count in every worktree, so the sum can exceed real disk use. The unit's `TimeoutStartSec` is 600 s to leave room for the scans.
+
+### Real size (hardlinks)
+
+`du` per tree overstates disk use when trees share files by hardlink (a pnpm store linked into every checkout and worktree). Add entries with `"kind": "shared"` to the same file to put those trees in the accounting too (at most 6 of each kind):
+
+```json
+[
+  { "id": "tessel", "label": "Tessel", "path": "…/tesselapp/.paperclip/worktrees" },
+  { "id": "pnpm-store", "label": "pnpm store", "path": "/srv/data/paperclip_data/.local/share/pnpm/store", "kind": "shared" },
+  { "id": "checkout", "label": "Checkout principal", "path": "…/tesselapp", "kind": "shared" }
+]
+```
+
+One read-only pass (`lstat` and `readdir`, no shell, no symlinks followed, no mount point crossed) counts every inode once and reports, per worktree and per shared tree: `apparentBytes` (what `du` shows), `exclusiveBytes` (what deleting it frees: files no other measured tree links) and `sharedBytes` (the difference). Worktree roots and other measured trees are never entered twice, so a checkout that contains the worktree root is measured without it. Files with links outside the measured trees are never counted as exclusive. `spaceAttribution` adds the totals: real `physicalBytes`, summed `apparentBytes`, `savedByHardlinksBytes`, `sharedBetweenBytes` and `externallyLinkedBytes`. The walk costs about as much as the `du` scans, so the last result is reused for `VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES` minutes (default 60, `0` always walks); a walk over its 150 s budget or a failure keeps the `du` sizes and reports a `deadline_exceeded` or `failed` coverage issue instead of a partial number.
 
 ## Snapshot schema 2
 

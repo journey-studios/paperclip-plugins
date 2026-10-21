@@ -16,7 +16,9 @@ type WorkerRow = {
   startedAt: string | null; restartCount: number; oomKilled: boolean;
   cpuPercent: number | null; memoryUsedBytes: number | null; memoryLimitBytes: number | null; memoryPercent: number | null; pids: number | null;
 };
-type WorktreeRow = { rootId: string; rootLabel: string; name: string; status: "ok" | "unavailable"; bytes: number | null; modifiedAt: string | null };
+type WorktreeRow = { rootId: string; rootLabel: string; name: string; status: "ok" | "unavailable"; bytes: number | null; modifiedAt: string | null; apparentBytes?: number | null; exclusiveBytes?: number | null; sharedBytes?: number | null };
+type SharedPool = { id: string; label: string; apparentBytes: number | null; exclusiveBytes: number | null; sharedBytes: number | null };
+type SpaceAttribution = { collectedAt: string; durationMs: number | null; physicalBytes: number; apparentBytes: number; savedByHardlinksBytes: number; sharedBetweenBytes: number; externallyLinkedBytes: number };
 type CpuInfo = { cores: number; usagePercent: number; load1: number; load5: number; load15: number };
 type MemoryInfo = { totalBytes: number; availableBytes: number; usedBytes: number; usedPercent: number; swapTotalBytes: number; swapUsedBytes: number };
 type StorageSnapshot = {
@@ -30,6 +32,8 @@ type StorageSnapshot = {
   uptimeSeconds: number | null;
   workers?: WorkerRow[];
   worktrees?: WorktreeRow[];
+  sharedPools?: SharedPool[];
+  spaceAttribution?: SpaceAttribution | null;
   directories: SizeRow[];
   docker: DockerRow[];
   history: HistoryPoint[];
@@ -135,19 +139,59 @@ function LineChart({ points, pick = (p) => p.usedBytes, format = formatBytes, la
   </div>;
 }
 
-function WorktreesSection({ rows }: { rows: WorktreeRow[] }) {
+function WorktreesSection({ rows, pools, summary }: { rows: WorktreeRow[]; pools: SharedPool[]; summary: SpaceAttribution | null }) {
+  const real = (row: WorktreeRow) => row.exclusiveBytes ?? null;
   const measured = rows.filter((row): row is WorktreeRow & { bytes: number } => row.bytes != null);
-  const total = measured.reduce((sum, row) => sum + row.bytes, 0);
-  const largest = measured[0]?.bytes || 1;
-  return <section className="section" aria-label="Worktrees"><div className="section-header"><div><h2>Worktrees</h2><p className="sub">Espaço de cada worktree dos agentes, do maior para o menor. Cada uma é medida separadamente: arquivos compartilhados por hardlink (como o pnpm store) contam em todas, então a soma pode passar do espaço real em disco.</p></div>
-    <span className="small muted">{rows.length} {rows.length === 1 ? "worktree" : "worktrees"} · {formatBytes(total)} somados</span></div>
-    <div className="table-wrap"><table><thead><tr><th>Worktree</th><th>Tamanho</th><th>Modificada</th></tr></thead>
+  const apparentTotal = measured.reduce((sum, row) => sum + row.bytes, 0);
+  const exclusiveTotal = rows.reduce((sum, row) => sum + (real(row) ?? 0), 0);
+  const largest = Math.max(1, ...rows.map((row) => real(row) ?? row.bytes ?? 0));
+  const hasReal = summary != null && rows.some((row) => real(row) != null);
+  return <section className="section" aria-label="Worktrees"><div className="section-header"><div><h2>Worktrees</h2><p className="sub">{hasReal
+      ? "Cada worktree com o tamanho aparente (o que o du mostra) e o tamanho real: o que realmente seria liberado ao apagá-la. Arquivos compartilhados por hardlink com o pnpm store ou com outra árvore só liberam espaço quando todas as cópias somem."
+      : "Espaço de cada worktree dos agentes, do maior para o menor. Cada uma é medida separadamente: arquivos compartilhados por hardlink (como o pnpm store) contam em todas, então a soma pode passar do espaço real em disco."}</p></div>
+    <span className="small muted">{rows.length} {rows.length === 1 ? "worktree" : "worktrees"} · {formatBytes(hasReal ? exclusiveTotal : apparentTotal)} {hasReal ? "reais" : "somados"}</span></div>
+    {hasReal && summary && <div className="cards" style={{ padding: "1rem" }}>
+      <ResourceCard label="Espaço real em disco" value={formatBytes(summary.physicalBytes)} detail="Store, checkout e worktrees, cada arquivo contado uma vez" />
+      <ResourceCard label="Soma aparente" value={formatBytes(summary.apparentBytes)} detail="Somando o que cada árvore reporta sozinha" />
+      <ResourceCard label="Economia por hardlinks" value={formatBytes(summary.savedByHardlinksBytes)} percent={summary.apparentBytes > 0 ? summary.savedByHardlinksBytes / summary.apparentBytes * 100 : 0} />
+      <ResourceCard label="Compartilhado entre árvores" value={formatBytes(summary.sharedBetweenBytes)} detail={summary.externallyLinkedBytes > 0 ? formatBytes(summary.externallyLinkedBytes) + " com links fora das árvores medidas" : "Apagar uma árvore não libera isto"} />
+    </div>}
+    {hasReal && <GroupedSpace rows={rows} pools={pools} summary={summary} />}
+    <div className="table-wrap"><table><thead><tr><th>Worktree</th>{hasReal && <th>Real (libera ao apagar)</th>}{hasReal && <th>Compartilhado</th>}<th>Aparente (du)</th><th>Modificada</th></tr></thead>
     <tbody>{rows.map((row) => <tr key={row.rootId + "/" + row.name}>
-      <td><div style={{ overflowWrap: "anywhere" }}>{row.name}</div><div className="small muted">{row.rootLabel}</div>{row.bytes != null && <div className="bar" aria-hidden="true"><span style={{ width: (row.bytes / largest * 100).toFixed(1) + "%" }} /></div>}</td>
+      <td><div style={{ overflowWrap: "anywhere" }}>{row.name}</div><div className="small muted">{row.rootLabel}</div>{(real(row) ?? row.bytes) != null && <div className="bar" aria-hidden="true"><span style={{ width: (((real(row) ?? row.bytes) as number) / largest * 100).toFixed(1) + "%" }} /></div>}</td>
+      {hasReal && <td><strong>{row.exclusiveBytes == null ? "—" : formatBytes(row.exclusiveBytes)}</strong></td>}
+      {hasReal && <td>{row.sharedBytes == null ? "—" : formatBytes(row.sharedBytes)}</td>}
       <td>{row.bytes == null ? "Indisponível" : formatBytes(row.bytes)}</td>
       <td>{formatTime(row.modifiedAt)}</td>
+    </tr>)}
+    {pools.map((pool) => <tr key={"pool-" + pool.id}>
+      <td><div>{pool.label}</div><div className="small muted">árvore compartilhada · não é worktree</div></td>
+      <td><strong>{pool.exclusiveBytes == null ? "—" : formatBytes(pool.exclusiveBytes)}</strong></td>
+      <td>{pool.sharedBytes == null ? "—" : formatBytes(pool.sharedBytes)}</td>
+      <td>{pool.apparentBytes == null ? "—" : formatBytes(pool.apparentBytes)}</td>
+      <td>—</td>
     </tr>)}</tbody></table></div>
   </section>;
+}
+// Real disk split into parts that add up: what each group owns plus what trees keep alive together.
+function GroupedSpace({ rows, pools, summary }: { rows: WorktreeRow[]; pools: SharedPool[]; summary: SpaceAttribution }) {
+  const worktreesOwn = rows.reduce((sum, row) => sum + (row.exclusiveBytes ?? 0), 0);
+  const parts = [
+    ...pools.map((pool) => ({ id: pool.id, label: pool.label, bytes: pool.exclusiveBytes ?? 0 })),
+    { id: "worktrees", label: "Worktrees (só delas)", bytes: worktreesOwn },
+    { id: "shared", label: "Compartilhado entre árvores", bytes: summary.sharedBetweenBytes },
+  ];
+  const total = Math.max(1, summary.physicalBytes);
+  return <div className="chart" aria-label="Espaço agrupado">
+    <p className="label">Espaço agrupado · {formatBytes(summary.physicalBytes)} reais no total</p>
+    <div className="progress" style={{ display: "flex", marginTop: ".6rem" }} aria-hidden="true">
+      {parts.map((part, index) => <span key={part.id} style={{ width: (part.bytes / total * 100).toFixed(2) + "%", opacity: 1 - index * 0.18 }} />)}
+    </div>
+    <ul style={{ listStyle: "none", margin: ".7rem 0 0", padding: 0 }}>
+      {parts.map((part) => <li key={part.id} className="hotspot" style={{ padding: ".35rem 0" }}><span>{part.label}</span><strong>{formatBytes(part.bytes)} · {(part.bytes / total * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</strong></li>)}
+    </ul>
+  </div>;
 }
 
 export function StorageSidebar(_: PluginSidebarProps) {
@@ -242,7 +286,7 @@ function StorageDashboard({ companyId }: { companyId: string }) {
           <td>{worker.restartCount}</td>
         </tr>)}</tbody></table></div>
       </section>}
-      {snapshot.worktrees && snapshot.worktrees.length > 0 && <WorktreesSection rows={snapshot.worktrees} />}
+      {snapshot.worktrees && snapshot.worktrees.length > 0 && <WorktreesSection rows={snapshot.worktrees} pools={snapshot.sharedPools ?? []} summary={snapshot.spaceAttribution ?? null} />}
       <h2 style={{ margin: "1.2rem 0 .8rem" }}>Disco</h2>
       <div className="cards">
         <article className="card"><p className="label">Capacidade</p><p className="value">{formatBytes(fs.totalBytes)}</p></article>

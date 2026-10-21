@@ -10,7 +10,7 @@ const apiRoute = (routeKey, path) => ({
 const manifest = {
   id: "journey-studios.storage-manager",
   apiVersion: 1,
-  version: "0.3.0",
+  version: "0.4.0",
   displayName: "VPS Status",
   description: "Read-only VPS status (disk, CPU, memory, Docker) from operator-provided snapshots; no Docker socket, shell or cleanup access.",
   author: "Journey Studios",

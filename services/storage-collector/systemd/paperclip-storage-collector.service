@@ -15,6 +15,7 @@ EnvironmentFile=-/etc/paperclip-storage-manager.env
 # Environment=VPS_STATUS_DIRECTORIES_FILE=/etc/paperclip-storage-manager.directories.json
 # Environment=VPS_STATUS_WORKERS_FILE=/etc/paperclip-storage-manager.workers.json
 # Environment=VPS_STATUS_WORKTREES_FILE=/etc/paperclip-storage-manager.worktrees.json
+# Environment=VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES=60
 ExecStart=/usr/bin/node /opt/paperclip-storage-collector/src/collect.mjs
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -24,4 +25,4 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX
-TimeoutStartSec=420
+TimeoutStartSec=600
