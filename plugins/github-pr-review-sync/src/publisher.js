@@ -15,6 +15,13 @@ import {
 } from "./review-sync-core.js";
 import { buildReviewBody } from "./review-body.js";
 
+const STATE_NAMESPACE = "review-sync";
+const lastDecisionScope = (issueId) => ({
+  scopeKind: "instance",
+  namespace: STATE_NAMESPACE,
+  stateKey: `last-published-decision:${issueId}`,
+});
+
 /**
  * @param {unknown} executionState
  */
@@ -63,8 +70,7 @@ export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, tr
 
   const botLogin = await fetchAuthenticatedLogin(ctx, token);
   const origin = await companyPublicOrigin(ctx, companyId);
-  const comments = await ctx.issues.listComments(issueId, companyId);
-  const body = buildReviewBody(issue, comments, origin);
+  const body = buildReviewBody(issue, null, origin);
 
   const results = [];
   for (const pull of pulls) {
@@ -234,12 +240,11 @@ export async function handleIssueUpdated(ctx, event) {
     const issue = await ctx.issues.get(issueId, companyId);
     const current = readDecisionFromIssueState(issue?.executionState);
     if (!current) return;
-    const lastKey = `last-published-decision:${issueId}`;
-    const prior = await ctx.state.get(lastKey);
+    const prior = await ctx.state.get(lastDecisionScope(issueId));
     if (prior === current.decisionId) return;
     const result = await publishReviewDecisionsForIssue(ctx, companyId, issueId, current);
     if (result.results?.some((r) => r.status === "published")) {
-      await ctx.state.set(lastKey, current.decisionId);
+      await ctx.state.set(lastDecisionScope(issueId), current.decisionId);
     }
     return result;
   }
@@ -247,7 +252,7 @@ export async function handleIssueUpdated(ctx, event) {
   const result = await publishReviewDecisionsForIssue(ctx, companyId, issueId, transition);
   // Mark the decision as handled only once it was actually published, so a failure is retried.
   if (result.results?.some((r) => r.status === "published" || r.status === "already_published")) {
-    await ctx.state.set(`last-published-decision:${issueId}`, transition.decisionId);
+    await ctx.state.set(lastDecisionScope(issueId), transition.decisionId);
   }
   return result;
 }

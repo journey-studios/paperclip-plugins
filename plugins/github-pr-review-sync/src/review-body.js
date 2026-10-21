@@ -1,9 +1,12 @@
 /**
+ * The body is built only from the issue's identity. Issue threads are internal (agent logs,
+ * pasted credentials, customer data) and the pull request may be public, so no comment text is copied.
+ *
  * @param {import("@paperclipai/plugin-sdk").Issue|null} issue
- * @param {import("@paperclipai/plugin-sdk").IssueComment[]} comments
+ * @param {unknown} _comments kept for call compatibility; intentionally unused
  * @param {string|null} origin
  */
-export function buildReviewBody(issue, comments, origin) {
+export function buildReviewBody(issue, _comments, origin) {
   const identifier = issue?.identifier ?? issue?.id ?? "issue";
   const lines = [
     "## Paperclip review (formal GitHub sync)",
@@ -13,19 +16,6 @@ export function buildReviewBody(issue, comments, origin) {
   if (origin) {
     lines.push(`Paperclip: ${origin}/issues/${identifier}`);
   }
-  lines.push("", "This is an official pull request review synced from Paperclip native review policy.", "");
-
-  const reviewComments = comments
-    .filter((c) => typeof c.body === "string" && c.body.trim())
-    .slice(-8);
-  if (reviewComments.length > 0) {
-    lines.push("### Findings / notes from the issue thread", "");
-    for (const comment of reviewComments) {
-      const excerpt = comment.body.trim().slice(0, 4000);
-      lines.push(excerpt);
-      lines.push("");
-    }
-  }
-
+  lines.push("", "This is an official pull request review synced from Paperclip native review policy.");
   return lines.join("\n").trim();
 }
