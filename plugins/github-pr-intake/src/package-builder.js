@@ -63,7 +63,7 @@ function verdictInstructions(pull, repoCfg) {
     "-->",
     "```",
     "",
-    `Allowed outcomes for this repository: ${allowed.join(", ")}. Never approve while a blocker remains. If the PR head SHA changed since you started, re-read it and review the new SHA.`,
+    `Allowed outcomes for this repository: ${allowed.join(", ")}. Any blocker or major finding requires the outcome request_changes; use approve only when none remain. If the PR head SHA changed since you started, re-read it and review the new SHA.`,
     "Keep the block valid JSON on its own, and never write the character sequence `-->` or `<!--` inside it: it would close the comment early and the verdict would be rejected.",
   ];
 }

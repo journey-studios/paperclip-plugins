@@ -107,16 +107,20 @@ export function parseIntakeHeader(description) {
 }
 
 /**
- * Applies policy to what the reviewer asked for: never approve past a blocker or major finding,
- * and never exceed the repository's authority.
+ * Applies policy to what the reviewer asked for: a blocker or major finding always means changes are
+ * requested (never an approval, never a plain comment), and the repository's authority is never exceeded.
  * @returns {{ outcome: string, notes: string[] }}
  */
 export function effectiveOutcome(verdict, authority) {
   const notes = [];
   let outcome = verdict.outcome;
-  if (outcome === "approve" && verdict.findings.some((f) => f.severity === "blocker" || f.severity === "major")) {
+  if (outcome !== "request_changes" && verdict.findings.some((f) => f.severity === "blocker" || f.severity === "major")) {
+    notes.push(
+      outcome === "approve"
+        ? "Approval withheld because blocker or major findings remain."
+        : "Changes are requested because blocker or major findings remain.",
+    );
     outcome = "request_changes";
-    notes.push("Approval withheld because blocker or major findings remain.");
   }
   const cap = RANK[authority] ?? 0;
   if (RANK[outcome] > cap) {

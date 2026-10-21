@@ -105,6 +105,10 @@ test("effectiveOutcome never approves past a blocker or the repository authority
   assert.equal(effectiveOutcome(verdict("approve", ["minor", "nit"]), "approve").outcome, "approve");
   assert.equal(effectiveOutcome(verdict("approve", ["blocker"]), "approve").outcome, "request_changes");
   assert.equal(effectiveOutcome(verdict("approve", ["major"]), "approve").outcome, "request_changes");
+  assert.equal(effectiveOutcome(verdict("comment", ["major"]), "approve").outcome, "request_changes", "a major finding in a plain comment still requests changes");
+  assert.equal(effectiveOutcome(verdict("comment", ["blocker"]), "request_changes").outcome, "request_changes");
+  assert.equal(effectiveOutcome(verdict("comment", ["minor", "nit"]), "approve").outcome, "comment", "minor findings stay a comment");
+  assert.equal(effectiveOutcome(verdict("comment", ["major"]), "comment").outcome, "comment", "authority comment still caps it");
   assert.equal(effectiveOutcome(verdict("approve"), "request_changes").outcome, "request_changes");
   assert.equal(effectiveOutcome(verdict("approve"), "comment").outcome, "comment");
   assert.equal(effectiveOutcome(verdict("request_changes"), "comment").outcome, "comment");
