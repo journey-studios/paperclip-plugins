@@ -251,7 +251,7 @@ describe("list_changelog and changelog.list", () => {
     for (const [index, occurredAt] of dates.entries()) {
       await add({ kind: kinds[index], title: `Entry ${index + 1}`, occurredAt });
     }
-  });
+  };
 
   it("lists newest first with the project name and resolved agent names", async () => {
     await seed();
