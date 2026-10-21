@@ -161,6 +161,15 @@ importers:
         specifier: ^0.28.2
         version: 0.28.2
 
+  plugins/github-pr-review-sync:
+    devDependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../.paperclip/packages/plugins/sdk
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+
   plugins/project-dashboards:
     devDependencies:
       '@electric-sql/pglite':
