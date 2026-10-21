@@ -34,6 +34,17 @@ Without configuration the collector measures a generic set (`/var/lib/docker`, `
 
 Rules, enforced at startup (the collector refuses to run on a violation): 1 to 30 entries; `id` is lowercase letters, digits and hyphens, unique; `label` is at most 70 characters and must not contain `/` (labels are shown in the UI); `path` is absolute, normalized (no `..`, `//` or trailing `/`) and not `/` itself. The file is an operator allowlist, never user input: the collector refuses to start unless it is a regular file owned by root and not group- or world-writable.
 
+### Hosts that keep data under `/srv`
+
+For a host where Paperclip data lives in bind mounts under `/srv` (`/srv/data/paperclip_data`, `/srv/data/repos`, `/srv/backups`, `/srv/build`), follow the install runbook above with these substitutions, so the service and the app read the same snapshot:
+
+1. **Step 2 (copy `src/`)**: unchanged. If the host has no Node >= 22.14, install one outside the distro packages (for example the official tarball under `/opt/node`, with its SHA256 checked); the drop-in below points at `/opt/node/bin/node`.
+2. **Step 3 (snapshot directory)**: do not create `/var/lib/paperclip-storage-manager`. Use `/srv/data/storage-manager` instead, root-owned, mode 0755.
+3. **Step 4 (units)**: copy the service and timer as usual, then copy [`systemd/srv-layout.conf`](systemd/srv-layout.conf) to `/etc/systemd/system/paperclip-storage-collector.service.d/srv-layout.conf` and [`systemd/srv-directories.json`](systemd/srv-directories.json) to `/etc/paperclip-storage-manager.directories.json` (root-owned, not group- or world-writable). Run `systemctl daemon-reload` before starting the service.
+4. **Step 6 (app mount)**: no new mount. Keep the existing read-only bind mount `/srv/data/storage-manager:/run/paperclip-storage:ro` on the app service, and keep the plugin's local folder at `/run/paperclip-storage`.
+
+The drop-in sets `VPS_STATUS_DIRECTORIES_FILE` and `STORAGE_OUTPUT_DIR`, and clears the base unit's `ReadWritePaths` (otherwise the service fails with `226/NAMESPACE` when `/var/lib/paperclip-storage-manager` does not exist). **If `/etc/paperclip-storage-manager.env` exists, systemd gives its values precedence over the drop-in's `Environment=` lines**, so remove `VPS_STATUS_DIRECTORIES_FILE` and `STORAGE_OUTPUT_DIR` from that file or set the `/srv` values there.
+
 ## Workers (optional)
 
 To show the runner containers that execute agents, point `VPS_STATUS_WORKERS_FILE` at a **root-owned** JSON allowlist (same ownership rules as the directories file; nothing is discovered automatically):

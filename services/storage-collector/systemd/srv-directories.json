@@ -1,0 +1,13 @@
+[
+  { "id": "containerd", "label": "Containerd", "path": "/var/lib/containerd" },
+  { "id": "containerd-snapshots", "label": "Containerd · snapshots", "path": "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs" },
+  { "id": "containerd-content", "label": "Containerd · blobs", "path": "/var/lib/containerd/io.containerd.content.v1.content" },
+  { "id": "docker-volumes", "label": "Docker · volumes", "path": "/var/lib/docker/volumes" },
+  { "id": "paperclip-data", "label": "Paperclip · dados persistentes", "path": "/srv/data/paperclip_data" },
+  { "id": "paperclip-pnpm", "label": "Paperclip · pnpm store", "path": "/srv/data/paperclip_data/.local/share/pnpm/store" },
+  { "id": "paperclip-projects", "label": "Paperclip · projetos", "path": "/srv/data/paperclip_data/instances/default/projects" },
+  { "id": "repos", "label": "Repositórios Git", "path": "/srv/data/repos" },
+  { "id": "paperclip-backups", "label": "Paperclip · backups", "path": "/srv/backups" },
+  { "id": "builds", "label": "Paperclip · builds", "path": "/srv/build" },
+  { "id": "root-home", "label": "Host · root", "path": "/root" }
+]
