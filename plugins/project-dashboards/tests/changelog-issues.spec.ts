@@ -344,7 +344,7 @@ describe("import completed issues", () => {
 describe("manifest", () => {
   it("declares the new capabilities, tools, routes and ordered tabs", async () => {
     const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["events.subscribe", "issues.read"]));
     expect(manifest.capabilities).not.toEqual(expect.arrayContaining(["issues.create", "issues.update"]));

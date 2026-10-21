@@ -39,7 +39,7 @@ const post = (_path: string, payload: unknown, extra: ApiCall = {}) => {
 
 describe("manifest declarations", () => {
   it("declares the 15 board routes with company resolution from the query", () => {
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "companies.read"]));
     expect(manifest.apiRoutes?.map((r) => [r.routeKey, r.method, r.path])).toEqual([
       ["dashboards-list", "GET", "/dashboards"],
