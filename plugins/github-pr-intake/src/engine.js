@@ -175,10 +175,8 @@ export function createEngine(ctx, deps = {}) {
       const attempts = (entry.attempts ?? 0) + 1;
       log.warn("github-pr-intake: GitHub fetch failed", { key, attempts, error: message(error) });
       if (attempts >= MAX_FETCH_ATTEMPTS) {
+        // The PR leaves the queue unreviewed; the next reconcile lists the repository again and queues this head.
         await store.dequeue(key);
-        // The PR leaves the queue unreviewed. Forget the listing ETag so the next reconcile lists the
-        // repository again (instead of a 304) and queues this head once GitHub answers.
-        await store.clearEtag(repoCfg.fullName.toLowerCase());
       } else {
         await store.retryLater(key, entry, now() + Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS));
       }
@@ -325,8 +323,7 @@ export function createEngine(ctx, deps = {}) {
         const token = await tokenFor(repoCfg, owner, name);
         if (!token) continue;
         const repoKey = repoCfg.fullName.toLowerCase();
-        const listing = await github.listOpenPulls(token, owner, name, await store.getEtag(repoKey));
-        if (listing.notModified) continue;
+        const listing = await github.listOpenPulls(token, owner, name);
 
         // First look at a repository: pull requests that are already open are recorded as handled instead of
         // reviewed (unless asked otherwise), so adding a repository does not trigger a backlog of reviews.
@@ -367,9 +364,6 @@ export function createEngine(ctx, deps = {}) {
           }
         }
         if (baseline) await store.setBaselined(repoKey);
-        // Remember the listing only after all of it was handled. If a step above throws, the next run
-        // must fetch the listing again instead of getting a 304 and never seeing this work.
-        if (listing.etag) await store.setEtag(repoKey, listing.etag);
       } catch (error) {
         summary.errors += 1;
         log.warn("github-pr-intake: reconcile failed for repository", { repo: repoCfg.fullName, error: message(error) });
