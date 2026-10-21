@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { ORIGIN_KIND } from "../src/constants.js";
 import { handleWebhook } from "../src/webhook.js";
-import { COMPANY, THERMO, CEO, WEBHOOK_SECRET, fixture, pullEvent, rawPull, repoConfig } from "./helpers.mjs";
+import { COMPANY, THERMO, CEO, OTHER_COMPANY, OTHER_TOKEN_REF, OTHER_WEBHOOK_REF, OTHER_WEBHOOK_SECRET, WEBHOOK_SECRET, fixture, pullEvent, rawPull, repoConfig } from "./helpers.mjs";
 
 const SHA1 = "1".repeat(40);
 const SHA2 = "2".repeat(40);
@@ -423,4 +423,54 @@ test("the webhook rejects bad signatures and accepts signed pull_request events"
 test("without a configured webhook secret every delivery is rejected", async () => {
   const f = fixture({ config: { webhookSecretRef: undefined } });
   await assert.rejects(handleWebhook(f.ctx, f.engine, webhook("ping", {})), /invalid webhook signature/);
+});
+
+test("with two companies, a delivery can only act on the repositories of the company whose secret signed it", async () => {
+  const otherCompanies = {
+    [OTHER_COMPANY]: {
+      webhookSecretRef: OTHER_WEBHOOK_REF,
+      githubTokenRefs: { o: OTHER_TOKEN_REF },
+      repositories: [repoConfig({ fullName: "o/other", defaultReviewerAgentId: CEO })],
+    },
+  };
+  const f = fixture({ otherCompanies });
+  const body = (repo, number) => ({
+    action: "opened",
+    repository: { full_name: repo },
+    pull_request: { ...rawPull({ number, sha: SHA1 }), html_url: `https://github.com/${repo}/pull/${number}` },
+  });
+  const send = async (payload, secret) => {
+    const rawBody = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    await handleWebhook(f.ctx, f.engine, {
+      endpointKey: "github",
+      rawBody,
+      headers: { "X-GitHub-Event": "pull_request", "X-GitHub-Delivery": `d-${Math.random()}`, "X-Hub-Signature-256": signature },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  };
+  f.setPull(rawPull({ number: 5, sha: SHA1 }));
+  f.setPull(rawPull({ number: 6, sha: SHA1 }));
+
+  await send(body("wallynm/tesselapp", 5), OTHER_WEBHOOK_SECRET); // company B's secret, company A's repo
+  await send(body("o/other", 6), WEBHOOK_SECRET); // company A's secret, company B's repo
+  assert.equal(f.issues.length, 0, "a secret never grants access to another company's repositories");
+
+  await send(body("o/other", 6), OTHER_WEBHOOK_SECRET);
+  assert.equal(f.issues.length, 1);
+  assert.equal(f.issues[0].companyId, OTHER_COMPANY, "the issue is created in the company that owns the repository");
+  assert.equal(f.issues[0].assigneeAgentId, CEO);
+
+  await send(body("wallynm/tesselapp", 5), WEBHOOK_SECRET);
+  assert.equal(f.issues.length, 2);
+  assert.equal(f.issues[1].companyId, COMPANY);
+});
+
+test("the plugin never asks the host for configuration without a company", async () => {
+  // The fixture throws exactly like the real host on config.get()/secrets.resolve() without a company.
+  const f = fixture();
+  const summary = await f.engine.reconcile();
+  assert.equal(summary.errors, 0);
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  assert.equal(f.issues.length, 1);
 });

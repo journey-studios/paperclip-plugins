@@ -1,6 +1,20 @@
-import { normalizeConfig } from "./config.js";
+import { loadConfig } from "./company-config.js";
 import { normalizeWebhook } from "./events.js";
 import { headerValue, verifyGithubSignature } from "./signature.js";
+
+/**
+ * Finds the company whose webhook secret signed this delivery. Secrets are resolved per delivery and
+ * never cached or logged. Every configured secret is tried so one company's secret can never be used
+ * to act on another company's repositories.
+ */
+async function signingCompany(ctx, config, input) {
+  const signature = headerValue(input.headers, "x-hub-signature-256");
+  for (const { companyId, ref } of config.webhookSecrets) {
+    const secret = await ctx.secrets.resolve(ref, { companyId, configPath: "webhookSecretRef" });
+    if (verifyGithubSignature(input.rawBody, signature, secret)) return companyId;
+  }
+  return null;
+}
 
 /**
  * GitHub webhook entry point. Validates the signature, dedupes and enqueues, then returns:
@@ -9,12 +23,9 @@ import { headerValue, verifyGithubSignature } from "./signature.js";
 export async function handleWebhook(ctx, engine, input) {
   if (input?.endpointKey !== "github") return;
 
-  const config = normalizeConfig(await ctx.config.get());
-  // The secret is resolved per delivery and never cached or logged.
-  const secret = config.webhookSecretRef
-    ? await ctx.secrets.resolve(config.webhookSecretRef, { configPath: "webhookSecretRef" })
-    : null;
-  if (!verifyGithubSignature(input.rawBody, headerValue(input.headers, "x-hub-signature-256"), secret)) {
+  const config = await loadConfig(ctx);
+  const companyId = await signingCompany(ctx, config, input);
+  if (!companyId) {
     ctx.logger.warn("github-pr-intake: rejected webhook with an invalid signature", { requestId: input.requestId });
     throw new Error("invalid webhook signature");
   }
@@ -26,7 +37,7 @@ export async function handleWebhook(ctx, engine, input) {
   }
   if (event.kind !== "pull_request") return;
 
-  const result = await engine.onPullEvent(event);
+  const result = await engine.onPullEvent(event, { companyId });
   ctx.logger.info("github-pr-intake: pull_request handled", {
     deliveryId: event.deliveryId,
     repo: event.repo,

@@ -17,8 +17,8 @@ function ruleMatches(rule, pull, files) {
  * whole list ("every file is ignored") cannot be drawn.
  * @returns {{ action: "skip", reason: string } | { action: "review", reviewerAgentId: string, rule: number | null }}
  */
-export function decideReview(config, repoCfg, pull, files, { filesTruncated = false } = {}) {
-  if (config.killSwitch || repoCfg.killSwitch) return { action: "skip", reason: "kill_switch" };
+export function decideReview(repoCfg, pull, files, { filesTruncated = false } = {}) {
+  if (repoCfg.killSwitch) return { action: "skip", reason: "kill_switch" };
   if (pull.state !== "open") return { action: "skip", reason: "closed" };
   if (pull.draft) return { action: "skip", reason: "draft" };
   if (pull.labels.some((label) => repoCfg.skipLabels.includes(label))) {

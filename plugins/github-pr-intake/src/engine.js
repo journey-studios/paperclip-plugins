@@ -1,5 +1,5 @@
 import { CANCEL_ACTIONS, HANDLED_ACTIONS, ORIGIN_KIND, TERMINAL_ISSUE_STATUSES } from "./constants.js";
-import { normalizeConfig } from "./config.js";
+import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
 import { createGithubClient } from "./github-client.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
@@ -28,12 +28,12 @@ export function createEngine(ctx, deps = {}) {
   const locks = new Map();
   let kicking = false;
 
-  const loadConfig = async () => normalizeConfig(await ctx.config.get());
+  const loadConfig = () => loadMergedConfig(ctx);
 
-  async function tokenFor(config, owner) {
-    const ref = config.githubTokenRefs[owner.toLowerCase()] ?? config.githubTokenRefs["*"];
+  async function tokenFor(repoCfg, owner) {
+    const ref = repoCfg.tokenRefs[owner.toLowerCase()] ?? repoCfg.tokenRefs["*"];
     if (!ref) return null;
-    const value = await ctx.secrets.resolve(ref, { configPath: `githubTokenRefs.${owner}` });
+    const value = await ctx.secrets.resolve(ref, { companyId: repoCfg.companyId, configPath: `githubTokenRefs.${owner}` });
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
@@ -62,12 +62,12 @@ export function createEngine(ctx, deps = {}) {
     }
   }
 
-  async function activeReviews(exceptKey) {
+  async function activeReviews(exceptKey, companyId) {
     let active = 0;
     for (const key of await store.prKeys()) {
       if (key === exceptKey) continue;
       const record = await store.getPr(key);
-      if (record?.status !== "reviewing") continue;
+      if (record?.status !== "reviewing" || record.companyId !== companyId) continue;
       const issue = await ctx.issues.get(record.issueId, record.companyId);
       if (isTerminal(issue)) await store.savePr(key, { ...record, status: "finished", updatedAt: now() });
       else active += 1;
@@ -102,11 +102,13 @@ export function createEngine(ctx, deps = {}) {
   }
 
   /** Cheap, webhook-safe step: decide and enqueue. The heavy work happens in processDue. */
-  async function onPullEvent({ deliveryId, action, repo, pull }) {
+  async function onPullEvent({ deliveryId, action, repo, pull }, { companyId } = {}) {
     const config = await loadConfig();
-    if (config.killSwitch) return { status: "ignored", reason: "kill_switch" };
     const repoCfg = config.repositories.get(repo.toLowerCase());
     if (!repoCfg) return { status: "ignored", reason: "repo_not_configured" };
+    // The delivery was signed with one company's secret: it may only touch that company's repositories.
+    if (companyId && repoCfg.companyId !== companyId) return { status: "ignored", reason: "repo_not_in_company" };
+    if (repoCfg.killSwitch) return { status: "ignored", reason: "kill_switch" };
     if (deliveryId && !(await store.markDeliverySeen(deliveryId))) return { status: "duplicate" };
 
     const key = prKey(repo, pull.number);
@@ -116,7 +118,7 @@ export function createEngine(ctx, deps = {}) {
     }
     if (!HANDLED_ACTIONS.has(action)) return { status: "ignored", reason: "action_not_handled" };
 
-    const first = decideReview(config, repoCfg, pull, null);
+    const first = decideReview(repoCfg, pull, null);
     if (first.action === "skip") return { status: "skipped", reason: first.reason };
 
     // Only pushes are debounced: a newly opened or ready PR is reviewed right away.
@@ -131,14 +133,14 @@ export function createEngine(ctx, deps = {}) {
     const entry = await store.getQueue(key);
     if (!entry || entry.dueAt > now()) return "not_due";
     const config = await loadConfig();
-    if (config.killSwitch) return "kill_switch";
     const repoCfg = config.repositories.get(entry.repo.toLowerCase());
     if (!repoCfg) {
       await store.dequeue(key);
       return "repo_not_configured";
     }
+    if (repoCfg.killSwitch) return "kill_switch";
     const [owner, name] = repoCfg.fullName.split("/");
-    const token = await tokenFor(config, owner);
+    const token = await tokenFor(repoCfg, owner);
     if (!token) {
       log.warn("github-pr-intake: no GitHub token for owner", { owner });
       await store.retryLater(key, entry, now() + RETRY_MAX_MS);
@@ -168,7 +170,7 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const record = (await store.getPr(key)) ?? { repo: repoCfg.fullName, number: pull.number };
-    const decision = decideReview(config, repoCfg, pull, files, { filesTruncated });
+    const decision = decideReview(repoCfg, pull, files, { filesTruncated });
     if (decision.action === "skip") {
       await store.dequeue(key);
       // handledSha stops reconcile from queueing this head again until a new commit arrives.
@@ -204,7 +206,7 @@ export function createEngine(ctx, deps = {}) {
       issue = found.find((candidate) => !isTerminal(candidate)) ?? null;
     }
     // A new issue is about to be opened (none, or the previous one is finished): respect the cap.
-    if ((!issue || isTerminal(issue)) && (await activeReviews(key)) >= config.maxConcurrentReviews) {
+    if ((!issue || isTerminal(issue)) && (await activeReviews(key, repoCfg.companyId)) >= repoCfg.maxConcurrentReviews) {
       await store.retryLater(key, { ...entry, attempts: 0 }, now() + CAPACITY_RETRY_MS);
       return "at_capacity";
     }
@@ -298,14 +300,13 @@ export function createEngine(ctx, deps = {}) {
   async function reconcile({ maxProcess = 20 } = {}) {
     const summary = { repos: 0, enqueued: 0, cancelled: 0, wakeRetried: 0, processed: 0, errors: 0 };
     const config = await loadConfig();
-    if (config.killSwitch) return { ...summary, skipped: "kill_switch" };
 
     for (const repoCfg of config.repositories.values()) {
       if (repoCfg.killSwitch) continue;
       summary.repos += 1;
       const [owner, name] = repoCfg.fullName.split("/");
       try {
-        const token = await tokenFor(config, owner);
+        const token = await tokenFor(repoCfg, owner);
         if (!token) continue;
         const repoKey = repoCfg.fullName.toLowerCase();
         const listing = await github.listOpenPulls(token, owner, name, await store.getEtag(repoKey));
@@ -316,7 +317,7 @@ export function createEngine(ctx, deps = {}) {
           const pull = normalizePull(repoCfg.fullName, raw);
           const key = prKey(repoCfg.fullName, pull.number);
           open.add(key);
-          if (decideReview(config, repoCfg, pull, null).action !== "review") continue;
+          if (decideReview(repoCfg, pull, null).action !== "review") continue;
           const [record, queued] = [await store.getPr(key), await store.getQueue(key)];
           if (queued || record?.reviewedSha === pull.headSha || record?.handledSha === pull.headSha) continue;
           await withLock(key, () =>

@@ -50,7 +50,8 @@ publisher may use. The pull request itself is passed as untrusted data, never as
 
 1. Create secrets in Paperclip for the webhook secret and for one GitHub token per repository owner
    (read access to pull requests; the bot account that publishes reviews needs access to the repository).
-2. Configure the plugin (example; ids are placeholders):
+2. Configure the plugin **per company** (the host stores plugin configuration per company, so a repository
+   belongs to the company whose configuration lists it). Example; ids are placeholders:
 
    ```json
    {
@@ -60,7 +61,6 @@ publisher may use. The pull request itself is passed as untrusted data, never as
      "repositories": [
        {
          "fullName": "journey-studios/example",
-         "companyId": "…",
          "defaultReviewerAgentId": "…",
          "authority": "comment",
          "rules": [{ "reviewerAgentId": "…", "paths": ["packages/billing/**"] }]
@@ -69,12 +69,15 @@ publisher may use. The pull request itself is passed as untrusted data, never as
    }
    ```
 
+   A webhook does not say which company it is for, so the plugin reads every company's configuration and
+   accepts a delivery only for the repositories of the company whose webhook secret signed it.
+
 3. Add a GitHub webhook (content type `application/json`, event `pull_request`, same secret) pointing to
    `https://<paperclip-host>/api/plugins/journey-studios.github-pr-intake/webhooks/github`.
 
 ## Operations
 
-- `killSwitch` (global or per repository) pauses reviews; queued PRs resume when it is switched off.
+- `killSwitch` (per company or per repository) pauses reviews; queued PRs resume when it is switched off.
 - Deliveries are recorded by the host in `plugin_webhook_deliveries`; reconcile results are logged by the job.
 - Tokens and the webhook secret are resolved per call and never cached or logged.
 
