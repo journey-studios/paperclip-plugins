@@ -56,7 +56,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
   const logs = [];
   const pulls = new Map();
   const files = new Map();
-  let listing = { notModified: false, etag: "etag-1", pulls: [] };
+  let listing = { pulls: [] };
   let tokenAvailable = true;
 
   const cfg = {
@@ -132,11 +132,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
         truncated: entry?.truncated ?? false,
       };
     },
-    // Like the real client: a conditional request for an unchanged listing is "not modified".
-    listOpenPulls: async (_t, _o, _r, etag) => {
-      if (listing.honorEtag && etag && etag === listing.etag) return { notModified: true, etag, pulls: [] };
-      return structuredClone(listing);
-    },
+    listOpenPulls: async () => structuredClone(listing),
   };
 
   const engine = createEngine(ctx, { now: () => clock.t, github, appTokens });

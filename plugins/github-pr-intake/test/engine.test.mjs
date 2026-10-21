@@ -189,7 +189,7 @@ test("reconcile does not requeue a PR that was refused or skipped at the same he
   await f.engine.processDue(); // round 2 > limit: refused
   assert.equal(f.wakes.length, 1);
 
-  f.setListing({ notModified: false, etag: "e5", pulls: [raw] });
+  f.setListing({ pulls: [raw] });
   const before = f.calls.getPull;
   const summary = await f.engine.reconcile();
   assert.equal(summary.enqueued, 0);
@@ -198,7 +198,7 @@ test("reconcile does not requeue a PR that was refused or skipped at the same he
   // A real new commit is picked up again.
   const newer = rawPull({ number: 5, sha: SHA3 });
   f.setPull(newer);
-  f.setListing({ notModified: false, etag: "e6", pulls: [newer] });
+  f.setListing({ pulls: [newer] });
   assert.equal((await f.engine.reconcile()).enqueued, 1);
 
   // Same for a PR skipped after the file check.
@@ -206,9 +206,9 @@ test("reconcile does not requeue a PR that was refused or skipped at the same he
   docs.setFiles(7, [{ filename: "docs/a.md", status: "modified", additions: 1, deletions: 0 }]);
   const docsPull = rawPull({ number: 7, sha: SHA1 });
   docs.setPull(docsPull);
-  docs.setListing({ notModified: false, etag: "d1", pulls: [docsPull] });
+  docs.setListing({ pulls: [docsPull] });
   assert.equal((await docs.engine.reconcile()).enqueued, 1, "first sight: fetched and skipped");
-  docs.setListing({ notModified: false, etag: "d2", pulls: [docsPull] });
+  docs.setListing({ pulls: [docsPull] });
   assert.equal((await docs.engine.reconcile()).enqueued, 0, "second time: ignored");
 });
 
@@ -238,18 +238,14 @@ test("finished reviews still count towards the round limit", async () => {
   assert.equal(f.comments.filter((c) => /Review limit reached/.test(c.body)).length, 1);
 });
 
-test("the listing ETag is saved only after the listing was fully handled", async () => {
+test("a failed lookup of a possibly-closed PR is retried by the next reconcile", async () => {
   const f = fixture();
   await f.open(rawPull({ number: 5, sha: SHA1 }));
   f.dropPull(5); // GitHub lookup of the possibly-closed PR will now fail
-  f.setListing({ notModified: false, etag: "e1", honorEtag: true, pulls: [] });
+  f.setListing({ pulls: [] });
 
   assert.equal((await f.engine.reconcile()).errors, 1);
-  assert.equal(
-    (await f.engine.reconcile()).errors,
-    1,
-    "the failed run did not store the ETag, so the listing is processed again instead of answering 304",
-  );
+  assert.equal((await f.engine.reconcile()).errors, 1, "the failure is not swallowed: the next run tries again");
 
   f.setPull({ ...rawPull({ number: 5, sha: SHA1 }), state: "closed" });
   const recovered = await f.engine.reconcile();
@@ -259,13 +255,13 @@ test("the listing ETag is saved only after the listing was fully handled", async
   const before = f.calls.getPull;
   const settled = await f.engine.reconcile();
   assert.deepEqual([settled.errors, settled.cancelled], [0, 0]);
-  assert.equal(f.calls.getPull, before, "once handled, an unchanged listing costs nothing");
+  assert.equal(f.calls.getPull, before, "once cancelled, the PR is no longer looked up");
 });
 
 test("a PR dropped after repeated GitHub failures is queued again by the next reconcile", async () => {
   const f = fixture({ config: { repositories: [repoConfig({ debounceSeconds: 0 })] } });
   const raw = rawPull({ number: 5, sha: SHA1 });
-  f.setListing({ notModified: false, etag: "e1", honorEtag: true, pulls: [raw] });
+  f.setListing({ pulls: [raw] });
 
   // GitHub does not know PR 5 yet (lookups fail): reconcile queues it and every attempt fails.
   assert.equal((await f.engine.reconcile()).enqueued, 1);
@@ -276,7 +272,7 @@ test("a PR dropped after repeated GitHub failures is queued again by the next re
   assert.equal(f.issues.length, 0);
   assert.equal(await f.engine.processDue(), 0, "the entry was dropped after the last attempt");
 
-  // The listing is unchanged. Without clearing the ETag this would be a 304 and the PR would be lost.
+  // The listing is unchanged, but the PR was dropped from the queue, so it must be queued again.
   f.setPull(raw);
   const summary = await f.engine.reconcile();
   assert.equal(summary.enqueued, 1, "the repository was listed again and the PR queued");
@@ -354,18 +350,17 @@ test("a missing token keeps the PR queued without creating anything", async () =
   assert.equal(f.issues.length, 1);
 });
 
-test("reconcile recovers a PR whose webhook was missed, and skips unchanged listings", async () => {
+test("reconcile recovers a PR whose webhook was missed, and does not review it twice", async () => {
   const f = fixture();
   const raw = rawPull({ number: 9, sha: SHA1 });
   f.setPull(raw);
-  f.setListing({ notModified: false, etag: "e1", pulls: [raw] });
+  f.setListing({ pulls: [raw] });
   const first = await f.engine.reconcile();
   assert.equal(first.enqueued, 1);
   assert.equal(f.issues.length, 1);
 
-  f.setListing({ notModified: true, etag: "e1", pulls: [] });
   const second = await f.engine.reconcile();
-  assert.equal(second.enqueued, 0);
+  assert.equal(second.enqueued, 0, "the same head is not queued again");
   assert.equal(f.issues.length, 1);
 });
 
@@ -373,7 +368,7 @@ test("reconcile cancels the review of a PR that was closed while the webhook was
   const f = fixture();
   await f.open(rawPull({ number: 5, sha: SHA1 }));
   f.setPull({ ...rawPull({ number: 5, sha: SHA1 }), state: "closed", merged_at: "2026-01-01" });
-  f.setListing({ notModified: false, etag: "e2", pulls: [] });
+  f.setListing({ pulls: [] });
   const summary = await f.engine.reconcile();
   assert.equal(summary.cancelled, 1);
   assert.equal(f.issues[0].status, "cancelled");
@@ -383,7 +378,7 @@ test("reconcile survives a GitHub failure for one repository", async () => {
   const f = fixture({ config: { repositories: [repoConfig(), repoConfig({ fullName: "wallynm/other" })] } });
   const raw = rawPull({ number: 3, sha: SHA1 });
   f.setPull(raw);
-  f.setListing({ notModified: false, etag: "e", pulls: [raw] });
+  f.setListing({ pulls: [raw] });
   const summary = await f.engine.reconcile();
   assert.equal(summary.errors, 0);
   assert.equal(summary.repos, 2);
@@ -479,7 +474,7 @@ test("the first reconcile of a repository records open PRs instead of reviewing 
   const f = fixture({ config: { repositories: [repoConfig({ reviewExistingPullRequests: false })] } });
   const old = rawPull({ number: 3, sha: SHA1 });
   f.setPull(old);
-  f.setListing({ notModified: false, etag: "e1", pulls: [old] });
+  f.setListing({ pulls: [old] });
   const first = await f.engine.reconcile();
   assert.equal(first.enqueued, 0);
   assert.equal(f.issues.length, 0);
@@ -487,18 +482,18 @@ test("the first reconcile of a repository records open PRs instead of reviewing 
   // A later push to the same PR is a normal event and gets reviewed.
   const pushed = rawPull({ number: 3, sha: SHA2 });
   f.setPull(pushed);
-  f.setListing({ notModified: false, etag: "e2", pulls: [pushed] });
+  f.setListing({ pulls: [pushed] });
   const second = await f.engine.reconcile();
   assert.equal(second.enqueued, 1);
 });
 
 test("a PR opened after the baseline is reviewed by the next reconcile", async () => {
   const f = fixture({ config: { repositories: [repoConfig({ reviewExistingPullRequests: false })] } });
-  f.setListing({ notModified: false, etag: "e1", pulls: [] });
+  f.setListing({ pulls: [] });
   await f.engine.reconcile();
   const fresh = rawPull({ number: 8, sha: SHA1 });
   f.setPull(fresh);
-  f.setListing({ notModified: false, etag: "e2", pulls: [fresh] });
+  f.setListing({ pulls: [fresh] });
   const summary = await f.engine.reconcile();
   assert.equal(summary.enqueued, 1);
 });
@@ -508,7 +503,7 @@ test("the baseline leaves alone a PR that already has a webhook queued", async (
   const raw = rawPull({ number: 4, sha: SHA1 });
   f.setPull(raw);
   await f.engine.onPullEvent(pullEvent("synchronize", raw), { companyId: COMPANY });
-  f.setListing({ notModified: false, etag: "e1", pulls: [raw] });
+  f.setListing({ pulls: [raw] });
   await f.engine.reconcile();
   f.advance(120_000);
   await f.engine.processDue();
