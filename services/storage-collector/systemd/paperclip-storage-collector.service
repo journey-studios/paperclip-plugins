@@ -1,5 +1,5 @@
 [Unit]
-Description=Read-only Journey Studios Paperclip storage metrics collection
+Description=Read-only VPS status (disk, CPU, memory, Docker) collection for Paperclip
 Documentation=https://github.com/journey-studios/paperclip-plugins/tree/main/services/storage-collector
 After=docker.service
 Wants=docker.service
@@ -11,6 +11,11 @@ Group=root
 UMask=0022
 Environment=STORAGE_OUTPUT_DIR=/var/lib/paperclip-storage-manager
 EnvironmentFile=-/etc/paperclip-storage-manager.env
+# Optional (must be root-owned, not group/world-writable):
+# Environment=VPS_STATUS_DIRECTORIES_FILE=/etc/paperclip-storage-manager.directories.json
+# Environment=VPS_STATUS_WORKERS_FILE=/etc/paperclip-storage-manager.workers.json
+# Environment=VPS_STATUS_WORKTREES_FILE=/etc/paperclip-storage-manager.worktrees.json
+# Environment=VPS_STATUS_ATTRIBUTION_MAX_AGE_MINUTES=60
 ExecStart=/usr/bin/node /opt/paperclip-storage-collector/src/collect.mjs
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -20,4 +25,4 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX
-TimeoutStartSec=240
+TimeoutStartSec=600
