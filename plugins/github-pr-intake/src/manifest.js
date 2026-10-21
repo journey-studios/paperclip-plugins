@@ -50,6 +50,11 @@ const repository = {
     maxRoundsPerPr: { type: "integer", minimum: 1, default: 3, title: "Review rounds per PR" },
     killSwitch: { type: "boolean", default: false, title: "Pause reviews for this repository" },
     deliveryNotes: { type: "string", title: "Extra notes added to every review package" },
+    reviewExistingPullRequests: {
+      type: "boolean",
+      default: false,
+      title: "Also review pull requests that were already open when the repository was added",
+    },
   },
   required: ["fullName", "defaultReviewerAgentId"],
 };

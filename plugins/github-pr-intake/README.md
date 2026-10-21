@@ -19,6 +19,9 @@ GitHub webhook (pull_request) ─► signature check ─► dedupe ─► queue 
   webhook can never review an old commit. Replayed deliveries (`X-GitHub-Delivery`) are ignored.
 - **Pushes are debounced** (`debounceSeconds`, default 60, capped at 10 minutes) and land on the same
   issue as a new round, up to `maxRoundsPerPr` (default 3).
+- **Existing PRs are not reviewed.** The first reconcile of a repository only records the PRs that are
+  already open (a later push or a newly opened PR is reviewed normally). Set
+  `reviewExistingPullRequests: true` on the repository to review them too.
 - **Capacity:** at most `maxConcurrentReviews` review issues are open at once; the rest wait.
 - **Reconcile** lists open PRs every minute (conditional requests, so an unchanged repository is free) and
   enqueues any PR whose head was never reviewed, so a missed webhook costs at most a minute.

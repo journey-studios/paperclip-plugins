@@ -22,6 +22,7 @@ const REPO_KEYS = new Set([
   "maxRoundsPerPr",
   "killSwitch",
   "deliveryNotes",
+  "reviewExistingPullRequests",
 ]);
 const RULE_KEYS = new Set(["reviewerAgentId", "paths", "labels", "authors", "baseBranches"]);
 
@@ -77,6 +78,9 @@ export function validateConfig(value) {
     }
     if (r.authority !== undefined && !AUTHORITIES.includes(r.authority)) {
       errors.push(`${at}.authority must be one of ${AUTHORITIES.join(", ")}`);
+    }
+    if (r.reviewExistingPullRequests !== undefined && typeof r.reviewExistingPullRequests !== "boolean") {
+      errors.push(`${at}.reviewExistingPullRequests must be a boolean`);
     }
     if (
       r.debounceSeconds !== undefined &&
@@ -143,6 +147,7 @@ export function normalizeConfig(raw, companyId) {
       // The company-wide kill switch pauses every repository of that company.
       killSwitch: r.killSwitch === true || config.killSwitch === true,
       deliveryNotes: typeof r.deliveryNotes === "string" ? r.deliveryNotes : "",
+      reviewExistingPullRequests: r.reviewExistingPullRequests === true,
     });
   }
   return {

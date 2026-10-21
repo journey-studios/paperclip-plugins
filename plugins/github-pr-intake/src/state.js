@@ -67,6 +67,10 @@ export function createStore(ctx) {
       await removeFromIndex("queue-index", key);
     },
 
+    /** A repository is "baselined" once its pre-existing open PRs were recorded without reviewing them. */
+    isBaselined: async (repoKey) => (await read(`baselined:${repoKey}`)) === true,
+    setBaselined: (repoKey) => write(`baselined:${repoKey}`, true),
+
     getEtag: (repoKey) => read(`etag:${repoKey}`),
     setEtag: (repoKey, etag) => write(`etag:${repoKey}`, etag),
     clearEtag: (repoKey) => remove(`etag:${repoKey}`),

@@ -312,6 +312,9 @@ export function createEngine(ctx, deps = {}) {
         const listing = await github.listOpenPulls(token, owner, name, await store.getEtag(repoKey));
         if (listing.notModified) continue;
 
+        // First look at a repository: pull requests that are already open are recorded as handled instead of
+        // reviewed (unless asked otherwise), so adding a repository does not trigger a backlog of reviews.
+        const baseline = !repoCfg.reviewExistingPullRequests && !(await store.isBaselined(repoKey));
         const open = new Set();
         for (const raw of listing.pulls) {
           const pull = normalizePull(repoCfg.fullName, raw);
@@ -319,6 +322,18 @@ export function createEngine(ctx, deps = {}) {
           open.add(key);
           if (decideReview(repoCfg, pull, null).action !== "review") continue;
           const [record, queued] = [await store.getPr(key), await store.getQueue(key)];
+          // Only PRs the plugin has never seen are part of the backlog; anything it already tracks or
+          // has queued (a webhook that arrived before the first reconcile) keeps its normal flow.
+          if (baseline && !record && !queued) {
+            await store.savePr(key, {
+              repo: repoCfg.fullName,
+              number: pull.number,
+              companyId: repoCfg.companyId,
+              handledSha: pull.headSha,
+              updatedAt: now(),
+            });
+            continue;
+          }
           if (queued || record?.reviewedSha === pull.headSha || record?.handledSha === pull.headSha) continue;
           await withLock(key, () =>
             store.enqueue(key, { repo: repoCfg.fullName, number: pull.number, headSha: pull.headSha, dueAt: now(), action: "reconcile" }),
@@ -335,6 +350,7 @@ export function createEngine(ctx, deps = {}) {
             summary.cancelled += 1;
           }
         }
+        if (baseline) await store.setBaselined(repoKey);
         // Remember the listing only after all of it was handled. If a step above throws, the next run
         // must fetch the listing again instead of getting a 304 and never seeing this work.
         if (listing.etag) await store.setEtag(repoKey, listing.etag);

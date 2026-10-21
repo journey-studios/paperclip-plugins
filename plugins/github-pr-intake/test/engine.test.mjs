@@ -474,3 +474,43 @@ test("the plugin never asks the host for configuration without a company", async
   await f.open(rawPull({ number: 5, sha: SHA1 }));
   assert.equal(f.issues.length, 1);
 });
+
+test("the first reconcile of a repository records open PRs instead of reviewing them", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ reviewExistingPullRequests: false })] } });
+  const old = rawPull({ number: 3, sha: SHA1 });
+  f.setPull(old);
+  f.setListing({ notModified: false, etag: "e1", pulls: [old] });
+  const first = await f.engine.reconcile();
+  assert.equal(first.enqueued, 0);
+  assert.equal(f.issues.length, 0);
+
+  // A later push to the same PR is a normal event and gets reviewed.
+  const pushed = rawPull({ number: 3, sha: SHA2 });
+  f.setPull(pushed);
+  f.setListing({ notModified: false, etag: "e2", pulls: [pushed] });
+  const second = await f.engine.reconcile();
+  assert.equal(second.enqueued, 1);
+});
+
+test("a PR opened after the baseline is reviewed by the next reconcile", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ reviewExistingPullRequests: false })] } });
+  f.setListing({ notModified: false, etag: "e1", pulls: [] });
+  await f.engine.reconcile();
+  const fresh = rawPull({ number: 8, sha: SHA1 });
+  f.setPull(fresh);
+  f.setListing({ notModified: false, etag: "e2", pulls: [fresh] });
+  const summary = await f.engine.reconcile();
+  assert.equal(summary.enqueued, 1);
+});
+
+test("the baseline leaves alone a PR that already has a webhook queued", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ reviewExistingPullRequests: false })] } });
+  const raw = rawPull({ number: 4, sha: SHA1 });
+  f.setPull(raw);
+  await f.engine.onPullEvent(pullEvent("synchronize", raw), { companyId: COMPANY });
+  f.setListing({ notModified: false, etag: "e1", pulls: [raw] });
+  await f.engine.reconcile();
+  f.advance(120_000);
+  await f.engine.processDue();
+  assert.equal(f.issues.length, 1);
+});

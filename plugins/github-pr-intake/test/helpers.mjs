@@ -20,6 +20,8 @@ export function repoConfig(overrides = {}) {
     authority: "approve",
     debounceSeconds: 60,
     maxRoundsPerPr: 3,
+    // Most tests exercise the review flow; the baseline behaviour has its own tests.
+    reviewExistingPullRequests: true,
     ...overrides,
   };
 }
