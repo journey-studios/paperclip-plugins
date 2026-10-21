@@ -47,6 +47,18 @@ To show the runner containers that execute agents, point `VPS_STATUS_WORKERS_FIL
 
 1 to 12 entries; `id` is lowercase letters, digits and hyphens; `container` is a plain Docker container name (no `/` or leading `-`); `label` follows the directory label rules. For each entry the collector runs only `docker inspect` (state, health, start time, restart count, OOM flag) and one `docker stats --no-stream` for the running ones, always passing names after `--`. A container that does not exist is reported as `missing`, and a failed probe as `unknown` with a `workers` coverage issue. CPU is per container: 100% is one core. Without the file the `workers` list is empty and the page hides the section.
 
+## Worktrees (optional)
+
+To measure each git worktree on its own, point `VPS_STATUS_WORKTREES_FILE` at a **root-owned** JSON list of *roots*, directories whose immediate subfolders are worktrees (same ownership rules and entry format as the directories file, at most 6 roots):
+
+```json
+[
+  { "id": "tessel", "label": "Tessel", "path": "/srv/data/paperclip_data/instances/default/projects/<company>/<project>/tesselapp/.paperclip/worktrees" }
+]
+```
+
+For each root the collector lists the direct children, ignores files and symlinks, skips names outside `[A-Za-z0-9._-]` (reported as an `invalid_name` coverage issue), keeps the 40 most recently modified (`truncated` otherwise) and runs `du -x -s -B1` on each, under a shared two-minute budget (`deadline_exceeded` marks the rest unavailable). The snapshot's `worktrees` list carries the name, size and last-modified time. Sizes are per worktree: files shared by hardlink (such as a pnpm store) count in every worktree, so the sum can exceed real disk use. The unit's `TimeoutStartSec` is 420 s to leave room for this scan.
+
 ## Snapshot schema 2
 
 Adds an optional `workers` list (see above) and `cpu` (`cores`, `usagePercent`, `load1/5/15`), `memory` (`totalBytes`, `availableBytes`, `usedBytes`, `usedPercent`, `swapTotalBytes`, `swapUsedBytes`) and `uptimeSeconds`. A failed CPU or memory probe leaves that field `null` and adds a `cpu`/`memory` `read_failed` coverage issue; disk metrics are unaffected. History entries gain optional `cpuPercent` and `memoryUsedBytes`. The plugin still reads schema 1.

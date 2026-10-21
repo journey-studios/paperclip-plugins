@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertTrustedConfigFile, collect, collectWorkers, cpuUsagePercent, parseContainerState, parseContainerStats, parseWorkerConfig, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
+import { assertTrustedConfigFile, collect, collectWorkers, collectWorktrees, cpuUsagePercent, parseContainerState, parseContainerStats, parseWorkerConfig, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDf, parseDirectoryConfig, parseDocker, parseDu, parseHumanBytes, parseMeminfo } from "../src/lib.mjs";
 
 const df = "1B-blocks Used Available Use%\n10000 8000 2000 80%\n";
 const docker = [
@@ -285,4 +285,50 @@ test("collect puts workers in the snapshot and reports their issues as partial c
   assert.equal(value.workers[0].state, "running");
   assert.deepEqual(value.coverage.issues, [{ source: "workers", code: "stats_failed" }]);
   assert.equal((await collect({ ...host, run, now: () => date, directories: [] })).workers.length, 0);
+});
+const root = { id: "tessel", label: "Tessel", path: "/srv/projects/tessel/.paperclip/worktrees" };
+const entry = (name, extra = {}) => ({ name, isDirectory: true, isSymlink: false, ...extra });
+test("worktrees are measured one level deep, newest first, skipping symlinks, files and unsafe names", async () => {
+  const duCalls = [];
+  const run = async (cmd, args) => { duCalls.push([cmd, ...args]); return "4096\t" + args.at(-1) + "\n"; };
+  const mtimes = { "JOU-1-old": "2026-10-01T00:00:00.000Z", "JOU-2-new": "2026-10-20T00:00:00.000Z" };
+  const { rows, issues } = await collectWorktrees({
+    run, roots: [root],
+    listDir: async () => [entry("JOU-1-old"), entry("JOU-2-new"), entry("link", { isDirectory: false, isSymlink: true }), entry("notes.txt", { isDirectory: false }), entry("bad name"), entry("$(rm -rf)")],
+    modifiedAt: async (path) => mtimes[path.split("/").at(-1)],
+  });
+  assert.deepEqual(rows.map((row) => row.name), ["JOU-2-new", "JOU-1-old"]);
+  assert.deepEqual(rows[0], { rootId: "tessel", rootLabel: "Tessel", name: "JOU-2-new", modifiedAt: "2026-10-20T00:00:00.000Z", status: "ok", bytes: 4096 });
+  assert.deepEqual(issues, [{ source: "worktrees", code: "invalid_name" }]);
+  assert.deepEqual(duCalls[0], ["du", "-x", "-s", "-B1", "--", root.path + "/JOU-2-new"]);
+  assert.equal(duCalls.length, 2);
+});
+test("worktree scanning isolates a missing root, a failed du, a long list and the deadline", async () => {
+  const missing = await collectWorktrees({ run: async () => "", roots: [root], listDir: async () => { throw Object.assign(new Error("x"), { code: "ENOENT" }); }, modifiedAt: async () => null });
+  assert.deepEqual(missing, { rows: [], issues: [] });
+  const denied = await collectWorktrees({ run: async () => "", roots: [root], listDir: async () => { throw Object.assign(new Error("private"), { code: "EACCES" }); }, modifiedAt: async () => null });
+  assert.deepEqual(denied.issues, [{ source: "worktrees", code: "list_failed" }]);
+  const many = Array.from({ length: 45 }, (_, i) => entry("w" + String(i).padStart(2, "0")));
+  const failing = await collectWorktrees({
+    run: async (cmd, args) => { if (args.at(-1).endsWith("w00")) throw new Error("private du failure"); return "10\t" + args.at(-1); },
+    roots: [root], listDir: async () => many, modifiedAt: async (path) => "2026-10-20T00:00:" + path.slice(-2) + ".000Z".replace(/^.*$/, ""),
+  });
+  assert.equal(failing.rows.length, 40);
+  assert.ok(failing.issues.some((item) => item.code === "truncated"));
+  assert.ok(!JSON.stringify(failing).includes("private"));
+  let elapsed = 0;
+  const slow = await collectWorktrees({
+    run: async (cmd, args, timeout) => { elapsed += timeout; return "10\t" + args.at(-1); },
+    roots: [root], listDir: async () => [entry("a"), entry("b"), entry("c")], modifiedAt: async () => null, clock: () => elapsed, budgetMs: 100_000,
+  });
+  assert.deepEqual(slow.rows.map((row) => row.status), ["ok", "ok", "unavailable"]);
+  assert.deepEqual(slow.issues, [{ source: "worktrees", code: "deadline_exceeded" }]);
+});
+test("collect adds worktrees to the snapshot, and the root list reuses the directory config rules with a smaller cap", async () => {
+  const run = async (cmd) => cmd === "df" ? df : cmd === "docker" ? docker : "100\t/x\n";
+  const value = await collect({ ...host, run, now: () => date, directories: [], worktreeRoots: [root], listDir: async () => [entry("JOU-9")], modifiedAt: async () => "2026-10-20T00:00:00.000Z" });
+  assert.equal(value.worktrees[0].name, "JOU-9");
+  assert.deepEqual((await collect({ ...host, run, now: () => date, directories: [] })).worktrees, []);
+  assert.equal(parseDirectoryConfig(JSON.stringify([root]), 6).length, 1);
+  assert.throws(() => parseDirectoryConfig(JSON.stringify(Array.from({ length: 7 }, (_, i) => ({ id: "r" + i, label: "R", path: "/r" + i }))), 6), /1 to 6/);
 });

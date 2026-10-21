@@ -94,8 +94,25 @@ function sanitizeWorkers(input) {
     }];
   });
 }
+const WORKTREE_NAME = /^[A-Za-z0-9._-]{1,120}$/;
+const MAX_WORKTREES = 100;
+// Worktrees are listed by the collector from operator-chosen roots; keep only safe names and sort by size.
+function sanitizeWorktrees(input) {
+  return (Array.isArray(input) ? input : []).slice(0, MAX_WORKTREES).flatMap((row) => {
+    if (!object(row) || typeof row.name !== "string" || !WORKTREE_NAME.test(row.name) || typeof row.rootId !== "string" || !DIRECTORY_ID.test(row.rootId)) return [];
+    const ok = row.status === "ok";
+    let bytesValue = null;
+    if (ok) { try { bytesValue = bytes(row.bytes, "worktree bytes"); } catch { return []; } }
+    const modified = typeof row.modifiedAt === "string" && Number.isFinite(Date.parse(row.modifiedAt)) ? new Date(row.modifiedAt).toISOString() : null;
+    return [{
+      rootId: row.rootId,
+      rootLabel: typeof row.rootLabel === "string" && row.rootLabel.length <= 70 && !row.rootLabel.includes("/") ? row.rootLabel : row.rootId,
+      name: row.name, status: ok ? "ok" : "unavailable", bytes: bytesValue, modifiedAt: modified,
+    }];
+  }).sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1) || a.name.localeCompare(b.name));
+}
 function empty(companyId, status, reason) {
-  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, workers: [], docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
+  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, workers: [], worktrees: [], docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
 }
 function safeCoverage(raw) {
   const coverage = object(raw);
@@ -168,6 +185,7 @@ export function sanitizeSnapshot(input, now = Date.now()) {
     memory: sanitizeMemory(raw.memory),
     uptimeSeconds: Number.isSafeInteger(raw.uptimeSeconds) && raw.uptimeSeconds >= 0 ? raw.uptimeSeconds : null,
     workers: sanitizeWorkers(raw.workers),
+    worktrees: sanitizeWorktrees(raw.worktrees),
     directories, docker, history, alerts, coverage: safeCoverage(raw.coverage),
   };
 }

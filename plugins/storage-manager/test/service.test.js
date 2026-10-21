@@ -158,3 +158,19 @@ test("workers keep only listed shapes and degrade usage fields one by one", () =
   assert.ok(!JSON.stringify(value).includes("never-return"));
   assert.deepEqual(sanitizeSnapshot(raw, now).workers, []);
 });
+test("worktrees keep only safe names and roots, and are sorted by size", () => {
+  const value = sanitizeSnapshot({ ...raw, schemaVersion: 2, worktrees: [
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-1-small", status: "ok", bytes: 100, modifiedAt: "2026-10-20T00:00:00.000Z", path: "/never-return" },
+    { rootId: "tessel", rootLabel: "/srv/secret", name: "JOU-2-big", status: "ok", bytes: 900, modifiedAt: "garbage" },
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-3-failed", status: "boom", bytes: 5 },
+    { rootId: "tessel", rootLabel: "Tessel", name: "bad name", status: "ok", bytes: 1 },
+    { rootId: "tessel", rootLabel: "Tessel", name: "../etc", status: "ok", bytes: 1 },
+    { rootId: "Bad Root", rootLabel: "X", name: "ok-name", status: "ok", bytes: 1 },
+    { rootId: "tessel", rootLabel: "Tessel", name: "negative", status: "ok", bytes: -3 },
+  ] }, now);
+  assert.deepEqual(value.worktrees.map((row) => [row.name, row.bytes, row.status]), [["JOU-2-big", 900, "ok"], ["JOU-1-small", 100, "ok"], ["JOU-3-failed", null, "unavailable"]]);
+  assert.equal(value.worktrees[0].rootLabel, "tessel");
+  assert.equal(value.worktrees[0].modifiedAt, null);
+  assert.ok(!JSON.stringify(value).includes("never-return"));
+  assert.deepEqual(sanitizeSnapshot(raw, now).worktrees, []);
+});

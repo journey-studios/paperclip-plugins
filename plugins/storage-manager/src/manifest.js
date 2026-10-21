@@ -31,7 +31,7 @@ const manifest = {
     {
       name: "vps_status",
       displayName: "VPS status",
-      description: "Read the latest collected VPS status: disk capacity, CPU, memory and swap, uptime, worker containers, Docker accounting, freshness and coverage (no cleanup).",
+      description: "Read the latest collected VPS status: disk capacity, CPU, memory and swap, uptime, worker containers, worktree sizes, Docker accounting, freshness and coverage (no cleanup).",
       parametersSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {

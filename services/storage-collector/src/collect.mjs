@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, parseDirectoryConfig, parseWorkerConfig } from "./lib.mjs";
+import { assertTrustedConfigFile, collect, DIRECTORIES, inspectDirectory, makeHistory, parseAlertPolicy, MAX_WORKTREE_ROOTS, parseDirectoryConfig, parseWorkerConfig } from "./lib.mjs";
 
 const exec = promisify(execFile);
 const outDir = process.env.STORAGE_OUTPUT_DIR || "/var/lib/paperclip-storage-manager";
@@ -42,8 +42,15 @@ const workersFile = process.env.VPS_STATUS_WORKERS_FILE;
 if (workersFile && (!isAbsolute(workersFile) || workersFile.includes(".."))) throw new Error("Invalid workers file path");
 if (workersFile) assertTrustedConfigFile(await stat(workersFile));
 const workers = workersFile ? parseWorkerConfig(await readFile(workersFile, "utf8")) : [];
+// Optional root-owned list of directories whose subfolders are git worktrees to measure (none by default).
+const worktreesFile = process.env.VPS_STATUS_WORKTREES_FILE;
+if (worktreesFile && (!isAbsolute(worktreesFile) || worktreesFile.includes(".."))) throw new Error("Invalid worktrees file path");
+if (worktreesFile) assertTrustedConfigFile(await stat(worktreesFile));
+const worktreeRoots = worktreesFile ? parseDirectoryConfig(await readFile(worktreesFile, "utf8"), MAX_WORKTREE_ROOTS) : [];
 const snapshot = await collect({
-  run, alertPolicy: policy, directories, workers,
+  run, alertPolicy: policy, directories, workers, worktreeRoots,
+  listDir: async (path) => (await readdir(path, { withFileTypes: true })).map((entry) => ({ name: entry.name, isDirectory: entry.isDirectory(), isSymlink: entry.isSymbolicLink() })),
+  modifiedAt: async (path) => (await stat(path)).mtime.toISOString(),
   readText: (path) => readFile(path, "utf8"),
   inspect: (path) => inspectDirectory(path, access),
 });

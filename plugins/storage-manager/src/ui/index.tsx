@@ -16,6 +16,7 @@ type WorkerRow = {
   startedAt: string | null; restartCount: number; oomKilled: boolean;
   cpuPercent: number | null; memoryUsedBytes: number | null; memoryLimitBytes: number | null; memoryPercent: number | null; pids: number | null;
 };
+type WorktreeRow = { rootId: string; rootLabel: string; name: string; status: "ok" | "unavailable"; bytes: number | null; modifiedAt: string | null };
 type CpuInfo = { cores: number; usagePercent: number; load1: number; load5: number; load15: number };
 type MemoryInfo = { totalBytes: number; availableBytes: number; usedBytes: number; usedPercent: number; swapTotalBytes: number; swapUsedBytes: number };
 type StorageSnapshot = {
@@ -28,6 +29,7 @@ type StorageSnapshot = {
   memory: MemoryInfo | null;
   uptimeSeconds: number | null;
   workers?: WorkerRow[];
+  worktrees?: WorktreeRow[];
   directories: SizeRow[];
   docker: DockerRow[];
   history: HistoryPoint[];
@@ -133,6 +135,21 @@ function LineChart({ points, pick = (p) => p.usedBytes, format = formatBytes, la
   </div>;
 }
 
+function WorktreesSection({ rows }: { rows: WorktreeRow[] }) {
+  const measured = rows.filter((row): row is WorktreeRow & { bytes: number } => row.bytes != null);
+  const total = measured.reduce((sum, row) => sum + row.bytes, 0);
+  const largest = measured[0]?.bytes || 1;
+  return <section className="section" aria-label="Worktrees"><div className="section-header"><div><h2>Worktrees</h2><p className="sub">Espaço de cada worktree dos agentes, do maior para o menor. Cada uma é medida separadamente: arquivos compartilhados por hardlink (como o pnpm store) contam em todas, então a soma pode passar do espaço real em disco.</p></div>
+    <span className="small muted">{rows.length} {rows.length === 1 ? "worktree" : "worktrees"} · {formatBytes(total)} somados</span></div>
+    <div className="table-wrap"><table><thead><tr><th>Worktree</th><th>Tamanho</th><th>Modificada</th></tr></thead>
+    <tbody>{rows.map((row) => <tr key={row.rootId + "/" + row.name}>
+      <td><div style={{ overflowWrap: "anywhere" }}>{row.name}</div><div className="small muted">{row.rootLabel}</div>{row.bytes != null && <div className="bar" aria-hidden="true"><span style={{ width: (row.bytes / largest * 100).toFixed(1) + "%" }} /></div>}</td>
+      <td>{row.bytes == null ? "Indisponível" : formatBytes(row.bytes)}</td>
+      <td>{formatTime(row.modifiedAt)}</td>
+    </tr>)}</tbody></table></div>
+  </section>;
+}
+
 export function StorageSidebar(_: PluginSidebarProps) {
   const nav = useHostNavigation();
   return <div className="jsm"><style>{styles}</style><a {...nav.linkProps("/storage")} className="side-link">
@@ -225,6 +242,7 @@ function StorageDashboard({ companyId }: { companyId: string }) {
           <td>{worker.restartCount}</td>
         </tr>)}</tbody></table></div>
       </section>}
+      {snapshot.worktrees && snapshot.worktrees.length > 0 && <WorktreesSection rows={snapshot.worktrees} />}
       <h2 style={{ margin: "1.2rem 0 .8rem" }}>Disco</h2>
       <div className="cards">
         <article className="card"><p className="label">Capacidade</p><p className="value">{formatBytes(fs.totalBytes)}</p></article>

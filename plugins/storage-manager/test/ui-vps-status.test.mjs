@@ -101,3 +101,18 @@ test("the Workers section lists runner state, health, CPU and memory, and is hid
   const none = await render(withMetrics, "StoragePage");
   assert.doesNotMatch(none, /Contêineres de execução/);
 });
+
+test("the Worktrees section lists each worktree with its size and warns that hardlinks overlap", async () => {
+  const worktrees = [
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-647-deploy", status: "ok", bytes: 3 * 1024 ** 3, modifiedAt: "2026-10-20T12:00:00.000Z" },
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-109-palantir", status: "ok", bytes: 100 * 1024 ** 2, modifiedAt: null },
+    { rootId: "tessel", rootLabel: "Tessel", name: "JOU-1-broken", status: "unavailable", bytes: null, modifiedAt: null },
+  ];
+  const text = await render({ ...withMetrics, worktrees }, "StoragePage");
+  assert.match(text, /Worktrees/);
+  assert.match(text, /3 worktrees · 3,1 GiB somados/);
+  assert.match(text, /JOU-647-deployTessel3 GiB/);
+  assert.match(text, /JOU-1-brokenTesselIndisponível/);
+  assert.match(text, /hardlink/);
+  assert.doesNotMatch(await render(withMetrics, "StoragePage"), /Espaço de cada worktree/);
+});

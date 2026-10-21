@@ -15,6 +15,9 @@ export const DIRECTORIES = Object.freeze([
 ]);
 export const MAX_DIRECTORIES = 30;
 export const MAX_WORKERS = 12;
+export const MAX_WORKTREE_ROOTS = 6;
+export const MAX_WORKTREES_PER_ROOT = 40;
+const WORKTREE_NAME = /^[A-Za-z0-9._-]{1,120}$/;
 const WORKER_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 // Docker container names: no leading "-" or "/" so a name can never act as an option or a path.
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/;
@@ -117,10 +120,10 @@ export async function inspectDirectory(path, accessFn) {
     throw error;
   }
 }
-export function parseDirectoryConfig(text) {
+export function parseDirectoryConfig(text, max = MAX_DIRECTORIES) {
   let rows;
   try { rows = JSON.parse(String(text)); } catch { throw new Error("Directory config is not valid JSON"); }
-  if (!Array.isArray(rows) || rows.length < 1 || rows.length > MAX_DIRECTORIES) throw new Error("Directory config must list 1 to " + MAX_DIRECTORIES + " directories");
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > max) throw new Error("Directory config must list 1 to " + max + " directories");
   const seen = new Set();
   return Object.freeze(rows.map((row) => {
     const { id, label, path } = row ?? {};
@@ -224,6 +227,46 @@ export async function collectWorkers({ run, workers }) {
   });
   return { rows, issues: [...new Map(issues.map((item) => [item.code, item])).values()] };
 }
+// A worktree root is a directory whose immediate subdirectories are git worktrees; each is measured on its own.
+// Entries are only listed one level deep and symlinks are never followed.
+export async function collectWorktrees({ run, roots, listDir, modifiedAt, clock = () => Date.now(), budgetMs = 120_000 }) {
+  const issues = [];
+  const rows = [];
+  const deadline = clock() + budgetMs;
+  const note = (source, code) => { if (!issues.some((item) => item.source === source && item.code === code)) issues.push({ source, code }); };
+  for (const root of roots) {
+    let entries;
+    try { entries = await listDir(root.path); }
+    catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") note("worktrees", "list_failed");
+      continue;
+    }
+    const candidates = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory || entry.isSymlink) continue;
+      if (!WORKTREE_NAME.test(entry.name)) { note("worktrees", "invalid_name"); continue; }
+      let modified = null;
+      try { modified = await modifiedAt(root.path + "/" + entry.name); } catch { /* keep null */ }
+      candidates.push({ name: entry.name, modified });
+    }
+    // Most recently touched first, so a cap drops the oldest rather than the active ones.
+    candidates.sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? "") || a.name.localeCompare(b.name));
+    if (candidates.length > MAX_WORKTREES_PER_ROOT) note("worktrees", "truncated");
+    for (const candidate of candidates.slice(0, MAX_WORKTREES_PER_ROOT)) {
+      const base = { rootId: root.id, rootLabel: root.label, name: candidate.name, modifiedAt: candidate.modified };
+      const remaining = deadline - clock();
+      if (remaining <= 0) { rows.push({ ...base, status: "unavailable", bytes: null }); note("worktrees", "deadline_exceeded"); continue; }
+      try {
+        const bytes = parseDu(await run("du", ["-x", "-s", "-B1", "--", root.path + "/" + candidate.name], Math.min(60_000, remaining)));
+        rows.push({ ...base, status: "ok", bytes });
+      } catch {
+        rows.push({ ...base, status: "unavailable", bytes: null });
+        note("worktrees", "command_failed");
+      }
+    }
+  }
+  return { rows, issues };
+}
 export function parseMeminfo(text) {
   const values = new Map();
   for (const line of String(text).split(/\r?\n/)) {
@@ -267,7 +310,7 @@ export async function sampleCpu({ cpus = osCpus, loadavg = osLoadavg, sleep = (m
   return { cores: after.length, usagePercent: cpuUsagePercent(before, after), load1, load5, load15 };
 }
 
-export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {}, workers = [], readText = async () => { throw new Error("readText not provided"); }, cpuSampler = sampleCpu, uptime = osUptime }) {
+export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {}, workers = [], worktreeRoots = [], listDir = async () => [], modifiedAt = async () => null, readText = async () => { throw new Error("readText not provided"); }, cpuSampler = sampleCpu, uptime = osUptime }) {
   const generatedAt = now().toISOString();
   const filesystem = parseDf(await run("df", ["-B1", "--output=size,used,avail,pcent", "--", "/"], 15000));
   const coverage = { partial: false, issues: [] };
@@ -281,6 +324,12 @@ export async function collect({ run, inspect = async () => true, now = () => new
   if (workers.length) {
     const result = await collectWorkers({ run, workers });
     workerRows = result.rows;
+    for (const item of result.issues) issue(item.source, item.code);
+  }
+  let worktreeRows = [];
+  if (worktreeRoots.length) {
+    const result = await collectWorktrees({ run, roots: worktreeRoots, listDir, modifiedAt, clock });
+    worktreeRows = result.rows;
     for (const item of result.issues) issue(item.source, item.code);
   }
   let docker = [];
@@ -323,6 +372,6 @@ export async function collect({ run, inspect = async () => true, now = () => new
   return {
     schemaVersion: 2, generatedAt, filesystem, cpu, memory,
     uptimeSeconds: Number.isSafeInteger(uptimeSeconds) && uptimeSeconds >= 0 ? uptimeSeconds : null,
-    workers: workerRows, docker, directories: readings, alertPolicy, coverage, history: [],
+    workers: workerRows, worktrees: worktreeRows, docker, directories: readings, alertPolicy, coverage, history: [],
   };
 }
