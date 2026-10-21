@@ -24,3 +24,7 @@ Runtime may also read `GITHUB_REVIEW_BOT_TOKEN` from the worker environment when
 ```sh
 pnpm --filter @journey-studios/github-pr-review-sync test
 ```
+
+## GitHub App
+
+Set `githubApp: { appId, privateKeyRef }` to publish as a GitHub App with per-repository installation tokens. If it is set, a failure to get a token fails closed; `reviewBotTokenRef` is not used as a fallback.

@@ -62,7 +62,7 @@ const repository = {
 const manifest = {
   id: PLUGIN_KEY,
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.3.0",
   displayName: "GitHub PR intake",
   description:
     "Listen to GitHub pull requests (webhook plus reconciliation) and route each one to a Paperclip review agent.",
@@ -108,6 +108,17 @@ const manifest = {
         type: "object",
         title: "GitHub token per repository owner (use * as a fallback)",
         additionalProperties: secretRef,
+      },
+      githubApp: {
+        type: "object",
+        title: "GitHub App (preferred over static tokens)",
+        description: "When set, GitHub access uses short-lived installation tokens of this App.",
+        required: ["appId", "privateKeyRef"],
+        additionalProperties: false,
+        properties: {
+          appId: { type: "string", pattern: "^[0-9]+$", title: "App ID" },
+          privateKeyRef: { ...secretRef, title: "App private key (PEM)" },
+        },
       },
       maxConcurrentReviews: { type: "integer", minimum: 1, default: 3, title: "Maximum open review issues" },
       repositories: { type: "array", items: repository, title: "Repositories to review" },

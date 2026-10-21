@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { ORIGIN_KIND } from "../src/constants.js";
 import { handleWebhook } from "../src/webhook.js";
-import { COMPANY, THERMO, CEO, OTHER_COMPANY, OTHER_TOKEN_REF, OTHER_WEBHOOK_REF, OTHER_WEBHOOK_SECRET, WEBHOOK_SECRET, fixture, pullEvent, rawPull, repoConfig } from "./helpers.mjs";
+import { APP_KEY_REF, COMPANY, THERMO, CEO, OTHER_COMPANY, OTHER_TOKEN_REF, OTHER_WEBHOOK_REF, OTHER_WEBHOOK_SECRET, WEBHOOK_SECRET, fixture, pullEvent, rawPull, repoConfig } from "./helpers.mjs";
 
 const SHA1 = "1".repeat(40);
 const SHA2 = "2".repeat(40);
@@ -513,4 +513,27 @@ test("the baseline leaves alone a PR that already has a webhook queued", async (
   f.advance(120_000);
   await f.engine.processDue();
   assert.equal(f.issues.length, 1);
+});
+
+const APP = { appId: "5412678", privateKeyRef: APP_KEY_REF };
+
+test("with a GitHub App configured, GitHub calls use its installation token for that repository", async () => {
+  const minted = [];
+  const appTokens = { tokenFor: async (args) => { minted.push(args); return "app-token"; } };
+  const f = fixture({ config: { githubApp: APP }, appTokens });
+  await f.open(rawPull({ number: 12, sha: SHA1 }));
+  assert.equal(f.issues.length, 1);
+  assert.deepEqual(f.calls.tokens, ["app-token"]);
+  assert.equal(minted[0].owner, "wallynm");
+  assert.equal(minted[0].repo, "tesselapp");
+  assert.equal(minted[0].appId, "5412678");
+});
+
+test("a GitHub App that cannot mint a token fails closed instead of using the static token", async () => {
+  const appTokens = { tokenFor: async () => { throw new Error("GitHub App installation lookup failed: 404"); } };
+  const f = fixture({ config: { githubApp: APP }, appTokens });
+  await f.open(rawPull({ number: 13, sha: SHA1 }));
+  assert.equal(f.issues.length, 0);
+  assert.equal(f.calls.getPull, 0, "nothing was fetched with the static token");
+  assert.ok(f.logs.some((entry) => /App token unavailable/.test(JSON.stringify(entry))));
 });
