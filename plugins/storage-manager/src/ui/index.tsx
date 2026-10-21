@@ -8,13 +8,18 @@ import {
 
 type SizeRow = { id: string; label: string; bytes: number | null; status: "ok" | "missing" | "unavailable" };
 type DockerRow = { id: string; label: string; sizeBytes: number; reclaimableBytes: number; count: number; active: number; approximate: boolean };
-type HistoryPoint = { at: string; usedBytes: number; availableBytes: number };
+type HistoryPoint = { at: string; usedBytes: number; availableBytes: number; cpuPercent?: number; memoryUsedBytes?: number };
+type CpuInfo = { cores: number; usagePercent: number; load1: number; load5: number; load15: number };
+type MemoryInfo = { totalBytes: number; availableBytes: number; usedBytes: number; usedPercent: number; swapTotalBytes: number; swapUsedBytes: number };
 type StorageSnapshot = {
   companyId: string;
   status: "ready" | "stale" | "unconfigured" | "unavailable" | "invalid";
   reason: string | null;
   generatedAt: string | null;
   filesystem: { mount: string; totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number } | null;
+  cpu: CpuInfo | null;
+  memory: MemoryInfo | null;
+  uptimeSeconds: number | null;
   directories: SizeRow[];
   docker: DockerRow[];
   history: HistoryPoint[];
@@ -60,30 +65,52 @@ function formatTime(value: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
 }
-function LineChart({ points }: { points: HistoryPoint[] }) {
-  const sampled = points.filter((_, i) => i % Math.max(1, Math.ceil(points.length / 72)) === 0);
-  const last = points.at(-1);
+function formatPercent(value: number): string {
+  return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
+}
+function formatUptime(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return days > 0 ? days + " d " + hours + " h" : hours > 0 ? hours + " h " + minutes + " min" : minutes + " min";
+}
+function ResourceCard({ label, value, percent, detail }: { label: string; value: string; percent?: number; detail?: string }) {
+  return <article className="card"><p className="label">{label}</p><p className="value">{value}</p>
+    {percent != null && <div className="progress" aria-hidden="true"><span style={{ width: Math.min(100, Math.max(0, percent)) + "%" }} /></div>}
+    {detail && <p className="small muted" style={{ marginTop: ".6rem" }}>{detail}</p>}
+  </article>;
+}
+function LineChart({ points, pick = (p) => p.usedBytes, format = formatBytes, label = "Histórico do espaço utilizado; crescimento líquido no período" }: {
+  points: HistoryPoint[];
+  pick?: (point: HistoryPoint) => number | undefined;
+  format?: (value: number) => string;
+  label?: string;
+}) {
+  const usable = points.filter((p) => pick(p) !== undefined);
+  const sampled = usable.filter((_, i) => i % Math.max(1, Math.ceil(usable.length / 72)) === 0);
+  const last = usable.at(-1);
   if (last && sampled.at(-1)?.at !== last.at) sampled.push(last);
-  if (sampled.length < 2) return <p className="muted small">O histórico aparece após duas coletas.</p>;
-  const values = sampled.map((p) => p.usedBytes);
+  if (sampled.length < 2) return <p className="muted small chart">O histórico aparece após duas coletas.</p>;
+  const values = sampled.map((p) => pick(p) as number);
   const low = Math.min(...values);
   const high = Math.max(...values);
   const span = Math.max(high - low, 1);
   const coordinates = sampled.map((p, i) => {
     const x = 12 + i * 776 / (sampled.length - 1);
-    const y = 132 - (p.usedBytes - low) / span * 118;
+    const y = 132 - ((pick(p) as number) - low) / span * 118;
     return x.toFixed(1) + "," + y.toFixed(1);
   }).join(" ");
   const change = values[values.length - 1] - values[0];
   return <div className="chart">
-    <svg className="graph" viewBox="0 0 800 145" role="img" aria-label="Histórico do espaço utilizado; crescimento líquido no período">
+    <svg className="graph" viewBox="0 0 800 145" role="img" aria-label={label}>
       <line x1="12" y1="132" x2="788" y2="132" stroke="var(--border)" />
       <line x1="12" y1="14" x2="788" y2="14" stroke="var(--border)" strokeDasharray="4 6" />
       <polyline points={coordinates} fill="none" stroke="var(--primary)" strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </svg>
     <div className="legend small muted">
       <span>{formatTime(sampled[0].at)} — {formatTime(sampled[sampled.length - 1].at)}</span>
-      <span>Variação: {change > 0 ? "+" : change < 0 ? "−" : ""}{formatBytes(Math.abs(change))}</span>
+      <span>Variação: {change > 0 ? "+" : change < 0 ? "−" : ""}{format(Math.abs(change))}</span>
     </div>
   </div>;
 }
@@ -91,13 +118,13 @@ function LineChart({ points }: { points: HistoryPoint[] }) {
 export function StorageSidebar(_: PluginSidebarProps) {
   const nav = useHostNavigation();
   return <div className="jsm"><style>{styles}</style><a {...nav.linkProps("/storage")} className="side-link">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 11h18M7 16h3" /></svg>
-    <span>Storage</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5" /><rect x="3" y="14" width="18" height="6" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></svg>
+    <span>VPS Status</span>
   </a></div>;
 }
 
 export function StoragePage({ context }: PluginPageProps) {
-  if (!context.companyId) return <main className="jsm"><style>{styles}</style><p className="notice">Selecione uma empresa para abrir Storage Manager.</p></main>;
+  if (!context.companyId) return <main className="jsm"><style>{styles}</style><p className="notice">Selecione uma empresa para abrir VPS Status.</p></main>;
   return <StorageDashboard companyId={context.companyId} />;
 }
 function StorageDashboard({ companyId }: { companyId: string }) {
@@ -141,18 +168,34 @@ function StorageDashboard({ companyId }: { companyId: string }) {
   const available = snapshot?.status === "ready" || snapshot?.status === "stale";
   return <main className="jsm">
     <style>{styles}</style>
-    <header className="header"><div><h1>Storage Manager</h1><p className="sub">Disco da VPS, camadas Docker e evolução do armazenamento · somente leitura.</p></div>
+    <header className="header"><div><h1>VPS Status</h1><p className="sub">Disco, CPU, memória e Docker da VPS, com histórico das coletas · somente leitura.</p></div>
       <button type="button" onClick={refreshWhenVisible} disabled={query.loading}>Atualizar métricas</button>
     </header>
     {query.error && <div className="notice warn" role="alert">Falha na consulta do plugin. Confira as configurações e tente novamente.</div>}
-    {query.loading && !snapshot && <p className="notice" role="status">Consultando snapshot de armazenamento…</p>}
+    {query.loading && !snapshot && <p className="notice" role="status">Consultando o snapshot da VPS…</p>}
     {snapshot && snapshot.status !== "ready" && <div className="notice warn" role="status">
       {snapshot.status === "stale" ? "O coletor parou de atualizar. Os dados abaixo são históricos, não representam o estado atual." :
         snapshot.status === "unconfigured" ? "Coletor não configurado. Monte uma pasta exclusiva de snapshots como somente leitura no Paperclip e configure a pasta storage-snapshot nas configurações do plugin." :
         "Snapshot indisponível ou inválido. Verifique o serviço de coleta e a pasta configurada. Nenhuma métrica anterior será tratada como atual."}
     </div>}
     {available && fs && <>
-      <p className="sub" style={{ marginBottom: "1rem" }}>Última coleta: {formatTime(snapshot?.generatedAt ?? null)} · Fonte: df/du/Docker CLI no host · Sem acesso do plugin ao Docker socket.</p>
+      <p className="sub" style={{ marginBottom: "1rem" }}>Última coleta: {formatTime(snapshot?.generatedAt ?? null)} · Fonte: coletor no host (df, du, /proc, Docker CLI) · Sem acesso do plugin ao Docker socket.</p>
+      <section className="section" aria-label="CPU e memória"><div className="section-header"><div><h2>Recursos</h2><p className="sub">Uso instantâneo no momento da coleta; a memória usa MemAvailable, sem contar cache recuperável.</p></div></div>
+        <div className="cards" style={{ padding: "1rem" }}>
+          {snapshot.cpu ? <ResourceCard label="CPU" value={formatPercent(snapshot.cpu.usagePercent)} percent={snapshot.cpu.usagePercent}
+            detail={snapshot.cpu.cores + (snapshot.cpu.cores === 1 ? " núcleo" : " núcleos") + " · carga " + snapshot.cpu.load1 + " / " + snapshot.cpu.load5 + " / " + snapshot.cpu.load15} />
+            : <ResourceCard label="CPU" value="Não coletado" detail="Atualize o coletor do host para reportar CPU." />}
+          {snapshot.memory ? <ResourceCard label="Memória RAM" value={formatPercent(snapshot.memory.usedPercent)} percent={snapshot.memory.usedPercent}
+            detail={formatBytes(snapshot.memory.usedBytes) + " de " + formatBytes(snapshot.memory.totalBytes)} />
+            : <ResourceCard label="Memória RAM" value="Não coletado" detail="Atualize o coletor do host para reportar memória." />}
+          {snapshot.memory ? <ResourceCard label="Swap" value={snapshot.memory.swapTotalBytes > 0 ? formatBytes(snapshot.memory.swapUsedBytes) : "Sem swap"}
+            percent={snapshot.memory.swapTotalBytes > 0 ? snapshot.memory.swapUsedBytes / snapshot.memory.swapTotalBytes * 100 : undefined}
+            detail={snapshot.memory.swapTotalBytes > 0 ? "de " + formatBytes(snapshot.memory.swapTotalBytes) : undefined} />
+            : <ResourceCard label="Swap" value="Não coletado" />}
+          <ResourceCard label="Tempo ligado" value={formatUptime(snapshot.uptimeSeconds)} />
+        </div>
+      </section>
+      <h2 style={{ margin: "1.2rem 0 .8rem" }}>Disco</h2>
       <div className="cards">
         <article className="card"><p className="label">Capacidade</p><p className="value">{formatBytes(fs.totalBytes)}</p></article>
         <article className="card"><p className="label">Ocupado</p><p className="value">{formatBytes(fs.usedBytes)}</p></article>
@@ -174,6 +217,10 @@ function StorageDashboard({ companyId }: { companyId: string }) {
         </tbody></table></div>
       </section>
       <section className="section"><div className="section-header"><div><h2>Crescimento do armazenamento</h2><p className="sub">Histórico limitado a coletas recentes, sem estimativas de causa ou atribuição a agentes.</p></div></div><LineChart points={snapshot.history} /></section>
+      <section className="section"><div className="section-header"><div><h2>CPU ao longo do tempo</h2><p className="sub">Uso instantâneo em cada coleta (a cada dez minutos), não uma média contínua.</p></div></div>
+        <LineChart points={snapshot.history} pick={(p) => p.cpuPercent} format={formatPercent} label="Histórico do uso de CPU; variação líquida no período" /></section>
+      <section className="section"><div className="section-header"><div><h2>Memória ao longo do tempo</h2><p className="sub">Memória em uso em cada coleta, sem cache recuperável.</p></div></div>
+        <LineChart points={snapshot.history} pick={(p) => p.memoryUsedBytes} label="Histórico da memória em uso; variação líquida no período" /></section>
       <p className="sub" style={{ marginTop: "1rem" }}>Sem limpeza automática, execução de comandos, permissões de escrita ou remoção de backups. Limites de alerta são opt-in.</p>
     </>}
   </main>;

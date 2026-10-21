@@ -1,6 +1,6 @@
-# Journey Studios Storage Collector (read-only)
+# VPS Status Collector (read-only)
 
-A standalone VPS-side collector for [Storage Manager](../../plugins/storage-manager/README.md). It reads a **static allowlist** of directories with `du -x -s -B1`, the root filesystem with `df -B1`, and Docker storage accounting with `docker system df --format '{{json .}}'`. It never invokes prune, rm, shell evaluation, Docker mutation, or cleanup commands.
+A standalone VPS-side collector for [VPS Status](../../plugins/storage-manager/README.md). It reads an **operator-controlled allowlist** of directories with `du -x -s -B1`, the root filesystem with `df -B1`, Docker storage accounting with `docker system df --format '{{json .}}'`, CPU usage and load from `node:os`, and memory/swap from `/proc/meminfo`. It never invokes prune, rm, shell evaluation, Docker mutation, or cleanup commands.
 
 ## Install (operator runbook; NOT performed by CI)
 
@@ -20,6 +20,23 @@ A standalone VPS-side collector for [Storage Manager](../../plugins/storage-mana
 
    Merge this entry with existing volumes. Validate `docker compose config` before any recreation; preserve existing runtime image, adapter, mounts and env. **No host root, Docker socket, /var/lib/docker, or /var/lib/containerd is mounted.**
 7. Install the packaged Storage Manager plugin and configure its declared **storage-snapshot** local folder via native Paperclip Plugin Settings to `/run/paperclip-storage` for the intended company, read-only. Validate `/storage`, native tool calls and company isolation. Unconfigured state is an expected first-run result.
+
+## Choosing the directories
+
+Without configuration the collector measures a generic set (`/var/lib/docker`, `/var/lib/containerd`, `/var/log`, `/home`, `/root`, `/opt`, `/srv`, `/var/www`); paths that do not exist are reported as missing. To measure your own layout, create a **root-owned** JSON file and point `VPS_STATUS_DIRECTORIES_FILE` at it in the env file:
+
+```json
+[
+  { "id": "app-data", "label": "Dados da aplicação", "path": "/srv/data" },
+  { "id": "backups", "label": "Backups", "path": "/srv/backups" }
+]
+```
+
+Rules, enforced at startup (the collector refuses to run on a violation): 1 to 30 entries; `id` is lowercase letters, digits and hyphens, unique; `label` is at most 70 characters and must not contain `/` (labels are shown in the UI); `path` is absolute, normalized (no `..`, `//` or trailing `/`) and not `/` itself. The file is an operator allowlist, never user input: keep it root-owned and not writable by the Paperclip application.
+
+## Snapshot schema 2
+
+Adds `cpu` (`cores`, `usagePercent`, `load1/5/15`), `memory` (`totalBytes`, `availableBytes`, `usedBytes`, `usedPercent`, `swapTotalBytes`, `swapUsedBytes`) and `uptimeSeconds`. A failed CPU or memory probe leaves that field `null` and adds a `cpu`/`memory` `read_failed` coverage issue; disk metrics are unaffected. History entries gain optional `cpuPercent` and `memoryUsedBytes`. The plugin still reads schema 1.
 
 ## Operating boundaries
 

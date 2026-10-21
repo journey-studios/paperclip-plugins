@@ -13,7 +13,8 @@ const raw = {
   directories: [
     { id: "repos", label: "Repositórios Git", status: "ok", bytes: 500, path: "/confidential/path" },
     { id: "containerd", label: "Containerd", status: "ok", bytes: 6000 },
-    { id: "private-files", label: "/etc/secret", status: "ok", bytes: 99999 },
+    { id: "private-files", label: "/etc/secret", status: "ok", bytes: 90 },
+    { id: "../shadow", label: "Bad id", status: "ok", bytes: 99999 },
     { id: "docker-volumes", label: "Docker volumes", status: "unavailable", bytes: null },
   ],
   docker: [
@@ -41,7 +42,9 @@ test("read-only snapshot strips unknown fields, secret paths, and reports opt-in
   assert.equal(value.status, "ready");
   assert.equal(value.filesystem.usedBytes, 8000);
   assert.equal(value.filesystem.secret, undefined);
-  assert.equal(value.directories.length, 3);
+  // Ids are operator-defined, so only their shape is checked; a path-like label is replaced by the id.
+  assert.deepEqual(value.directories.map((row) => row.id), ["repos", "containerd", "private-files", "docker-volumes"]);
+  assert.equal(value.directories.find((row) => row.id === "private-files").label, "private-files");
   assert.ok(!JSON.stringify(value).includes("do-not-leak"));
   assert.ok(!JSON.stringify(value).includes("/confidential/path"));
   assert.ok(!JSON.stringify(value).includes("/etc/secret"));
@@ -52,6 +55,30 @@ test("read-only snapshot strips unknown fields, secret paths, and reports opt-in
     ["status", companyId, "storage-snapshot"],
     ["read", companyId, "storage-snapshot", "snapshot.json"],
   ]);
+});
+const cpu = { cores: 4, usagePercent: 25.54, load1: 0.5, load5: 0.4, load15: 0.3, model: "never-return" };
+const memory = { totalBytes: 8000, availableBytes: 2000, usedBytes: 6000, usedPercent: 75, swapTotalBytes: 1000, swapUsedBytes: 250, extra: "never-return" };
+test("schema 2 exposes cpu, memory and uptime and strips unknown fields", () => {
+  const value = sanitizeSnapshot({ ...raw, schemaVersion: 2, cpu, memory, uptimeSeconds: 3600,
+    history: [{ at: generatedAt, usedBytes: 8000, availableBytes: 2000, cpuPercent: 25.5, memoryUsedBytes: 6000 }] }, now);
+  assert.deepEqual(value.cpu, { cores: 4, usagePercent: 25.5, load1: 0.5, load5: 0.4, load15: 0.3 });
+  assert.deepEqual(value.memory, { totalBytes: 8000, availableBytes: 2000, usedBytes: 6000, usedPercent: 75, swapTotalBytes: 1000, swapUsedBytes: 250 });
+  assert.equal(value.uptimeSeconds, 3600);
+  assert.equal(value.history[0].cpuPercent, 25.5);
+  assert.equal(value.history[0].memoryUsedBytes, 6000);
+  assert.ok(!JSON.stringify(value).includes("never-return"));
+});
+test("schema 1 snapshots and bad cpu or memory degrade to null without invalidating disk metrics", () => {
+  const legacy = sanitizeSnapshot(raw, now);
+  assert.equal(legacy.cpu, null);
+  assert.equal(legacy.memory, null);
+  assert.equal(legacy.uptimeSeconds, null);
+  const bad = sanitizeSnapshot({ ...raw, schemaVersion: 2, cpu: { ...cpu, usagePercent: 140 }, memory: { ...memory, usedBytes: 9000 }, uptimeSeconds: -5 }, now);
+  assert.equal(bad.status, "ready");
+  assert.equal(bad.cpu, null);
+  assert.equal(bad.memory, null);
+  assert.equal(bad.uptimeSeconds, null);
+  assert.equal(bad.filesystem.usedBytes, 8000);
 });
 test("unconfigured folder never reads a file or claims live data", async () => {
   const ctx = ctxFor(raw, { configured: false, healthy: false, access: "read" });

@@ -5,11 +5,8 @@ const MAX_TEXT_LENGTH = 1024 * 1024;
 const MAX_HISTORY = 1008;
 const MAX_STALENESS_MS = 30 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
-const DIRECTORY_IDS = new Set([
-  "containerd", "containerd-snapshots", "containerd-content", "docker-volumes",
-  "paperclip-data", "paperclip-pnpm", "paperclip-projects", "repos", "paperclip-backups",
-  "builds", "rust-toolchain", "emsdk", "root-home",
-]);
+// Directory ids come from the operator's collector config, so validate their shape.
+const DIRECTORY_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const DOCKER_IDS = new Set(["images", "containers", "local-volumes", "build-cache"]);
 
 function object(value) {
@@ -35,8 +32,40 @@ export function parseLimit(value) {
   if (!Number.isInteger(num) || num < 1 || num > 20) throw Object.assign(new Error("limit must be 1 to 20"), { status: 400 });
   return num;
 }
+function percent(value, field) {
+  const number = Number(value);
+  if (typeof value !== "number" || !Number.isFinite(number) || number < 0 || number > 100) throw new Error("Invalid " + field);
+  return Math.round(number * 10) / 10;
+}
+function load(value, field) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100000) throw new Error("Invalid " + field);
+  return Math.round(value * 100) / 100;
+}
+// cpu and memory are optional: schema 1 collectors and failed probes simply omit them.
+function sanitizeCpu(input) {
+  const cpu = object(input);
+  if (!cpu) return null;
+  try {
+    const cores = bytes(cpu.cores, "cpu cores");
+    if (cores < 1 || cores > 4096) throw new Error("Invalid cpu cores");
+    return { cores, usagePercent: percent(cpu.usagePercent, "cpu usage"), load1: load(cpu.load1, "load1"), load5: load(cpu.load5, "load5"), load15: load(cpu.load15, "load15") };
+  } catch { return null; }
+}
+function sanitizeMemory(input) {
+  const memory = object(input);
+  if (!memory) return null;
+  try {
+    const totalBytes = bytes(memory.totalBytes, "memory total");
+    const availableBytes = bytes(memory.availableBytes, "memory available");
+    const usedBytes = bytes(memory.usedBytes, "memory used");
+    const swapTotalBytes = bytes(memory.swapTotalBytes, "swap total");
+    const swapUsedBytes = bytes(memory.swapUsedBytes, "swap used");
+    if (!totalBytes || availableBytes > totalBytes || usedBytes > totalBytes || swapUsedBytes > swapTotalBytes) throw new Error("Inconsistent memory");
+    return { totalBytes, availableBytes, usedBytes, usedPercent: percent(memory.usedPercent, "memory percent"), swapTotalBytes, swapUsedBytes };
+  } catch { return null; }
+}
 function empty(companyId, status, reason) {
-  return { companyId, status, reason, generatedAt: null, filesystem: null, docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
+  return { companyId, status, reason, generatedAt: null, filesystem: null, cpu: null, memory: null, uptimeSeconds: null, docker: [], directories: [], history: [], alerts: [], coverage: { partial: true, notes: ["No current validated snapshot is available."] } };
 }
 function safeCoverage(raw) {
   const coverage = object(raw);
@@ -49,7 +78,7 @@ function safeCoverage(raw) {
 }
 export function sanitizeSnapshot(input, now = Date.now()) {
   const raw = object(input);
-  if (!raw || raw.schemaVersion !== 1) throw new Error("Unsupported snapshot schema");
+  if (!raw || (raw.schemaVersion !== 1 && raw.schemaVersion !== 2)) throw new Error("Unsupported snapshot schema");
   const timestamp = iso(raw.generatedAt, "generatedAt").getTime();
   if (timestamp > now + MAX_FUTURE_SKEW_MS) throw new Error("Snapshot generated in the future");
   const fs = object(raw.filesystem);
@@ -61,11 +90,12 @@ export function sanitizeSnapshot(input, now = Date.now()) {
   const usedPercent = Number(fs.usedPercent);
   if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) throw new Error("Invalid usedPercent");
   const directories = (Array.isArray(raw.directories) ? raw.directories : [])
-    .filter((row) => object(row) && DIRECTORY_IDS.has(row.id))
+    .filter((row) => object(row) && typeof row.id === "string" && DIRECTORY_ID.test(row.id))
     .slice(0, 30)
     .map((row) => ({
       id: row.id,
-      label: typeof row.label === "string" && row.label.length <= 70 ? row.label : row.id,
+      // A label that looks like a path is replaced by the id so host paths are never shown.
+      label: typeof row.label === "string" && row.label.length <= 70 && !row.label.includes("/") ? row.label : row.id,
       bytes: row.status === "ok" ? bytes(row.bytes, "directory bytes") : null,
       status: row.status === "ok" ? "ok" : row.status === "missing" ? "missing" : "unavailable",
     }));
@@ -85,7 +115,10 @@ export function sanitizeSnapshot(input, now = Date.now()) {
         if (!object(item)) return [];
         const at = iso(item.at, "history at").getTime();
         if (at > now + MAX_FUTURE_SKEW_MS || at > timestamp) return [];
-        return [{ at: new Date(at).toISOString(), usedBytes: bytes(item.usedBytes, "history used"), availableBytes: bytes(item.availableBytes, "history available") }];
+        const point = { at: new Date(at).toISOString(), usedBytes: bytes(item.usedBytes, "history used"), availableBytes: bytes(item.availableBytes, "history available") };
+        if (item.cpuPercent !== undefined) point.cpuPercent = percent(item.cpuPercent, "history cpu");
+        if (item.memoryUsedBytes !== undefined) point.memoryUsedBytes = bytes(item.memoryUsedBytes, "history memory");
+        return [point];
       } catch { return []; }
     }).sort((a, b) => a.at.localeCompare(b.at));
   const alertPolicy = object(raw.alertPolicy);
@@ -100,6 +133,9 @@ export function sanitizeSnapshot(input, now = Date.now()) {
     reason: stale ? "snapshot_outdated" : null,
     generatedAt: new Date(timestamp).toISOString(),
     filesystem: { mount: "/", totalBytes, usedBytes, availableBytes, usedPercent },
+    cpu: sanitizeCpu(raw.cpu),
+    memory: sanitizeMemory(raw.memory),
+    uptimeSeconds: Number.isSafeInteger(raw.uptimeSeconds) && raw.uptimeSeconds >= 0 ? raw.uptimeSeconds : null,
     directories, docker, history, alerts, coverage: safeCoverage(raw.coverage),
   };
 }

@@ -1,11 +1,12 @@
-# Storage Manager
+# VPS Status
 
-Paperclip Plugin SDK v1 plugin for **read-only** disk observability. It uses the built-in `local.folders` capability instead of running privileged commands or reading Docker directly inside the plugin worker.
+Paperclip Plugin SDK v1 plugin for **read-only** VPS observability: disk, CPU, memory, Docker and history. (Formerly "Storage Manager"; the plugin id `journey-studios.storage-manager`, the `/storage` route and the `storage-snapshot` folder key are unchanged so existing installs keep working.) It uses the built-in `local.folders` capability instead of running privileged commands or reading Docker directly inside the plugin worker.
 
 ## Features
 
-- Sidebar **Storage** and page `/storage`: exact filesystem capacity (df), recorded host directories (du), Docker CLI accounting, collection freshness, optional configured alerts, and bounded usage history.
-- Native agent tools: `storage_overview` and `storage_hotspots`.
+- Sidebar **VPS Status** and page `/storage`: CPU usage, load and core count, RAM (from `MemAvailable`) and swap, uptime, exact filesystem capacity (df), recorded host directories (du), Docker CLI accounting, collection freshness, optional configured alerts, and bounded history for disk, CPU and memory.
+- Native agent tools: `vps_status` (disk, CPU, memory, uptime), `storage_overview` and `storage_hotspots`.
+- CPU and memory are optional in the snapshot: a snapshot from an older collector (schema 1) or a failed probe shows them as "not collected" without invalidating the disk metrics.
 - Authenticated, company-resolved GET plugin API routes: `/overview`, `/hotspots`, `/tools`. The host owns the API prefix and board authentication.
 - Shows **stale**, **unconfigured**, **unavailable**, **invalid**, and **partial** coverage explicitly.
 - Refreshes displayed metrics every 60 seconds while the page is visible and on return to the tab; host collection remains on its independent ten-minute cadence.
@@ -15,7 +16,7 @@ The agent tools are available through the Paperclip plugin runtime. They are **n
 
 ## Snapshot source
 
-A dedicated [host collector](../../services/storage-collector/README.md) writes `snapshot.json` under `/var/lib/paperclip-storage-manager` on the VPS. Mount that **one directory** read-only into the Paperclip application container (suggested container path: `/run/paperclip-storage`). Then configure the plugin's **Storage Collector snapshots** local folder in Paperclip Plugin Settings to `/run/paperclip-storage`, access `read`.
+A dedicated [host collector](../../services/storage-collector/README.md) (snapshot schema 2; schema 1 is still read) writes `snapshot.json` under `/var/lib/paperclip-storage-manager` on the VPS. Mount that **one directory** read-only into the Paperclip application container (suggested container path: `/run/paperclip-storage`). Then configure the plugin's **Storage Collector snapshots** local folder in Paperclip Plugin Settings to `/run/paperclip-storage`, access `read`.
 
 The local-folder contract requires `snapshot.json`. The worker only invokes `ctx.localFolders.status` and `ctx.localFolders.readText(companyId, "storage-snapshot", "snapshot.json")`. The worker validates a bounded schema; it never receives arbitrary path input.
 
@@ -23,6 +24,7 @@ Multiple companies must be explicitly configured independently. The host data is
 
 ## Notes
 
+- CPU usage is the busy share of all cores over a one-second sample taken at collection time, not a rolling average; load averages come from the kernel. Memory is total minus `MemAvailable`, so reclaimable cache is not counted as used.
 - Docker images, builder cache and volumes can share physical blocks; their reported sizes are approximations and not additive.
 - Nested directory sizes overlap; usage shown for Paperclip projects and pnpm stores may involve hardlinks.
 - Docker's "reclaimable" accounting is not a promise of safe cleanup.

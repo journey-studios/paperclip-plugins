@@ -10,9 +10,9 @@ const apiRoute = (routeKey, path) => ({
 const manifest = {
   id: "journey-studios.storage-manager",
   apiVersion: 1,
-  version: "0.1.1",
-  displayName: "Storage Manager",
-  description: "Read-only host storage metrics from operator-provided snapshots; no Docker socket or cleanup access.",
+  version: "0.2.0",
+  displayName: "VPS Status",
+  description: "Read-only VPS status (disk, CPU, memory, Docker) from operator-provided snapshots; no Docker socket, shell or cleanup access.",
   author: "Journey Studios",
   categories: ["ui", "automation"],
   capabilities: ["local.folders", "api.routes.register", "agent.tools.register", "ui.sidebar.register", "ui.page.register"],
@@ -20,7 +20,7 @@ const manifest = {
   localFolders: [
     {
       folderKey: "storage-snapshot",
-      displayName: "Storage Collector snapshots (read only)",
+      displayName: "VPS status snapshots (read only)",
       description: "Configure the dedicated read-only host mount containing snapshot.json. Never select /, /var/lib/docker or a general workspace.",
       access: "read",
       requiredFiles: ["snapshot.json"],
@@ -29,14 +29,20 @@ const manifest = {
   apiRoutes: [apiRoute("overview", "/overview"), apiRoute("hotspots", "/hotspots"), apiRoute("tools", "/tools")],
   tools: [
     {
+      name: "vps_status",
+      displayName: "VPS status",
+      description: "Read the latest collected VPS status: disk capacity, CPU, memory and swap, uptime, Docker accounting, freshness and coverage (no cleanup).",
+      parametersSchema: { type: "object", properties: {}, additionalProperties: false },
+    },
+    {
       name: "storage_overview",
-      displayName: "Storage Manager overview",
+      displayName: "Storage overview",
       description: "Read the latest collected host disk capacity, Docker accounting, freshness and coverage (no cleanup).",
       parametersSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
       name: "storage_hotspots",
-      displayName: "Storage Manager hotspots",
+      displayName: "Storage hotspots",
       description: "Read the largest measured host disk directories. Nested paths and Docker shared layers are not additive.",
       parametersSchema: {
         type: "object",
@@ -47,8 +53,8 @@ const manifest = {
   ],
   ui: {
     slots: [
-      { type: "sidebar", id: "storage-manager-sidebar", displayName: "Storage", exportName: "StorageSidebar", order: 39 },
-      { type: "page", id: "storage-manager-page", displayName: "Storage Manager", exportName: "StoragePage", routePath: "storage" },
+      { type: "sidebar", id: "storage-manager-sidebar", displayName: "VPS Status", exportName: "StorageSidebar", order: 39 },
+      { type: "page", id: "storage-manager-page", displayName: "VPS Status", exportName: "StoragePage", routePath: "storage" },
     ],
   },
 };

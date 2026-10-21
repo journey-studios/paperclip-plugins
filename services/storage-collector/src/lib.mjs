@@ -1,19 +1,20 @@
 // Host collector: a strictly allowlisted, read-only inventory. No arbitrary user paths.
+import { cpus as osCpus, loadavg as osLoadavg, uptime as osUptime } from "node:os";
+
+// Generic defaults for any Linux VPS; paths that do not exist are reported as "missing".
+// Operators replace them with a root-owned JSON file (VPS_STATUS_DIRECTORIES_FILE).
 export const DIRECTORIES = Object.freeze([
+  { id: "docker-data", label: "Docker · dados", path: "/var/lib/docker" },
   { id: "containerd", label: "Containerd", path: "/var/lib/containerd" },
-  { id: "containerd-snapshots", label: "Containerd · snapshots", path: "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs" },
-  { id: "containerd-content", label: "Containerd · blobs", path: "/var/lib/containerd/io.containerd.content.v1.content" },
-  { id: "docker-volumes", label: "Docker · volumes", path: "/var/lib/docker/volumes" },
-  { id: "paperclip-data", label: "Paperclip · dados persistentes", path: "/var/lib/docker/volumes/paperclip_paperclip_data/_data" },
-  { id: "paperclip-pnpm", label: "Paperclip · pnpm store", path: "/var/lib/docker/volumes/paperclip_paperclip_data/_data/.local/share/pnpm/store" },
-  { id: "paperclip-projects", label: "Paperclip · projetos", path: "/var/lib/docker/volumes/paperclip_paperclip_data/_data/instances/default/projects" },
-  { id: "repos", label: "Repositórios Git", path: "/var/www/journey-studios" },
-  { id: "paperclip-backups", label: "Paperclip · backups", path: "/opt/paperclip/backups" },
-  { id: "builds", label: "Paperclip · builds", path: "/opt/paperclip-build" },
-  { id: "rust-toolchain", label: "Rust toolchains", path: "/root/.rustup" },
-  { id: "emsdk", label: "Emscripten SDK", path: "/opt/emsdk" },
+  { id: "logs", label: "Logs do sistema", path: "/var/log" },
+  { id: "home", label: "Usuários (/home)", path: "/home" },
   { id: "root-home", label: "Host · /root", path: "/root" },
+  { id: "opt", label: "Aplicações (/opt)", path: "/opt" },
+  { id: "srv", label: "Serviços (/srv)", path: "/srv" },
+  { id: "www", label: "Sites (/var/www)", path: "/var/www" },
 ]);
+export const MAX_DIRECTORIES = 30;
+const DIRECTORY_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const DOCKER_KINDS = {
   Images: { id: "images", label: "Imagens" },
   Containers: { id: "containers", label: "Containers" },
@@ -78,11 +79,14 @@ export function makeHistory(previous, snapshot, limit = 1008) {
   const recent = history.filter((item) => item && typeof item.at === "string" &&
     Number.isFinite(Date.parse(item.at)) && safeNumber(item.usedBytes) && safeNumber(item.availableBytes) &&
     Date.parse(item.at) < Date.parse(snapshot.generatedAt));
-  recent.push({
+  const point = {
     at: snapshot.generatedAt,
     usedBytes: snapshot.filesystem.usedBytes,
     availableBytes: snapshot.filesystem.availableBytes,
-  });
+  };
+  if (snapshot.cpu) point.cpuPercent = snapshot.cpu.usagePercent;
+  if (snapshot.memory) point.memoryUsedBytes = snapshot.memory.usedBytes;
+  recent.push(point);
   return recent.slice(-Math.max(1, Math.min(1008, limit)));
 }
 export function parseAlertPolicy(env) {
@@ -109,11 +113,75 @@ export async function inspectDirectory(path, accessFn) {
     throw error;
   }
 }
-export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {} }) {
+export function parseDirectoryConfig(text) {
+  let rows;
+  try { rows = JSON.parse(String(text)); } catch { throw new Error("Directory config is not valid JSON"); }
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > MAX_DIRECTORIES) throw new Error("Directory config must list 1 to " + MAX_DIRECTORIES + " directories");
+  const seen = new Set();
+  return Object.freeze(rows.map((row) => {
+    const { id, label, path } = row ?? {};
+    if (typeof id !== "string" || !DIRECTORY_ID.test(id) || seen.has(id)) throw new Error("Invalid or duplicate directory id");
+    seen.add(id);
+    if (typeof label !== "string" || !label.trim() || label.length > 70 || label.includes("/")) throw new Error("Invalid directory label for " + id);
+    if (typeof path !== "string" || !path.startsWith("/") || path === "/" || path.includes("\0") || path.split("/").includes("..") || path.includes("//") || path.endsWith("/")) {
+      throw new Error("Invalid directory path for " + id);
+    }
+    return Object.freeze({ id, label: label.trim(), path });
+  }));
+}
+export function parseMeminfo(text) {
+  const values = new Map();
+  for (const line of String(text).split(/\r?\n/)) {
+    const match = /^(MemTotal|MemAvailable|SwapTotal|SwapFree):\s+(\d+)\s+kB\s*$/.exec(line);
+    if (match) values.set(match[1], strictInt(match[2]) * 1024);
+  }
+  for (const key of ["MemTotal", "MemAvailable", "SwapTotal", "SwapFree"]) if (!values.has(key)) throw new Error("Unexpected meminfo");
+  const totalBytes = values.get("MemTotal");
+  const availableBytes = values.get("MemAvailable");
+  const swapTotalBytes = values.get("SwapTotal");
+  const swapFreeBytes = values.get("SwapFree");
+  if (totalBytes <= 0 || availableBytes > totalBytes || swapFreeBytes > swapTotalBytes) throw new Error("Inconsistent meminfo values");
+  const usedBytes = totalBytes - availableBytes;
+  return {
+    totalBytes, availableBytes, usedBytes,
+    usedPercent: Math.round(usedBytes / totalBytes * 1000) / 10,
+    swapTotalBytes, swapUsedBytes: swapTotalBytes - swapFreeBytes,
+  };
+}
+// CPU usage needs two samples: busy share of all cores between them.
+export function cpuUsagePercent(before, after) {
+  let idle = 0;
+  let total = 0;
+  const count = Math.min(before.length, after.length);
+  if (count === 0) throw new Error("No CPU samples");
+  for (let i = 0; i < count; i += 1) {
+    const a = before[i].times;
+    const b = after[i].times;
+    const sum = (t) => t.user + t.nice + t.sys + t.idle + t.irq;
+    total += sum(b) - sum(a);
+    idle += b.idle - a.idle;
+  }
+  if (!(total > 0) || idle < 0 || idle > total) throw new Error("Inconsistent CPU samples");
+  return Math.round((1 - idle / total) * 1000) / 10;
+}
+export async function sampleCpu({ cpus = osCpus, loadavg = osLoadavg, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), sampleMs = 1000 } = {}) {
+  const before = cpus();
+  await sleep(sampleMs);
+  const after = cpus();
+  const [load1, load5, load15] = loadavg().map((value) => Math.round(value * 100) / 100);
+  return { cores: after.length, usagePercent: cpuUsagePercent(before, after), load1, load5, load15 };
+}
+
+export async function collect({ run, inspect = async () => true, now = () => new Date(), clock = () => Date.now(), directories = DIRECTORIES, alertPolicy = {}, readText = async () => { throw new Error("readText not provided"); }, cpuSampler = sampleCpu, uptime = osUptime }) {
   const generatedAt = now().toISOString();
   const filesystem = parseDf(await run("df", ["-B1", "--output=size,used,avail,pcent", "--", "/"], 15000));
   const coverage = { partial: false, issues: [] };
   const issue = (source, code) => { coverage.partial = true; coverage.issues.push({ source, code }); };
+  let cpu = null;
+  try { cpu = await cpuSampler(); } catch { issue("cpu", "read_failed"); }
+  let memory = null;
+  try { memory = parseMeminfo(await readText("/proc/meminfo")); } catch { issue("memory", "read_failed"); }
+  const uptimeSeconds = Math.floor(Number(uptime()));
   let docker = [];
   try { docker = parseDocker(await run("docker", ["system", "df", "--format", "{{json .}}"], 20000)); }
   catch { issue("docker", "command_failed"); }
@@ -151,5 +219,9 @@ export async function collect({ run, inspect = async () => true, now = () => new
       issue(dir.id, "command_failed");
     }
   }
-  return { schemaVersion: 1, generatedAt, filesystem, docker, directories: readings, alertPolicy, coverage, history: [] };
+  return {
+    schemaVersion: 2, generatedAt, filesystem, cpu, memory,
+    uptimeSeconds: Number.isSafeInteger(uptimeSeconds) && uptimeSeconds >= 0 ? uptimeSeconds : null,
+    docker, directories: readings, alertPolicy, coverage, history: [],
+  };
 }
