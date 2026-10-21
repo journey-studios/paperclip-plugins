@@ -47,7 +47,7 @@ const repository = {
     skipLabels: { ...stringList, title: "Skip PRs with any of these labels (default: skip-review)" },
     reviewBots: { type: "boolean", default: false, title: "Also review PRs opened by bots" },
     baseBranches: { ...stringList, title: "Only review PRs targeting these branches (empty = all)" },
-    debounceSeconds: { type: "number", minimum: 0, default: 60, title: "Wait after a push before reviewing" },
+    debounceSeconds: { type: "number", minimum: 0, maximum: 600, default: 60, title: "Wait after a push before reviewing (max 600)" },
     maxRoundsPerPr: { type: "integer", minimum: 1, default: 3, title: "Review rounds per PR" },
     killSwitch: { type: "boolean", default: false, title: "Pause reviews for this repository" },
     deliveryNotes: { type: "string", title: "Extra notes added to every review package" },

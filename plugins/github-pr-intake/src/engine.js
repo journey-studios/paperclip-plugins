@@ -46,13 +46,14 @@ export function createEngine(ctx, deps = {}) {
     });
   }
 
-  async function wake(issue, companyId, key, sha, round) {
+  async function wake(issue, companyId, key, sha) {
     try {
       const result = await ctx.issues.requestWakeup(issue.id, companyId, {
         reason: "github_pr_review_requested",
         contextSource: "github-pr-intake",
-        // The round is part of the key: a review cancelled and requested again for the same head is a new request.
-        idempotencyKey: `pr-intake:${key}@${sha}#r${round}`,
+        // The issue id is part of the key: a review cancelled and requested again for the same head gets a
+        // new issue, so it is a new request, while a retry of the same wake reuses the same key.
+        idempotencyKey: `pr-intake:${key}@${sha}#${issue.id}`,
       });
       return Boolean(result?.queued);
     } catch (error) {
@@ -80,6 +81,7 @@ export function createEngine(ctx, deps = {}) {
     if (!record?.issueId) return;
     const issue = await ctx.issues.get(record.issueId, record.companyId);
     let reviewedSha = record.reviewedSha;
+    let round = record.round;
     if (!isTerminal(issue)) {
       const why = action === "converted_to_draft" ? "converted back to a draft" : pull.merged ? "merged" : "closed";
       await ctx.issues.createComment(issue.id, `The pull request was ${why}; this review is no longer needed.`, record.companyId);
@@ -87,10 +89,13 @@ export function createEngine(ctx, deps = {}) {
       // A review that was cancelled before it finished never happened: the same head must be reviewable
       // again if the PR is reopened or marked ready. A finished review keeps its SHA (no repeat review).
       reviewedSha = null;
+      // ...and it must not use up the round limit either (the wake key no longer depends on the round).
+      round = Math.max(0, (record.round ?? 1) - 1);
     }
     await store.savePr(key, {
       ...record,
       reviewedSha,
+      round,
       status: action === "converted_to_draft" ? "draft" : "closed",
       updatedAt: now(),
     });
@@ -142,9 +147,12 @@ export function createEngine(ctx, deps = {}) {
 
     let pull;
     let files;
+    let filesTruncated = false;
     try {
       pull = normalizePull(repoCfg.fullName, await github.getPull(token, owner, name, entry.number));
-      files = await github.listPullFiles(token, owner, name, entry.number);
+      const listed = await github.listPullFiles(token, owner, name, entry.number);
+      files = listed.files;
+      filesTruncated = listed.truncated;
     } catch (error) {
       const attempts = (entry.attempts ?? 0) + 1;
       log.warn("github-pr-intake: GitHub fetch failed", { key, attempts, error: message(error) });
@@ -154,7 +162,7 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const record = (await store.getPr(key)) ?? { repo: repoCfg.fullName, number: pull.number };
-    const decision = decideReview(config, repoCfg, pull, files);
+    const decision = decideReview(config, repoCfg, pull, files, { filesTruncated });
     if (decision.action === "skip") {
       await store.dequeue(key);
       // handledSha stops reconcile from queueing this head again until a new commit arrives.
@@ -202,7 +210,7 @@ export function createEngine(ctx, deps = {}) {
         companyId: repoCfg.companyId,
         projectId: repoCfg.projectId,
         title: issueTitle(pull),
-        description: buildIssueBody({ pull, files, repoCfg, round }),
+        description: buildIssueBody({ pull, files, repoCfg, round, filesTruncated }),
         status: "todo",
         priority: "medium",
         assigneeAgentId: decision.reviewerAgentId,
@@ -211,7 +219,7 @@ export function createEngine(ctx, deps = {}) {
       });
     }
 
-    const queued = await wake(issue, repoCfg.companyId, key, pull.headSha, round);
+    const queued = await wake(issue, repoCfg.companyId, key, pull.headSha);
     await store.savePr(key, {
       repo: repoCfg.fullName,
       number: pull.number,
@@ -273,7 +281,7 @@ export function createEngine(ctx, deps = {}) {
         await store.savePr(key, { ...record, wakePending: false });
         continue;
       }
-      const queued = await wake(issue, record.companyId, key, record.reviewedSha, record.round ?? 1);
+      const queued = await wake(issue, record.companyId, key, record.reviewedSha);
       await store.savePr(key, { ...record, wakePending: !queued, wakeAttempts: (record.wakeAttempts ?? 0) + 1, updatedAt: now() });
       retried += 1;
     }
@@ -296,7 +304,6 @@ export function createEngine(ctx, deps = {}) {
         const repoKey = repoCfg.fullName.toLowerCase();
         const listing = await github.listOpenPulls(token, owner, name, await store.getEtag(repoKey));
         if (listing.notModified) continue;
-        if (listing.etag) await store.setEtag(repoKey, listing.etag);
 
         const open = new Set();
         for (const raw of listing.pulls) {
@@ -321,6 +328,9 @@ export function createEngine(ctx, deps = {}) {
             summary.cancelled += 1;
           }
         }
+        // Remember the listing only after all of it was handled. If a step above throws, the next run
+        // must fetch the listing again instead of getting a 304 and never seeing this work.
+        if (listing.etag) await store.setEtag(repoKey, listing.etag);
       } catch (error) {
         summary.errors += 1;
         log.warn("github-pr-intake: reconcile failed for repository", { repo: repoCfg.fullName, error: message(error) });

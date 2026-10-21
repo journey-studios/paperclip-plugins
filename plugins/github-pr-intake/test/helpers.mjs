@@ -106,15 +106,26 @@ export function fixture({ config = {}, wakeQueued = true } = {}) {
       if (!pulls.has(number)) throw Object.assign(new Error("not found"), { status: 404 });
       return structuredClone(pulls.get(number));
     },
-    listPullFiles: async (_t, _o, _r, number) => structuredClone(files.get(number) ?? [{ filename: "src/app.ts", status: "modified", additions: 3, deletions: 1 }]),
-    listOpenPulls: async () => structuredClone(listing),
+    listPullFiles: async (_t, _o, _r, number) => {
+      const entry = files.get(number);
+      return {
+        files: structuredClone(entry?.list ?? [{ filename: "src/app.ts", status: "modified", additions: 3, deletions: 1 }]),
+        truncated: entry?.truncated ?? false,
+      };
+    },
+    // Like the real client: a conditional request for an unchanged listing is "not modified".
+    listOpenPulls: async (_t, _o, _r, etag) => {
+      if (listing.honorEtag && etag && etag === listing.etag) return { notModified: true, etag, pulls: [] };
+      return structuredClone(listing);
+    },
   };
 
   const engine = createEngine(ctx, { now: () => clock.t, github });
   return {
     ctx, engine, clock, state, issues, comments, wakes, logs, calls,
     setPull: (raw) => pulls.set(raw.number, raw),
-    setFiles: (number, list) => files.set(number, list),
+    dropPull: (number) => pulls.delete(number),
+    setFiles: (number, list, truncated = false) => files.set(number, { list, truncated }),
     setListing: (next) => { listing = next; },
     setToken: (available) => { tokenAvailable = available; },
     advance: (ms) => { clock.t += ms; },

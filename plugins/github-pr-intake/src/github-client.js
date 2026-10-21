@@ -1,5 +1,5 @@
 const API = "https://api.github.com";
-const MAX_FILE_PAGES = 3;
+const MAX_FILE_PAGES = 10;
 const MAX_LIST_PAGES = 3;
 
 function headers(token, extra = {}) {
@@ -30,8 +30,10 @@ export function createGithubClient(ctx) {
       return response.json();
     },
 
+    /** @returns {Promise<{ files: object[], truncated: boolean }>} `truncated` means more files exist than were read. */
     async listPullFiles(token, owner, repo, number) {
       const files = [];
+      let truncated = false;
       for (let page = 1; page <= MAX_FILE_PAGES; page += 1) {
         const response = await get(token, `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`);
         if (!response.ok) throw await failure(response, "pull files fetch");
@@ -45,8 +47,9 @@ export function createGithubClient(ctx) {
           });
         }
         if (batch.length < 100) break;
+        if (page === MAX_FILE_PAGES) truncated = true;
       }
-      return files;
+      return { files, truncated };
     },
 
     /** Conditional listing: an unchanged listing (304) costs no rate limit. */

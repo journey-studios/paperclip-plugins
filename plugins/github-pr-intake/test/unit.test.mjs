@@ -84,6 +84,25 @@ test("validateConfig reports each problem and normalizeConfig applies safe defau
   assert.equal(repo.reviewBots, false);
 });
 
+test("debounceSeconds is capped at 600 in validation, normalization and the manifest schema", async () => {
+  const check = (debounceSeconds) => validateConfig({ repositories: [repoConfig({ debounceSeconds })] });
+  assert.equal(check(0).ok, true);
+  assert.equal(check(600).ok, true);
+  for (const bad of [601, -1, Number.NaN, Number.POSITIVE_INFINITY, "60"]) {
+    assert.equal(check(bad).ok, false, `${String(bad)} must be rejected`);
+    assert.ok(check(bad).errors.some((e) => e.includes("debounceSeconds")));
+  }
+  const repo = (value) => normalizeConfig({ repositories: [repoConfig({ debounceSeconds: value })] }).repositories.get("wallynm/tesselapp");
+  assert.equal(repo(99_999).debounceSeconds, 600, "an out-of-range stored value is clamped");
+  assert.equal(repo(30).debounceSeconds, 30);
+  assert.equal(repo(undefined).debounceSeconds, 60);
+
+  const { default: manifest } = await import("../src/manifest.js");
+  const schema = manifest.instanceConfigSchema.properties.repositories.items.properties.debounceSeconds;
+  assert.equal(schema.maximum, 600);
+  assert.equal(schema.default, 60);
+});
+
 const config = (repo = {}) => normalizeConfig({ repositories: [repoConfig(repo)] });
 const decide = (repo, raw, files) => {
   const c = config(repo);

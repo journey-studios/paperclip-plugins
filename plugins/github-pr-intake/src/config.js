@@ -1,4 +1,4 @@
-import { AUTHORITIES } from "./constants.js";
+import { AUTHORITIES, MAX_DEBOUNCE_SECONDS } from "./constants.js";
 
 const TOP_LEVEL_KEYS = new Set([
   "killSwitch",
@@ -79,6 +79,12 @@ export function validateConfig(value) {
     if (r.authority !== undefined && !AUTHORITIES.includes(r.authority)) {
       errors.push(`${at}.authority must be one of ${AUTHORITIES.join(", ")}`);
     }
+    if (
+      r.debounceSeconds !== undefined &&
+      !(Number.isFinite(r.debounceSeconds) && r.debounceSeconds >= 0 && r.debounceSeconds <= MAX_DEBOUNCE_SECONDS)
+    ) {
+      errors.push(`${at}.debounceSeconds must be between 0 and ${MAX_DEBOUNCE_SECONDS}`);
+    }
     for (const [ruleIndex, rule] of (Array.isArray(r.rules) ? r.rules : []).entries()) {
       const rr = record(rule);
       for (const key of Object.keys(rr)) {
@@ -116,7 +122,10 @@ export function normalizeConfig(raw) {
       skipLabels: r.skipLabels === undefined ? ["skip-review"] : strings(r.skipLabels),
       reviewBots: r.reviewBots === true,
       baseBranches: strings(r.baseBranches),
-      debounceSeconds: Number.isFinite(r.debounceSeconds) && r.debounceSeconds >= 0 ? r.debounceSeconds : 60,
+      debounceSeconds:
+        Number.isFinite(r.debounceSeconds) && r.debounceSeconds >= 0
+          ? Math.min(r.debounceSeconds, MAX_DEBOUNCE_SECONDS)
+          : 60,
       maxRoundsPerPr: Number.isInteger(r.maxRoundsPerPr) && r.maxRoundsPerPr >= 1 ? r.maxRoundsPerPr : 3,
       killSwitch: r.killSwitch === true,
       deliveryNotes: typeof r.deliveryNotes === "string" ? r.deliveryNotes : "",

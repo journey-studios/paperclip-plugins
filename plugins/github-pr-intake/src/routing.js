@@ -13,9 +13,11 @@ function ruleMatches(rule, pull, files) {
 /**
  * Decides whether a pull request should be reviewed and by whom.
  * `files` may be null for a cheap first pass (before the file list is fetched).
+ * `filesTruncated` means the list is only a prefix of the changed files, so conclusions that need the
+ * whole list ("every file is ignored") cannot be drawn.
  * @returns {{ action: "skip", reason: string } | { action: "review", reviewerAgentId: string, rule: number | null }}
  */
-export function decideReview(config, repoCfg, pull, files) {
+export function decideReview(config, repoCfg, pull, files, { filesTruncated = false } = {}) {
   if (config.killSwitch || repoCfg.killSwitch) return { action: "skip", reason: "kill_switch" };
   if (pull.state !== "open") return { action: "skip", reason: "closed" };
   if (pull.draft) return { action: "skip", reason: "draft" };
@@ -26,7 +28,7 @@ export function decideReview(config, repoCfg, pull, files) {
     return { action: "skip", reason: "base_branch" };
   }
   if (pull.author.isBot && !repoCfg.reviewBots) return { action: "skip", reason: "bot_author" };
-  if (files && files.length > 0 && repoCfg.ignorePaths.length) {
+  if (files && !filesTruncated && files.length > 0 && repoCfg.ignorePaths.length) {
     if (files.every((file) => matchesAny(file.filename, repoCfg.ignorePaths))) {
       return { action: "skip", reason: "ignored_paths_only" };
     }

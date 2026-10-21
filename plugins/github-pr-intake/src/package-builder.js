@@ -68,7 +68,7 @@ function verdictInstructions(pull, repoCfg) {
   ];
 }
 
-export function buildIssueBody({ pull, files, repoCfg, round }) {
+export function buildIssueBody({ pull, files, repoCfg, round, filesTruncated = false }) {
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
   const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
   return [
@@ -82,7 +82,7 @@ export function buildIssueBody({ pull, files, repoCfg, round }) {
     `- Head: \`${clean(pull.headRef, 100)}\` @ ${pull.headSha.slice(0, 12)} (full: ${pull.headSha})`,
     `- Labels: ${pull.labels.length ? pull.labels.map((l) => clean(l, 50)).join(", ") : "none"}`,
     `- Round: ${round} of ${repoCfg.maxRoundsPerPr}`,
-    `- Files changed: ${files.length} (+${additions} / -${deletions})`,
+    `- Files changed: ${files.length}${filesTruncated ? "+ (list truncated; more files exist)" : ""} (+${additions} / -${deletions})`,
     "",
     "## Changed files",
     ...fileLines(files),

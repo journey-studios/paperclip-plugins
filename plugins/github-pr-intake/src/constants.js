@@ -11,4 +11,7 @@ export const INTAKE_MARKER = "paperclip-pr-intake";
 export const VERDICT_MARKER = "paperclip-review-verdict";
 
 export const AUTHORITIES = ["comment", "request_changes", "approve"];
+
+// A steady stream of pushes must not postpone a review forever: debounce is capped at 10 minutes.
+export const MAX_DEBOUNCE_SECONDS = 600;
 export const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);

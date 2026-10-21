@@ -1,8 +1,7 @@
-import { STATE_NAMESPACE } from "./constants.js";
+import { MAX_DEBOUNCE_SECONDS, STATE_NAMESPACE } from "./constants.js";
 
 const MAX_DELIVERIES = 500;
-// A steady stream of pushes must not postpone a review forever.
-const MAX_DEBOUNCE_MS = 10 * 60_000;
+const MAX_DEBOUNCE_MS = MAX_DEBOUNCE_SECONDS * 1000;
 
 const scope = (stateKey) => ({ scopeKind: "instance", namespace: STATE_NAMESPACE, stateKey });
 

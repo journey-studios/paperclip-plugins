@@ -29,7 +29,7 @@ test("a new PR creates one review issue for the default reviewer and wakes it on
 
   assert.equal(f.wakes.length, 1);
   assert.equal(f.wakes[0].issueId, issue.id);
-  assert.equal(f.wakes[0].idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA1}#r1`);
+  assert.equal(f.wakes[0].idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA1}#issue-1`);
 });
 
 test("a replayed delivery or an already requested SHA never creates a second review", async () => {
@@ -65,7 +65,7 @@ test("pushes are debounced into one re-review on the same issue", async () => {
   await f.engine.processDue();
   assert.equal(f.issues.length, 1, "the same issue keeps the conversation");
   assert.equal(f.wakes.length, 2);
-  assert.equal(f.wakes[1].idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA3}#r2`, "reviews the latest head only");
+  assert.equal(f.wakes[1].idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA3}#issue-1`, "reviews the latest head only");
   assert.equal(f.comments.length, 1);
   assert.match(f.comments[0].body, /Review round 2 of 3/);
 });
@@ -103,7 +103,7 @@ test("a review cancelled by draft or close is requested again when the same head
   await f.open(raw, "ready_for_review");
   assert.equal(f.issues.length, 2, "ready_for_review at the same commit starts a new review");
   assert.equal(f.wakes.at(-1).issueId, f.issues[1].id);
-  assert.equal(f.wakes.at(-1).idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA1}#r2`, "a new round is a new wake request");
+  assert.equal(f.wakes.at(-1).idempotencyKey, `pr-intake:wallynm/tesselapp#5@${SHA1}#issue-2`, "a new issue is a new wake request");
 
   await f.engine.onPullEvent(pullEvent("closed", { ...raw, state: "closed" }));
   assert.equal(f.issues[1].status, "cancelled");
@@ -210,6 +210,72 @@ test("reconcile does not requeue a PR that was refused or skipped at the same he
   assert.equal((await docs.engine.reconcile()).enqueued, 1, "first sight: fetched and skipped");
   docs.setListing({ notModified: false, etag: "d2", pulls: [docsPull] });
   assert.equal((await docs.engine.reconcile()).enqueued, 0, "second time: ignored");
+});
+
+test("cancelled reviews do not use up the round limit, and every new issue gets its own wake key", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ maxRoundsPerPr: 2 })] } });
+  const raw = rawPull({ number: 5, sha: SHA1 });
+  await f.open(raw);
+  for (let i = 0; i < 3; i += 1) {
+    await f.engine.onPullEvent(pullEvent("converted_to_draft", { ...raw, draft: true }));
+    await f.open(raw, "ready_for_review");
+  }
+  assert.equal(f.issues.length, 4, "each draft/ready toggle opened a fresh review, none hit the limit");
+  assert.equal(f.comments.filter((c) => /Review limit reached/.test(c.body)).length, 0);
+  const keys = f.wakes.map((w) => w.idempotencyKey);
+  assert.equal(new Set(keys).size, keys.length, "no two wakeups share an idempotency key");
+});
+
+test("finished reviews still count towards the round limit", async () => {
+  const f = fixture({ config: { repositories: [repoConfig({ maxRoundsPerPr: 1, debounceSeconds: 0 })] } });
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  f.issues[0].status = "done";
+  const next = rawPull({ number: 5, sha: SHA2 });
+  f.setPull(next);
+  await f.engine.onPullEvent(pullEvent("synchronize", next));
+  await f.engine.processDue();
+  assert.equal(f.issues.length, 1);
+  assert.equal(f.comments.filter((c) => /Review limit reached/.test(c.body)).length, 1);
+});
+
+test("the listing ETag is saved only after the listing was fully handled", async () => {
+  const f = fixture();
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  f.dropPull(5); // GitHub lookup of the possibly-closed PR will now fail
+  f.setListing({ notModified: false, etag: "e1", honorEtag: true, pulls: [] });
+
+  assert.equal((await f.engine.reconcile()).errors, 1);
+  assert.equal(
+    (await f.engine.reconcile()).errors,
+    1,
+    "the failed run did not store the ETag, so the listing is processed again instead of answering 304",
+  );
+
+  f.setPull({ ...rawPull({ number: 5, sha: SHA1 }), state: "closed" });
+  const recovered = await f.engine.reconcile();
+  assert.equal(recovered.cancelled, 1);
+  assert.equal(f.issues[0].status, "cancelled");
+
+  const before = f.calls.getPull;
+  const settled = await f.engine.reconcile();
+  assert.deepEqual([settled.errors, settled.cancelled], [0, 0]);
+  assert.equal(f.calls.getPull, before, "once handled, an unchanged listing costs nothing");
+});
+
+test("a truncated file list is never read as 'only ignored paths'", async () => {
+  const docs = [{ filename: "docs/a.md", status: "modified", additions: 1, deletions: 0 }];
+  const config = { repositories: [repoConfig({ ignorePaths: ["docs/**"], debounceSeconds: 0 })] };
+
+  const full = fixture({ config });
+  full.setFiles(7, docs, false);
+  assert.equal((await full.open(rawPull({ number: 7, sha: SHA1 }))).status, "queued");
+  assert.equal(full.issues.length, 0, "a complete docs-only list is skipped");
+
+  const cut = fixture({ config });
+  cut.setFiles(7, docs, true); // only the first pages were read; later files may be code
+  await cut.open(rawPull({ number: 7, sha: SHA1 }));
+  assert.equal(cut.issues.length, 1, "the PR is reviewed because the list is incomplete");
+  assert.match(cut.issues[0].description, /list truncated/);
 });
 
 test("a rule routes by changed path; unmatched PRs go to the default reviewer", async () => {
