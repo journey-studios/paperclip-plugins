@@ -44,7 +44,8 @@ export async function resolveReviewBotToken(ctx, companyId) {
       companyId,
       configPath: "reviewBotTokenRef",
     });
-    if (typeof value === "string" && value.trim()) return value.trim();
+    // A configured reference that resolves to nothing must fail closed, not fall back to the environment.
+    return typeof value === "string" && value.trim() ? value.trim() : null;
   }
   const env = process.env.GITHUB_REVIEW_BOT_TOKEN ?? process.env.GITHUB_REVIEW_BOT;
   if (typeof env === "string" && env.trim()) return env.trim();

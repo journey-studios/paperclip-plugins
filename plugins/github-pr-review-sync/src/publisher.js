@@ -68,7 +68,18 @@ export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, tr
 
   const results = [];
   for (const pull of pulls) {
-    const pullData = await fetchPull(ctx, token, pull.owner, pull.repo, pull.number);
+    // One unreachable PR (404, 403, rate limit) must not abort the others.
+    let pullData;
+    try {
+      pullData = await fetchPull(ctx, token, pull.owner, pull.repo, pull.number);
+    } catch (error) {
+      ctx.logger.warn("github-pr-review-sync: pull fetch failed", {
+        pull: `${pull.owner}/${pull.repo}#${pull.number}`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      results.push({ pull, status: "failed", error: "pull_fetch_failed" });
+      continue;
+    }
     const headSha = pullData?.head?.sha;
     if (typeof headSha !== "string" || !headSha) {
       results.push({ pull, status: "failed", error: "missing_head_sha" });
@@ -234,6 +245,9 @@ export async function handleIssueUpdated(ctx, event) {
   }
 
   const result = await publishReviewDecisionsForIssue(ctx, companyId, issueId, transition);
-  await ctx.state.set(`last-published-decision:${issueId}`, transition.decisionId);
+  // Mark the decision as handled only once it was actually published, so a failure is retried.
+  if (result.results?.some((r) => r.status === "published" || r.status === "already_published")) {
+    await ctx.state.set(`last-published-decision:${issueId}`, transition.decisionId);
+  }
   return result;
 }

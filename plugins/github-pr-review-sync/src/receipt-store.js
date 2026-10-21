@@ -60,3 +60,25 @@ export async function upsertReceipt(ctx, row) {
     ],
   );
 }
+
+export const RETRY_WINDOW = "2 hours";
+export const RETRY_SPACING = "2 minutes";
+
+/**
+ * Failed (not rejected) publications to retry; `decision_id` holds the verdict comment id.
+ * The window counts from `created_at`, which a retry never changes. Measuring it from `updated_at`
+ * would slide forward with every failed attempt and retry a permanent failure forever.
+ * @param {import("@paperclipai/plugin-sdk").PluginContext} ctx
+ * @param {number} limit
+ */
+export async function listRetryableReceipts(ctx, limit = 10) {
+  return ctx.db.query(
+    `SELECT receipt_key, company_id, issue_id, decision_id FROM ${table(ctx)}
+     WHERE status = 'failed'
+       AND created_at > now() - interval '${RETRY_WINDOW}'
+       AND updated_at < now() - interval '${RETRY_SPACING}'
+     ORDER BY updated_at
+     LIMIT $1`,
+    [limit],
+  );
+}

@@ -18,11 +18,14 @@ const manifest = {
   description:
     "Publish Paperclip native PR-linked review decisions as formal GitHub pull request reviews with idempotent receipts.",
   author: "Journey Studios",
-  categories: ["automation", "integrations"],
+  // The host only accepts: connector, workspace, automation, ui.
+  categories: ["automation", "connector"],
   capabilities: [
     "events.subscribe",
+    "jobs.schedule",
     "issues.read",
     "issue.comments.read",
+    "issue.comments.create",
     "artifacts.read",
     "companies.read",
     "database.namespace.migrate",
@@ -35,6 +38,14 @@ const manifest = {
     "plugin.state.write",
   ],
   entrypoints: { worker: "./dist/worker.js" },
+  jobs: [
+    {
+      jobKey: "retry-failed",
+      displayName: "Retry failed verdict publications",
+      description: "Retries recent verdict publications that failed for transient reasons.",
+      schedule: "*/5 * * * *",
+    },
+  ],
   database: {
     namespaceSlug: "github_pr_review_sync",
     migrationsDir: "migrations",
