@@ -67,6 +67,13 @@ export function createStore(ctx) {
       await removeFromIndex("queue-index", key);
     },
 
+    getTriage: (key) => read(`triage:${key}`),
+    async saveTriage(key, entry) {
+      await write(`triage:${key}`, entry);
+      await addToIndex("triage-index", key);
+    },
+    triageKeys: async () => (await read("triage-index")) ?? [],
+
     /** A repository is "baselined" once its pre-existing open PRs were recorded without reviewing them. */
     isBaselined: async (repoKey) => (await read(`baselined:${repoKey}`)) === true,
     setBaselined: (repoKey) => write(`baselined:${repoKey}`, true),

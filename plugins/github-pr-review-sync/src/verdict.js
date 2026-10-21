@@ -18,26 +18,10 @@ export function mapVerdictOutcomeToEvent(outcome) {
   return EVENT_BY_OUTCOME[outcome] ?? null;
 }
 
-const DELIMITER_RE = /<!--|-->/g;
+// Shared with github-pr-intake: the same rules protect every text this system puts on a public PR.
+import { sanitize, stripCommentDelimiters } from "../../../shared/github-text.js";
 
-/**
- * Removes HTML comment delimiters until none are left. A single pass is not enough: removing one
- * can assemble another from the surrounding characters ("<!<!----" becomes "<!--").
- */
-export function stripCommentDelimiters(text) {
-  let current = String(text ?? "");
-  for (;;) {
-    const next = current.replace(DELIMITER_RE, "");
-    if (next === current) return current;
-    current = next;
-  }
-}
-
-/** Text that ends up on a public pull request: drop markup that could hide or forge markers, defuse @mentions. */
-export function sanitize(text, max) {
-  const cleaned = stripCommentDelimiters(String(text ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""));
-  return cleaned.replace(/@(?=[A-Za-z0-9_-])/g, "@​").trim().slice(0, max);
-}
+export { sanitize, stripCommentDelimiters };
 
 function safePath(value) {
   if (typeof value !== "string" || !value || value.length > 300) return null;

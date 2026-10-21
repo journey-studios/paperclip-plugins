@@ -24,6 +24,12 @@ async function failure(response, what) {
 /** Read-only GitHub REST calls over the host's outbound HTTP (capability `http.outbound`). */
 export function createGithubClient(ctx) {
   const get = (token, path, extra) => ctx.http.fetch(`${API}${path}`, { headers: headers(token, extra) });
+  const write = (token, method, path, payload) =>
+    ctx.http.fetch(`${API}${path}`, {
+      method,
+      headers: headers(token, { "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
 
   return {
     async getPull(token, owner, repo, number) {
@@ -52,6 +58,31 @@ export function createGithubClient(ctx) {
         if (page === MAX_FILE_PAGES) truncated = true;
       }
       return { files, truncated };
+    },
+
+    /** Comments of a pull request's conversation (the issue-comments API), newest page last. */
+    async listIssueComments(token, owner, repo, number) {
+      const comments = [];
+      for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+        const response = await get(token, `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`);
+        if (!response.ok) throw await failure(response, "comments fetch");
+        const batch = await response.json();
+        comments.push(...batch);
+        if (batch.length < 100) break;
+      }
+      return comments;
+    },
+
+    async createIssueComment(token, owner, repo, number, body) {
+      const response = await write(token, "POST", `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
+      if (!response.ok) throw await failure(response, "comment create");
+      return response.json();
+    },
+
+    async updateIssueComment(token, owner, repo, commentId, body) {
+      const response = await write(token, "PATCH", `/repos/${owner}/${repo}/issues/comments/${commentId}`, { body });
+      if (!response.ok) throw await failure(response, "comment update");
+      return response.json();
     },
 
     /** Conditional listing: an unchanged listing (304) costs no rate limit. */

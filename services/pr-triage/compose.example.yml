@@ -1,0 +1,25 @@
+name: review
+services:
+  pr-triage:
+    image: pr-triage:local
+    container_name: pr-triage
+    restart: unless-stopped
+    env_file: [/path/to/pr-triage.env] # root-owned, mode 600; holds PR_TRIAGE_TOKEN and the model key
+    networks: [edge-net]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /home/triage:uid=10001,gid=10001,mode=700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+networks:
+  edge-net:
+    external: true

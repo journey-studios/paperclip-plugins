@@ -12,6 +12,8 @@ export const OTHER_WEBHOOK_SECRET = "other-company-secret";
 export const OTHER_WEBHOOK_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000003" };
 export const OTHER_TOKEN_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000004" };
 
+export const TRIAGE_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-00000000000a" };
+export const TRIAGE_SERVICE = { url: "http://pr-triage:8080/", tokenRef: TRIAGE_REF };
 export const APP_KEY_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000009" };
 
 export function repoConfig(overrides = {}) {
@@ -47,7 +49,7 @@ export function pullEvent(action, raw, deliveryId = `d-${Math.random()}`, repo =
 }
 
 /** Builds an engine on top of in-memory fakes with a controllable clock. */
-export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, appTokens } = {}) {
+export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, appTokens, triage } = {}) {
   const clock = { t: 1_000_000 };
   const state = new Map();
   const issues = [];
@@ -83,6 +85,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
         if (ref.secretId === WEBHOOK_REF.secretId) return WEBHOOK_SECRET;
         if (ref.secretId === OTHER_WEBHOOK_REF.secretId) return OTHER_WEBHOOK_SECRET;
         if (ref.secretId === APP_KEY_REF.secretId) return "fake-app-private-key";
+        if (ref.secretId === TRIAGE_REF.secretId) return "triage-service-token";
         return tokenAvailable ? "gh-token" : "";
       },
     },
@@ -118,6 +121,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
   };
 
   const calls = { getPull: 0, tokens: [] };
+  const issueComments = [];
   const github = {
     getPull: async (token, _o, _r, number) => {
       calls.getPull += 1;
@@ -133,11 +137,24 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
       };
     },
     listOpenPulls: async () => structuredClone(listing),
+    // The pull request conversation, as GitHub's issue-comments API shows it.
+    listIssueComments: async () => structuredClone(issueComments),
+    createIssueComment: async (_t, _o, _r, number, body) => {
+      const comment = { id: issueComments.length + 1, number, body, user: { type: "Bot" } };
+      issueComments.push(comment);
+      return structuredClone(comment);
+    },
+    updateIssueComment: async (_t, _o, _r, id, body) => {
+      const comment = issueComments.find((c) => c.id === id);
+      if (!comment) throw Object.assign(new Error("not found"), { status: 404 });
+      comment.body = body;
+      return { id };
+    },
   };
 
-  const engine = createEngine(ctx, { now: () => clock.t, github, appTokens });
+  const engine = createEngine(ctx, { now: () => clock.t, github, appTokens, triage });
   return {
-    ctx, engine, clock, state, issues, comments, wakes, logs, calls,
+    ctx, engine, clock, state, issues, comments, wakes, logs, calls, issueComments,
     setPull: (raw) => pulls.set(raw.number, raw),
     dropPull: (number) => pulls.delete(number),
     setFiles: (number, list, truncated = false) => files.set(number, { list, truncated }),
