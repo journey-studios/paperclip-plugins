@@ -438,6 +438,24 @@ describe("update_changelog_entry", () => {
   });
 });
 
+describe("host action context for changelog mutations", () => {
+  it("uses host action context, never client-supplied companyId, for mutations", async () => {
+    const entry = entryOf(await add({ kind: "note", title: "Scoped" }));
+    await h.action("changelog.delete", { companyId: OTHER_COMPANY, id: entry.id });
+    expect((await page()).entries).toHaveLength(0);
+
+    const victim = entryOf(await add({ kind: "note", title: "Still here" }));
+    await expect(
+      h.action("changelog.delete", { companyId: COMPANY, id: victim.id }, undefined, OTHER_COMPANY),
+    ).rejects.toThrow("Changelog entry not found");
+    expect((await page()).entries).toHaveLength(1);
+
+    await expect(
+      h.action("changelog.delete", { companyId: OTHER_COMPANY, id: victim.id }, undefined, null as unknown as string),
+    ).rejects.toThrow("companyId must be a UUID");
+  });
+});
+
 describe("board delete action", () => {
   it("hides the entry but keeps the row, and records the board user", async () => {
     const entry = entryOf(await add({ kind: "note", title: "Remove me" }));
