@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveReviewBotToken } from "../src/config.js";
@@ -211,4 +212,27 @@ test("a configured token reference that resolves to nothing fails closed instead
     if (previous === undefined) delete process.env.GITHUB_REVIEW_BOT_TOKEN;
     else process.env.GITHUB_REVIEW_BOT_TOKEN = previous;
   }
+});
+
+test("resolveReviewBotToken with a GitHub App mints per repository and never falls back to a static token", async () => {
+  const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+  const seen = [];
+  const make = (installFails = false) => ({
+    config: { get: async () => ({
+      githubApp: { appId: "5412678", privateKeyRef: { type: "secret_ref", secretId: "00000000-0000-4000-8000-0000000000aa" } },
+      reviewBotTokenRef: { type: "secret_ref", secretId: "00000000-0000-4000-8000-0000000000bb" },
+    }) },
+    secrets: { resolve: async (ref) => (ref.secretId.endsWith("aa") ? privateKey : "static-token") },
+    logger: { warn() {}, info() {}, error() {} },
+    http: { fetch: async (url, init) => {
+      seen.push({ url, init });
+      if (url.endsWith("/installation")) return installFails ? json({}, 404) : json({ id: 7 });
+      return json({ token: "installation-token", expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+    } },
+  });
+  const ctx = make();
+  assert.equal(await resolveReviewBotToken(ctx, COMPANY, { owner: "wallynm", repo: "tesselapp" }), "installation-token");
+  assert.equal(await resolveReviewBotToken(ctx, COMPANY), null, "an App token needs a repository");
+  assert.equal(await resolveReviewBotToken(make(true), COMPANY, { owner: "o", repo: "r" }), null, "not installed => no token, not the static one");
 });

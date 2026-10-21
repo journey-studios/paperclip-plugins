@@ -1,9 +1,11 @@
+import { isGithubAppConfig } from "../../../shared/github-app-token.js";
 import { AUTHORITIES, MAX_DEBOUNCE_SECONDS } from "./constants.js";
 
 const TOP_LEVEL_KEYS = new Set([
   "killSwitch",
   "webhookSecretRef",
   "githubTokenRefs",
+  "githubApp",
   "maxConcurrentReviews",
   "repositories",
 ]);
@@ -51,6 +53,9 @@ export function validateConfig(value) {
   }
   if (config.webhookSecretRef !== undefined && !isSecretRef(config.webhookSecretRef)) {
     errors.push("webhookSecretRef must be a Paperclip secret reference");
+  }
+  if (config.githubApp !== undefined && !isGithubAppConfig(config.githubApp)) {
+    errors.push("githubApp needs a numeric appId and a privateKeyRef secret reference");
   }
   for (const [owner, ref] of Object.entries(record(config.githubTokenRefs))) {
     if (!isSecretRef(ref)) errors.push(`githubTokenRefs.${owner} must be a Paperclip secret reference`);
@@ -124,6 +129,7 @@ export function normalizeConfig(raw, companyId) {
       fullName: r.fullName,
       companyId,
       tokenRefs,
+      githubApp: isGithubAppConfig(config.githubApp) ? config.githubApp : null,
       maxConcurrentReviews,
       projectId: typeof r.projectId === "string" ? r.projectId : undefined,
       defaultReviewerAgentId: r.defaultReviewerAgentId,

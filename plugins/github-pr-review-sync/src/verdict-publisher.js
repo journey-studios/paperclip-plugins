@@ -76,7 +76,7 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
     return { rejected: "verdict_mismatch" };
   }
 
-  const token = await deps.resolveToken(ctx, companyId);
+  const token = await deps.resolveToken(ctx, companyId, { owner: pull.owner, repo: pull.repo });
   if (!token) {
     ctx.logger.error("github-pr-review-sync: review bot token unavailable", { companyId, issueId });
     await note(ctx, issue, "The review bot token is not configured; the verdict could not be published.");
