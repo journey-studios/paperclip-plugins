@@ -13,7 +13,7 @@ const secretRef = {
 const manifest = {
   id: "journey-studios.github-pr-review-sync",
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.2.0",
   displayName: "GitHub PR review sync",
   description:
     "Publish Paperclip native PR-linked review decisions as formal GitHub pull request reviews with idempotent receipts.",
@@ -60,6 +60,17 @@ const manifest = {
         title: "GitHub review bot token",
         description:
           "Token for a GitHub identity distinct from PR authors (App/bot). Required for REQUEST_CHANGES on self-authored PRs.",
+      },
+      githubApp: {
+        type: "object",
+        title: "GitHub App (preferred over a static token)",
+        description: "When set, reviews are published as this App using short-lived installation tokens.",
+        required: ["appId", "privateKeyRef"],
+        additionalProperties: false,
+        properties: {
+          appId: { type: "string", pattern: "^[0-9]+$", title: "App ID" },
+          privateKeyRef: { ...secretRef, title: "App private key (PEM)" },
+        },
       },
       publicOrigin: {
         type: "string",

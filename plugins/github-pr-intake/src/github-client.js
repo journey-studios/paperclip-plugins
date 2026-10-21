@@ -55,19 +55,19 @@ export function createGithubClient(ctx) {
     },
 
     /** Conditional listing: an unchanged listing (304) costs no rate limit. */
-    async listOpenPulls(token, owner, repo, etag) {
+    // No conditional request: the host's fetch cannot represent a 304 response (it throws), so every
+    // reconcile lists the open pull requests in full.
+    async listOpenPulls(token, owner, repo) {
       const path = `/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`;
-      const first = await get(token, path, etag ? { "If-None-Match": etag } : {});
-      if (first.status === 304) return { notModified: true, etag, pulls: [] };
+      const first = await get(token, path);
       if (!first.ok) throw await failure(first, "pull list");
       const pulls = await first.json();
-      const newEtag = first.headers?.get?.("etag") ?? null;
       for (let page = 2; page <= MAX_LIST_PAGES && pulls.length === (page - 1) * 50; page += 1) {
         const next = await get(token, `${path}&page=${page}`);
         if (!next.ok) throw await failure(next, "pull list page");
         pulls.push(...(await next.json()));
       }
-      return { notModified: false, etag: newEtag, pulls };
+      return { pulls };
     },
   };
 }

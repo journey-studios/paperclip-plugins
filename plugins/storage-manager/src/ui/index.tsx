@@ -8,13 +8,32 @@ import {
 
 type SizeRow = { id: string; label: string; bytes: number | null; status: "ok" | "missing" | "unavailable" };
 type DockerRow = { id: string; label: string; sizeBytes: number; reclaimableBytes: number; count: number; active: number; approximate: boolean };
-type HistoryPoint = { at: string; usedBytes: number; availableBytes: number };
+type HistoryPoint = { at: string; usedBytes: number; availableBytes: number; cpuPercent?: number; memoryUsedBytes?: number };
+type WorkerRow = {
+  id: string; label: string;
+  state: "created" | "running" | "paused" | "restarting" | "removing" | "exited" | "dead" | "missing" | "unknown";
+  health: "healthy" | "unhealthy" | "starting" | null;
+  startedAt: string | null; restartCount: number; oomKilled: boolean;
+  cpuPercent: number | null; memoryUsedBytes: number | null; memoryLimitBytes: number | null; memoryPercent: number | null; pids: number | null;
+};
+type WorktreeRow = { rootId: string; rootLabel: string; name: string; status: "ok" | "unavailable"; bytes: number | null; modifiedAt: string | null; apparentBytes?: number | null; exclusiveBytes?: number | null; sharedBytes?: number | null };
+type SharedPool = { id: string; label: string; apparentBytes: number | null; exclusiveBytes: number | null; sharedBytes: number | null };
+type SpaceAttribution = { collectedAt: string; durationMs: number | null; physicalBytes: number; apparentBytes: number; savedByHardlinksBytes: number; sharedBetweenBytes: number; externallyLinkedBytes: number };
+type CpuInfo = { cores: number; usagePercent: number; load1: number; load5: number; load15: number };
+type MemoryInfo = { totalBytes: number; availableBytes: number; usedBytes: number; usedPercent: number; swapTotalBytes: number; swapUsedBytes: number };
 type StorageSnapshot = {
   companyId: string;
   status: "ready" | "stale" | "unconfigured" | "unavailable" | "invalid";
   reason: string | null;
   generatedAt: string | null;
   filesystem: { mount: string; totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number } | null;
+  cpu: CpuInfo | null;
+  memory: MemoryInfo | null;
+  uptimeSeconds: number | null;
+  workers?: WorkerRow[];
+  worktrees?: WorktreeRow[];
+  sharedPools?: SharedPool[];
+  spaceAttribution?: SpaceAttribution | null;
   directories: SizeRow[];
   docker: DockerRow[];
   history: HistoryPoint[];
@@ -41,6 +60,7 @@ const styles = [
   ".jsm th,.jsm td{padding:.72rem 1rem;border-bottom:1px solid var(--border)}.jsm td:nth-child(n+2){font-variant-numeric:tabular-nums}",
   ".jsm tbody tr:last-child td{border-bottom:0}.jsm .hotspot{display:flex;gap:.7rem;align-items:center;justify-content:space-between;padding:.7rem 1rem;border-bottom:1px solid var(--border);font-size:.8rem}",
   ".jsm .hotspot:last-child{border-bottom:0}.jsm .hotspot strong{font-variant-numeric:tabular-nums;white-space:nowrap}.jsm .bar{height:.35rem;border-radius:.4rem;background:var(--muted);overflow:hidden;margin-top:.4rem}.jsm .bar span{background:var(--primary);height:100%;display:block}",
+  ".jsm .pill{display:inline-block;padding:.1rem .55rem;border-radius:1rem;font-size:.72rem;border:1px solid var(--border);background:var(--muted);white-space:nowrap}.jsm .pill.ok{border-color:var(--primary);color:var(--primary)}.jsm .pill.bad{border-color:var(--destructive);color:var(--destructive)}",
   ".jsm .grow{flex:1;min-width:0}.jsm .graph{width:100%;height:145px;display:block}.jsm .chart{padding:1rem}.jsm .legend{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:.45rem}",
   ".jsm .side-link{display:flex;align-items:center;gap:.55rem;padding:.55rem .65rem;text-decoration:none;color:var(--muted-foreground);border-radius:.4rem;font-size:.82rem}",
   ".jsm .side-link:hover,.jsm .side-link[aria-current=page]{background:var(--accent);color:var(--foreground)}.jsm .side-link svg{width:1rem;height:1rem;flex:none}",
@@ -55,49 +75,135 @@ function formatBytes(bytes: number | null | undefined): string {
   const unit = ["B", "KiB", "MiB", "GiB", "TiB"][order];
   return (bytes / (1024 ** order)).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " " + unit;
 }
+const WORKER_STATE_LABEL: Record<WorkerRow["state"], string> = {
+  created: "Criado", running: "Rodando", paused: "Pausado", restarting: "Reiniciando", removing: "Removendo",
+  exited: "Parado", dead: "Falhou", missing: "Não encontrado", unknown: "Desconhecido",
+};
+const WORKER_HEALTH_LABEL = { healthy: "saudável", unhealthy: "com falha", starting: "iniciando" } as const;
+function workerTone(worker: WorkerRow): "ok" | "bad" | "" {
+  if (worker.state === "running") return worker.health === "unhealthy" ? "bad" : "ok";
+  return worker.state === "paused" || worker.state === "created" ? "" : "bad";
+}
 function formatTime(value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
 }
-function LineChart({ points }: { points: HistoryPoint[] }) {
-  const sampled = points.filter((_, i) => i % Math.max(1, Math.ceil(points.length / 72)) === 0);
-  const last = points.at(-1);
+function formatPercent(value: number): string {
+  return value.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
+}
+function formatUptime(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return days > 0 ? days + " d " + hours + " h" : hours > 0 ? hours + " h " + minutes + " min" : minutes + " min";
+}
+function ResourceCard({ label, value, percent, detail }: { label: string; value: string; percent?: number; detail?: string }) {
+  return <article className="card"><p className="label">{label}</p><p className="value">{value}</p>
+    {percent != null && <div className="progress" aria-hidden="true"><span style={{ width: Math.min(100, Math.max(0, percent)) + "%" }} /></div>}
+    {detail && <p className="small muted" style={{ marginTop: ".6rem" }}>{detail}</p>}
+  </article>;
+}
+function LineChart({ points, pick = (p) => p.usedBytes, format = formatBytes, label = "Histórico do espaço utilizado; crescimento líquido no período" }: {
+  points: HistoryPoint[];
+  pick?: (point: HistoryPoint) => number | undefined;
+  format?: (value: number) => string;
+  label?: string;
+}) {
+  const usable = points.filter((p) => pick(p) !== undefined);
+  const sampled = usable.filter((_, i) => i % Math.max(1, Math.ceil(usable.length / 72)) === 0);
+  const last = usable.at(-1);
   if (last && sampled.at(-1)?.at !== last.at) sampled.push(last);
-  if (sampled.length < 2) return <p className="muted small">O histórico aparece após duas coletas.</p>;
-  const values = sampled.map((p) => p.usedBytes);
+  if (sampled.length < 2) return <p className="muted small chart">O histórico aparece após duas coletas.</p>;
+  const values = sampled.map((p) => pick(p) as number);
   const low = Math.min(...values);
   const high = Math.max(...values);
   const span = Math.max(high - low, 1);
   const coordinates = sampled.map((p, i) => {
     const x = 12 + i * 776 / (sampled.length - 1);
-    const y = 132 - (p.usedBytes - low) / span * 118;
+    const y = 132 - ((pick(p) as number) - low) / span * 118;
     return x.toFixed(1) + "," + y.toFixed(1);
   }).join(" ");
   const change = values[values.length - 1] - values[0];
   return <div className="chart">
-    <svg className="graph" viewBox="0 0 800 145" role="img" aria-label="Histórico do espaço utilizado; crescimento líquido no período">
+    <svg className="graph" viewBox="0 0 800 145" role="img" aria-label={label}>
       <line x1="12" y1="132" x2="788" y2="132" stroke="var(--border)" />
       <line x1="12" y1="14" x2="788" y2="14" stroke="var(--border)" strokeDasharray="4 6" />
       <polyline points={coordinates} fill="none" stroke="var(--primary)" strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </svg>
     <div className="legend small muted">
       <span>{formatTime(sampled[0].at)} — {formatTime(sampled[sampled.length - 1].at)}</span>
-      <span>Variação: {change > 0 ? "+" : change < 0 ? "−" : ""}{formatBytes(Math.abs(change))}</span>
+      <span>Variação: {change > 0 ? "+" : change < 0 ? "−" : ""}{format(Math.abs(change))}</span>
     </div>
+  </div>;
+}
+
+function WorktreesSection({ rows, pools, summary }: { rows: WorktreeRow[]; pools: SharedPool[]; summary: SpaceAttribution | null }) {
+  const real = (row: WorktreeRow) => row.exclusiveBytes ?? null;
+  const measured = rows.filter((row): row is WorktreeRow & { bytes: number } => row.bytes != null);
+  const apparentTotal = measured.reduce((sum, row) => sum + row.bytes, 0);
+  const exclusiveTotal = rows.reduce((sum, row) => sum + (real(row) ?? 0), 0);
+  const largest = Math.max(1, ...rows.map((row) => real(row) ?? row.bytes ?? 0));
+  const hasReal = summary != null && rows.some((row) => real(row) != null);
+  return <section className="section" aria-label="Worktrees"><div className="section-header"><div><h2>Worktrees</h2><p className="sub">{hasReal
+      ? "Cada worktree com o tamanho aparente (o que o du mostra) e o tamanho real: o que realmente seria liberado ao apagá-la. Arquivos compartilhados por hardlink com o pnpm store ou com outra árvore só liberam espaço quando todas as cópias somem."
+      : "Espaço de cada worktree dos agentes, do maior para o menor. Cada uma é medida separadamente: arquivos compartilhados por hardlink (como o pnpm store) contam em todas, então a soma pode passar do espaço real em disco."}</p></div>
+    <span className="small muted">{rows.length} {rows.length === 1 ? "worktree" : "worktrees"} · {formatBytes(hasReal ? exclusiveTotal : apparentTotal)} {hasReal ? "reais" : "somados"}</span></div>
+    {hasReal && summary && <div className="cards" style={{ padding: "1rem" }}>
+      <ResourceCard label="Espaço real em disco" value={formatBytes(summary.physicalBytes)} detail="Store, checkout e worktrees, cada arquivo contado uma vez" />
+      <ResourceCard label="Soma aparente" value={formatBytes(summary.apparentBytes)} detail="Somando o que cada árvore reporta sozinha" />
+      <ResourceCard label="Economia por hardlinks" value={formatBytes(summary.savedByHardlinksBytes)} percent={summary.apparentBytes > 0 ? summary.savedByHardlinksBytes / summary.apparentBytes * 100 : 0} />
+      <ResourceCard label="Compartilhado entre árvores" value={formatBytes(summary.sharedBetweenBytes)} detail={summary.externallyLinkedBytes > 0 ? formatBytes(summary.externallyLinkedBytes) + " com links fora das árvores medidas" : "Apagar uma árvore não libera isto"} />
+    </div>}
+    {hasReal && <GroupedSpace rows={rows} pools={pools} summary={summary} />}
+    <div className="table-wrap"><table><thead><tr><th>Worktree</th>{hasReal && <th>Real (libera ao apagar)</th>}{hasReal && <th>Compartilhado</th>}<th>Aparente (du)</th><th>Modificada</th></tr></thead>
+    <tbody>{rows.map((row) => <tr key={row.rootId + "/" + row.name}>
+      <td><div style={{ overflowWrap: "anywhere" }}>{row.name}</div><div className="small muted">{row.rootLabel}</div>{(real(row) ?? row.bytes) != null && <div className="bar" aria-hidden="true"><span style={{ width: (((real(row) ?? row.bytes) as number) / largest * 100).toFixed(1) + "%" }} /></div>}</td>
+      {hasReal && <td><strong>{row.exclusiveBytes == null ? "—" : formatBytes(row.exclusiveBytes)}</strong></td>}
+      {hasReal && <td>{row.sharedBytes == null ? "—" : formatBytes(row.sharedBytes)}</td>}
+      <td>{row.bytes == null ? "Indisponível" : formatBytes(row.bytes)}</td>
+      <td>{formatTime(row.modifiedAt)}</td>
+    </tr>)}
+    {pools.map((pool) => <tr key={"pool-" + pool.id}>
+      <td><div>{pool.label}</div><div className="small muted">árvore compartilhada · não é worktree</div></td>
+      <td><strong>{pool.exclusiveBytes == null ? "—" : formatBytes(pool.exclusiveBytes)}</strong></td>
+      <td>{pool.sharedBytes == null ? "—" : formatBytes(pool.sharedBytes)}</td>
+      <td>{pool.apparentBytes == null ? "—" : formatBytes(pool.apparentBytes)}</td>
+      <td>—</td>
+    </tr>)}</tbody></table></div>
+  </section>;
+}
+// Real disk split into parts that add up: what each group owns plus what trees keep alive together.
+function GroupedSpace({ rows, pools, summary }: { rows: WorktreeRow[]; pools: SharedPool[]; summary: SpaceAttribution }) {
+  const worktreesOwn = rows.reduce((sum, row) => sum + (row.exclusiveBytes ?? 0), 0);
+  const parts = [
+    ...pools.map((pool) => ({ id: pool.id, label: pool.label, bytes: pool.exclusiveBytes ?? 0 })),
+    { id: "worktrees", label: "Worktrees (só delas)", bytes: worktreesOwn },
+    { id: "shared", label: "Compartilhado entre árvores", bytes: summary.sharedBetweenBytes },
+  ];
+  const total = Math.max(1, summary.physicalBytes);
+  return <div className="chart" aria-label="Espaço agrupado">
+    <p className="label">Espaço agrupado · {formatBytes(summary.physicalBytes)} reais no total</p>
+    <div className="progress" style={{ display: "flex", marginTop: ".6rem" }} aria-hidden="true">
+      {parts.map((part, index) => <span key={part.id} style={{ width: (part.bytes / total * 100).toFixed(2) + "%", opacity: 1 - index * 0.18 }} />)}
+    </div>
+    <ul style={{ listStyle: "none", margin: ".7rem 0 0", padding: 0 }}>
+      {parts.map((part) => <li key={part.id} className="hotspot" style={{ padding: ".35rem 0" }}><span>{part.label}</span><strong>{formatBytes(part.bytes)} · {(part.bytes / total * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</strong></li>)}
+    </ul>
   </div>;
 }
 
 export function StorageSidebar(_: PluginSidebarProps) {
   const nav = useHostNavigation();
   return <div className="jsm"><style>{styles}</style><a {...nav.linkProps("/storage")} className="side-link">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 11h18M7 16h3" /></svg>
-    <span>Storage</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5" /><rect x="3" y="14" width="18" height="6" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></svg>
+    <span>VPS Status</span>
   </a></div>;
 }
 
 export function StoragePage({ context }: PluginPageProps) {
-  if (!context.companyId) return <main className="jsm"><style>{styles}</style><p className="notice">Selecione uma empresa para abrir Storage Manager.</p></main>;
+  if (!context.companyId) return <main className="jsm"><style>{styles}</style><p className="notice">Selecione uma empresa para abrir VPS Status.</p></main>;
   return <StorageDashboard companyId={context.companyId} />;
 }
 function StorageDashboard({ companyId }: { companyId: string }) {
@@ -141,18 +247,47 @@ function StorageDashboard({ companyId }: { companyId: string }) {
   const available = snapshot?.status === "ready" || snapshot?.status === "stale";
   return <main className="jsm">
     <style>{styles}</style>
-    <header className="header"><div><h1>Storage Manager</h1><p className="sub">Disco da VPS, camadas Docker e evolução do armazenamento · somente leitura.</p></div>
+    <header className="header"><div><h1>VPS Status</h1><p className="sub">Disco, CPU, memória e Docker da VPS, com histórico das coletas · somente leitura.</p></div>
       <button type="button" onClick={refreshWhenVisible} disabled={query.loading}>Atualizar métricas</button>
     </header>
     {query.error && <div className="notice warn" role="alert">Falha na consulta do plugin. Confira as configurações e tente novamente.</div>}
-    {query.loading && !snapshot && <p className="notice" role="status">Consultando snapshot de armazenamento…</p>}
+    {query.loading && !snapshot && <p className="notice" role="status">Consultando o snapshot da VPS…</p>}
     {snapshot && snapshot.status !== "ready" && <div className="notice warn" role="status">
       {snapshot.status === "stale" ? "O coletor parou de atualizar. Os dados abaixo são históricos, não representam o estado atual." :
         snapshot.status === "unconfigured" ? "Coletor não configurado. Monte uma pasta exclusiva de snapshots como somente leitura no Paperclip e configure a pasta storage-snapshot nas configurações do plugin." :
         "Snapshot indisponível ou inválido. Verifique o serviço de coleta e a pasta configurada. Nenhuma métrica anterior será tratada como atual."}
     </div>}
     {available && fs && <>
-      <p className="sub" style={{ marginBottom: "1rem" }}>Última coleta: {formatTime(snapshot?.generatedAt ?? null)} · Fonte: df/du/Docker CLI no host · Sem acesso do plugin ao Docker socket.</p>
+      <p className="sub" style={{ marginBottom: "1rem" }}>Última coleta: {formatTime(snapshot?.generatedAt ?? null)} · Fonte: coletor no host (df, du, /proc, Docker CLI) · Sem acesso do plugin ao Docker socket.</p>
+      <section className="section" aria-label="CPU e memória"><div className="section-header"><div><h2>Recursos</h2><p className="sub">Uso instantâneo no momento da coleta; a memória usa MemAvailable, sem contar cache recuperável.</p></div></div>
+        <div className="cards" style={{ padding: "1rem" }}>
+          {snapshot.cpu ? <ResourceCard label="CPU" value={formatPercent(snapshot.cpu.usagePercent)} percent={snapshot.cpu.usagePercent}
+            detail={snapshot.cpu.cores + (snapshot.cpu.cores === 1 ? " núcleo" : " núcleos") + " · carga " + snapshot.cpu.load1 + " / " + snapshot.cpu.load5 + " / " + snapshot.cpu.load15} />
+            : <ResourceCard label="CPU" value="Não coletado" detail="Atualize o coletor do host para reportar CPU." />}
+          {snapshot.memory ? <ResourceCard label="Memória RAM" value={formatPercent(snapshot.memory.usedPercent)} percent={snapshot.memory.usedPercent}
+            detail={formatBytes(snapshot.memory.usedBytes) + " de " + formatBytes(snapshot.memory.totalBytes)} />
+            : <ResourceCard label="Memória RAM" value="Não coletado" detail="Atualize o coletor do host para reportar memória." />}
+          {snapshot.memory ? <ResourceCard label="Swap" value={snapshot.memory.swapTotalBytes > 0 ? formatBytes(snapshot.memory.swapUsedBytes) : "Sem swap"}
+            percent={snapshot.memory.swapTotalBytes > 0 ? snapshot.memory.swapUsedBytes / snapshot.memory.swapTotalBytes * 100 : undefined}
+            detail={snapshot.memory.swapTotalBytes > 0 ? "de " + formatBytes(snapshot.memory.swapTotalBytes) : undefined} />
+            : <ResourceCard label="Swap" value="Não coletado" />}
+          <ResourceCard label="Tempo ligado" value={formatUptime(snapshot.uptimeSeconds)} />
+        </div>
+      </section>
+      {snapshot.workers && snapshot.workers.length > 0 && <section className="section" aria-label="Workers"><div className="section-header"><div><h2>Workers</h2><p className="sub">Contêineres de execução dos agentes (runners). CPU de contêiner: 100% equivale a um núcleo, então pode passar de 100%.</p></div><span className="small muted">{snapshot.workers.filter((w) => w.state === "running").length} de {snapshot.workers.length} rodando</span></div>
+        <div className="table-wrap"><table><thead><tr><th>Worker</th><th>Estado</th><th>Ativo há</th><th>CPU</th><th>Memória</th><th>Processos</th><th>Reinícios</th></tr></thead>
+        <tbody>{snapshot.workers.map((worker) => <tr key={worker.id}>
+          <td>{worker.label}</td>
+          <td><span className={"pill " + workerTone(worker)}>{WORKER_STATE_LABEL[worker.state]}{worker.health ? " · " + WORKER_HEALTH_LABEL[worker.health] : ""}</span>{worker.oomKilled && <span className="pill bad" style={{ marginLeft: ".4rem" }}>OOM</span>}</td>
+          <td>{worker.startedAt && snapshot.generatedAt ? formatUptime((Date.parse(snapshot.generatedAt) - Date.parse(worker.startedAt)) / 1000) : "—"}</td>
+          <td>{worker.cpuPercent == null ? "—" : formatPercent(worker.cpuPercent)}</td>
+          <td>{worker.memoryUsedBytes == null ? "—" : formatBytes(worker.memoryUsedBytes) + (worker.memoryLimitBytes ? " / " + formatBytes(worker.memoryLimitBytes) : "")}</td>
+          <td>{worker.pids ?? "—"}</td>
+          <td>{worker.restartCount}</td>
+        </tr>)}</tbody></table></div>
+      </section>}
+      {snapshot.worktrees && snapshot.worktrees.length > 0 && <WorktreesSection rows={snapshot.worktrees} pools={snapshot.sharedPools ?? []} summary={snapshot.spaceAttribution ?? null} />}
+      <h2 style={{ margin: "1.2rem 0 .8rem" }}>Disco</h2>
       <div className="cards">
         <article className="card"><p className="label">Capacidade</p><p className="value">{formatBytes(fs.totalBytes)}</p></article>
         <article className="card"><p className="label">Ocupado</p><p className="value">{formatBytes(fs.usedBytes)}</p></article>
@@ -174,6 +309,10 @@ function StorageDashboard({ companyId }: { companyId: string }) {
         </tbody></table></div>
       </section>
       <section className="section"><div className="section-header"><div><h2>Crescimento do armazenamento</h2><p className="sub">Histórico limitado a coletas recentes, sem estimativas de causa ou atribuição a agentes.</p></div></div><LineChart points={snapshot.history} /></section>
+      <section className="section"><div className="section-header"><div><h2>CPU ao longo do tempo</h2><p className="sub">Uso instantâneo em cada coleta (a cada dez minutos), não uma média contínua.</p></div></div>
+        <LineChart points={snapshot.history} pick={(p) => p.cpuPercent} format={formatPercent} label="Histórico do uso de CPU; variação líquida no período" /></section>
+      <section className="section"><div className="section-header"><div><h2>Memória ao longo do tempo</h2><p className="sub">Memória em uso em cada coleta, sem cache recuperável.</p></div></div>
+        <LineChart points={snapshot.history} pick={(p) => p.memoryUsedBytes} label="Histórico da memória em uso; variação líquida no período" /></section>
       <p className="sub" style={{ marginTop: "1rem" }}>Sem limpeza automática, execução de comandos, permissões de escrita ou remoção de backups. Limites de alerta são opt-in.</p>
     </>}
   </main>;

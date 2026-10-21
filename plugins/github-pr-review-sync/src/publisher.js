@@ -62,7 +62,7 @@ export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, tr
     return { skipped: "no_linked_pr" };
   }
 
-  const token = await resolveReviewBotToken(ctx, companyId);
+  const token = await resolveReviewBotToken(ctx, companyId, pulls[0]);
   if (!token) {
     ctx.logger.error("github-pr-review-sync: review bot token unavailable", { companyId, issueId });
     return { skipped: "missing_token" };
@@ -75,9 +75,15 @@ export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, tr
   const results = [];
   for (const pull of pulls) {
     // One unreachable PR (404, 403, rate limit) must not abort the others.
+    // With a GitHub App the token is per repository.
+    const pullToken = await resolveReviewBotToken(ctx, companyId, pull);
+    if (!pullToken) {
+      results.push({ pull, status: "failed", error: "missing_token" });
+      continue;
+    }
     let pullData;
     try {
-      pullData = await fetchPull(ctx, token, pull.owner, pull.repo, pull.number);
+      pullData = await fetchPull(ctx, pullToken, pull.owner, pull.repo, pull.number);
     } catch (error) {
       ctx.logger.warn("github-pr-review-sync: pull fetch failed", {
         pull: `${pull.owner}/${pull.repo}#${pull.number}`,
@@ -156,7 +162,7 @@ export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, tr
 
     try {
       const posted = await submitFormalReview(ctx, {
-        token,
+        token: pullToken,
         owner: pull.owner,
         repo: pull.repo,
         number: pull.number,

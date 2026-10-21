@@ -12,6 +12,8 @@ export const OTHER_WEBHOOK_SECRET = "other-company-secret";
 export const OTHER_WEBHOOK_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000003" };
 export const OTHER_TOKEN_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000004" };
 
+export const APP_KEY_REF = { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000009" };
+
 export function repoConfig(overrides = {}) {
   return {
     fullName: "wallynm/tesselapp",
@@ -45,7 +47,7 @@ export function pullEvent(action, raw, deliveryId = `d-${Math.random()}`, repo =
 }
 
 /** Builds an engine on top of in-memory fakes with a controllable clock. */
-export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } = {}) {
+export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, appTokens } = {}) {
   const clock = { t: 1_000_000 };
   const state = new Map();
   const issues = [];
@@ -54,7 +56,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } 
   const logs = [];
   const pulls = new Map();
   const files = new Map();
-  let listing = { notModified: false, etag: "etag-1", pulls: [] };
+  let listing = { pulls: [] };
   let tokenAvailable = true;
 
   const cfg = {
@@ -80,6 +82,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } 
         if (!options?.companyId) throw new Error("secrets.resolve: company context is required");
         if (ref.secretId === WEBHOOK_REF.secretId) return WEBHOOK_SECRET;
         if (ref.secretId === OTHER_WEBHOOK_REF.secretId) return OTHER_WEBHOOK_SECRET;
+        if (ref.secretId === APP_KEY_REF.secretId) return "fake-app-private-key";
         return tokenAvailable ? "gh-token" : "";
       },
     },
@@ -114,10 +117,11 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } 
     },
   };
 
-  const calls = { getPull: 0 };
+  const calls = { getPull: 0, tokens: [] };
   const github = {
-    getPull: async (_t, _o, _r, number) => {
+    getPull: async (token, _o, _r, number) => {
       calls.getPull += 1;
+      calls.tokens.push(token);
       if (!pulls.has(number)) throw Object.assign(new Error("not found"), { status: 404 });
       return structuredClone(pulls.get(number));
     },
@@ -128,14 +132,10 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {} } 
         truncated: entry?.truncated ?? false,
       };
     },
-    // Like the real client: a conditional request for an unchanged listing is "not modified".
-    listOpenPulls: async (_t, _o, _r, etag) => {
-      if (listing.honorEtag && etag && etag === listing.etag) return { notModified: true, etag, pulls: [] };
-      return structuredClone(listing);
-    },
+    listOpenPulls: async () => structuredClone(listing),
   };
 
-  const engine = createEngine(ctx, { now: () => clock.t, github });
+  const engine = createEngine(ctx, { now: () => clock.t, github, appTokens });
   return {
     ctx, engine, clock, state, issues, comments, wakes, logs, calls,
     setPull: (raw) => pulls.set(raw.number, raw),

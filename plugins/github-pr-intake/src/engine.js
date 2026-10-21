@@ -1,6 +1,7 @@
 import { CANCEL_ACTIONS, HANDLED_ACTIONS, ORIGIN_KIND, TERMINAL_ISSUE_STATUSES } from "./constants.js";
 import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
+import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
@@ -24,13 +25,28 @@ export function createEngine(ctx, deps = {}) {
   const now = deps.now ?? Date.now;
   const store = deps.store ?? createStore(ctx);
   const github = deps.github ?? createGithubClient(ctx);
+  const appTokens = deps.appTokens ?? createInstallationTokens(ctx.http);
   const log = ctx.logger;
   const locks = new Map();
   let kicking = false;
 
   const loadConfig = () => loadMergedConfig(ctx);
 
-  async function tokenFor(repoCfg, owner) {
+  async function tokenFor(repoCfg, owner, repo) {
+    // When a GitHub App is configured it is the only identity: a failure there must not fall back to a static token.
+    if (repoCfg.githubApp) {
+      const privateKeyPem = await ctx.secrets.resolve(repoCfg.githubApp.privateKeyRef, {
+        companyId: repoCfg.companyId,
+        configPath: "githubApp.privateKeyRef",
+      });
+      if (typeof privateKeyPem !== "string" || !privateKeyPem.trim()) return null;
+      try {
+        return await appTokens.tokenFor({ appId: repoCfg.githubApp.appId, privateKeyPem, owner, repo });
+      } catch (error) {
+        log.warn("github-pr-intake: GitHub App token unavailable", { owner, repo, error: message(error) });
+        return null;
+      }
+    }
     const ref = repoCfg.tokenRefs[owner.toLowerCase()] ?? repoCfg.tokenRefs["*"];
     if (!ref) return null;
     const value = await ctx.secrets.resolve(ref, { companyId: repoCfg.companyId, configPath: `githubTokenRefs.${owner}` });
@@ -140,7 +156,7 @@ export function createEngine(ctx, deps = {}) {
     }
     if (repoCfg.killSwitch) return "kill_switch";
     const [owner, name] = repoCfg.fullName.split("/");
-    const token = await tokenFor(repoCfg, owner);
+    const token = await tokenFor(repoCfg, owner, name);
     if (!token) {
       log.warn("github-pr-intake: no GitHub token for owner", { owner });
       await store.retryLater(key, entry, now() + RETRY_MAX_MS);
@@ -159,10 +175,8 @@ export function createEngine(ctx, deps = {}) {
       const attempts = (entry.attempts ?? 0) + 1;
       log.warn("github-pr-intake: GitHub fetch failed", { key, attempts, error: message(error) });
       if (attempts >= MAX_FETCH_ATTEMPTS) {
+        // The PR leaves the queue unreviewed; the next reconcile lists the repository again and queues this head.
         await store.dequeue(key);
-        // The PR leaves the queue unreviewed. Forget the listing ETag so the next reconcile lists the
-        // repository again (instead of a 304) and queues this head once GitHub answers.
-        await store.clearEtag(repoCfg.fullName.toLowerCase());
       } else {
         await store.retryLater(key, entry, now() + Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS));
       }
@@ -306,11 +320,10 @@ export function createEngine(ctx, deps = {}) {
       summary.repos += 1;
       const [owner, name] = repoCfg.fullName.split("/");
       try {
-        const token = await tokenFor(repoCfg, owner);
+        const token = await tokenFor(repoCfg, owner, name);
         if (!token) continue;
         const repoKey = repoCfg.fullName.toLowerCase();
-        const listing = await github.listOpenPulls(token, owner, name, await store.getEtag(repoKey));
-        if (listing.notModified) continue;
+        const listing = await github.listOpenPulls(token, owner, name);
 
         // First look at a repository: pull requests that are already open are recorded as handled instead of
         // reviewed (unless asked otherwise), so adding a repository does not trigger a backlog of reviews.
@@ -351,9 +364,6 @@ export function createEngine(ctx, deps = {}) {
           }
         }
         if (baseline) await store.setBaselined(repoKey);
-        // Remember the listing only after all of it was handled. If a step above throws, the next run
-        // must fetch the listing again instead of getting a 304 and never seeing this work.
-        if (listing.etag) await store.setEtag(repoKey, listing.etag);
       } catch (error) {
         summary.errors += 1;
         log.warn("github-pr-intake: reconcile failed for repository", { repo: repoCfg.fullName, error: message(error) });

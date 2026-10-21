@@ -1,9 +1,9 @@
 {
   "name": "@journey-studios/paperclip-storage-manager",
-  "version": "0.1.1",
+  "version": "0.4.0",
   "private": false,
   "type": "module",
-  "description": "Read-only storage observability for Paperclip",
+  "description": "Read-only VPS status (disk, CPU, memory, Docker) for Paperclip",
   "license": "MIT",
   "engines": { "node": ">=24.11.0" },
   "files": ["dist", "README.md"],

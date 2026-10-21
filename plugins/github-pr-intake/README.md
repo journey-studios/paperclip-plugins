@@ -78,6 +78,10 @@ publisher may use. The pull request itself is passed as untrusted data, never as
 3. Add a GitHub webhook (content type `application/json`, event `pull_request`, same secret) pointing to
    `https://<paperclip-host>/api/plugins/journey-studios.github-pr-intake/webhooks/github`.
 
+## GitHub App
+
+Instead of static tokens, set `githubApp: { appId, privateKeyRef }` (the key is a Paperclip secret holding the PEM). The plugin then mints a short-lived installation token per repository and never falls back to `githubTokenRefs` if the App cannot. The App needs Pull requests (read/write), Contents (read) and Metadata (read), and the `pull_request` event pointed at this plugin's webhook.
+
 ## Operations
 
 - `killSwitch` (per company or per repository) pauses reviews; queued PRs resume when it is switched off.
