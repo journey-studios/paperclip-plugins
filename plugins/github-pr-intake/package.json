@@ -1,0 +1,28 @@
+{
+  "name": "@journey-studios/github-pr-intake",
+  "version": "0.2.1",
+  "private": false,
+  "type": "module",
+  "description": "Listen to GitHub pull requests and route them to Paperclip review agents (webhook + reconciliation).",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node --test",
+    "typecheck": "node --check src/constants.js && node --check src/signature.js && node --check src/glob.js && node --check src/events.js && node --check src/config.js && node --check src/company-config.js && node --check src/routing.js && node --check src/state.js && node --check src/github-client.js && node --check src/package-builder.js && node --check src/engine.js && node --check src/webhook.js && node --check src/manifest.js && node --check src/worker.js"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "esbuild": "^0.28.2"
+  }
+}
