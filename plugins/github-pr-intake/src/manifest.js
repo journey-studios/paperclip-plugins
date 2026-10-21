@@ -50,6 +50,11 @@ const repository = {
     maxRoundsPerPr: { type: "integer", minimum: 1, default: 3, title: "Review rounds per PR" },
     killSwitch: { type: "boolean", default: false, title: "Pause reviews for this repository" },
     deliveryNotes: { type: "string", title: "Extra notes added to every review package" },
+    triage: {
+      type: "boolean",
+      default: false,
+      title: "Post a quick advisory triage comment (needs triageService and a GitHub App)",
+    },
     reviewExistingPullRequests: {
       type: "boolean",
       default: false,
@@ -62,7 +67,7 @@ const repository = {
 const manifest = {
   id: PLUGIN_KEY,
   apiVersion: 1,
-  version: "0.3.2",
+  version: "0.4.0",
   displayName: "GitHub PR intake",
   description:
     "Listen to GitHub pull requests (webhook plus reconciliation) and route each one to a Paperclip review agent.",
@@ -118,6 +123,17 @@ const manifest = {
         properties: {
           appId: { type: "string", pattern: "^[0-9]+$", title: "App ID" },
           privateKeyRef: { ...secretRef, title: "App private key (PEM)" },
+        },
+      },
+      triageService: {
+        type: "object",
+        title: "pr-triage service (quick advisory comment)",
+        description: "PR-Agent behind an authenticated HTTP API. Repositories opt in with `triage: true`.",
+        required: ["url", "tokenRef"],
+        additionalProperties: false,
+        properties: {
+          url: { type: "string", format: "uri", title: "Service base URL" },
+          tokenRef: { ...secretRef, title: "Service bearer token" },
         },
       },
       maxConcurrentReviews: { type: "integer", minimum: 1, default: 3, title: "Maximum open review issues" },

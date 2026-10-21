@@ -3,6 +3,7 @@ import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
 import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
+import { TRIAGE_MARKER, createTriageClient, formatTriageComment } from "./triage.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
 import { createStore } from "./state.js";
@@ -12,6 +13,10 @@ const RETRY_MAX_MS = 15 * 60_000;
 const MAX_FETCH_ATTEMPTS = 6;
 const MAX_WAKE_ATTEMPTS = 5;
 const CAPACITY_RETRY_MS = 60_000;
+const TRIAGE_GIVE_UP_MS = 30 * 60_000;
+const MAX_TRIAGE_ATTEMPTS = 3;
+// The triage service is only ever given a token that can read; it never needs to write.
+const READ_ONLY_PERMISSIONS = { contents: "read", pull_requests: "read", metadata: "read" };
 
 const prKey = (repo, number) => `${repo.toLowerCase()}#${number}`;
 const isTerminal = (issue) => !issue || TERMINAL_ISSUE_STATUSES.has(issue.status);
@@ -26,13 +31,16 @@ export function createEngine(ctx, deps = {}) {
   const store = deps.store ?? createStore(ctx);
   const github = deps.github ?? createGithubClient(ctx);
   const appTokens = deps.appTokens ?? createInstallationTokens(ctx.http);
+  const triage = deps.triage ?? createTriageClient(ctx);
   const log = ctx.logger;
   const locks = new Map();
   let kicking = false;
 
   const loadConfig = () => loadMergedConfig(ctx);
 
-  async function tokenFor(repoCfg, owner, repo) {
+  async function tokenFor(repoCfg, owner, repo, { readOnly = false } = {}) {
+    // A narrower token can only be minted from a GitHub App; a static token cannot be narrowed, so it is refused.
+    if (readOnly && !repoCfg.githubApp) return null;
     // When a GitHub App is configured it is the only identity: a failure there must not fall back to a static token.
     if (repoCfg.githubApp) {
       const privateKeyPem = await ctx.secrets.resolve(repoCfg.githubApp.privateKeyRef, {
@@ -41,7 +49,13 @@ export function createEngine(ctx, deps = {}) {
       });
       if (typeof privateKeyPem !== "string" || !privateKeyPem.trim()) return null;
       try {
-        return await appTokens.tokenFor({ appId: repoCfg.githubApp.appId, privateKeyPem, owner, repo });
+        return await appTokens.tokenFor({
+          appId: repoCfg.githubApp.appId,
+          privateKeyPem,
+          owner,
+          repo,
+          ...(readOnly ? { permissions: READ_ONLY_PERMISSIONS } : {}),
+        });
       } catch (error) {
         log.warn("github-pr-intake: GitHub App token unavailable", { owner, repo, error: message(error) });
         return null;
@@ -242,6 +256,7 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const queued = await wake(issue, repoCfg.companyId, key, pull.headSha);
+    await requestTriage(key, repoCfg, owner, name, pull);
     await store.savePr(key, {
       repo: repoCfg.fullName,
       number: pull.number,
@@ -311,8 +326,108 @@ export function createEngine(ctx, deps = {}) {
   }
 
   /** Source of truth: recovers events lost while the webhook was down and closes stale reviews. */
+  async function triageService(repoCfg) {
+    if (!repoCfg.triageService) return null;
+    const value = await ctx.secrets.resolve(repoCfg.triageService.tokenRef, {
+      companyId: repoCfg.companyId,
+      configPath: "triageService.tokenRef",
+    });
+    if (typeof value !== "string" || !value.trim()) return null;
+    return { url: repoCfg.triageService.url, token: value.trim() };
+  }
+
+  /**
+   * Asks the triage service for a first-pass review of this head. Advisory only: whatever happens here must
+   * never affect the review issue, so every failure is logged and left for the next reconcile to retry.
+   */
+  async function requestTriage(key, repoCfg, owner, name, pull, attempts = 1) {
+    if (!repoCfg.triageService) return;
+    const prior = await store.getTriage(key).catch(() => null);
+    if (prior?.sha === pull.headSha && attempts === 1 && prior.status !== "failed") return;
+    const base = { repo: repoCfg.fullName, number: pull.number, companyId: repoCfg.companyId, sha: pull.headSha, attempts, commentId: prior?.commentId };
+    try {
+      const service = await triageService(repoCfg);
+      const readToken = await tokenFor(repoCfg, owner, name, { readOnly: true });
+      if (!service || !readToken) return;
+      const job = await triage.submit(service, { repo: repoCfg.fullName, number: pull.number, head_sha: pull.headSha, token: readToken });
+      await store.saveTriage(key, { ...base, jobId: job.id, status: "submitted", submittedAt: now() });
+    } catch (error) {
+      log.warn("github-pr-intake: triage request failed", { key, error: message(error) });
+      await store.saveTriage(key, { ...base, status: "retry", submittedAt: now() }).catch(() => {});
+    }
+  }
+
+  async function postTriage(key, entry, repoCfg, owner, name, result) {
+    const token = await tokenFor(repoCfg, owner, name);
+    if (!token) return false;
+    const pull = normalizePull(repoCfg.fullName, await github.getPull(token, owner, name, entry.number));
+    // A newer push has its own triage; an answer about an older head would mislead.
+    if (pull.state !== "open" || pull.headSha !== entry.sha) {
+      await store.saveTriage(key, { ...entry, status: "stale" });
+      return true;
+    }
+    const body = formatTriageComment({ result, sha: entry.sha });
+    let commentId = entry.commentId ?? null;
+    if (!commentId) {
+      const comments = await github.listIssueComments(token, owner, name, entry.number);
+      // Only comments written by a bot count: the marker alone could be copied by anyone.
+      commentId = comments.find((c) => c.user?.type === "Bot" && typeof c.body === "string" && c.body.startsWith(TRIAGE_MARKER))?.id ?? null;
+    }
+    let posted = null;
+    if (commentId) {
+      try {
+        posted = await github.updateIssueComment(token, owner, name, commentId, body);
+      } catch (error) {
+        if (error.status !== 404) throw error;
+      }
+    }
+    posted ??= await github.createIssueComment(token, owner, name, entry.number, body);
+    await store.saveTriage(key, { ...entry, status: "posted", commentId: posted.id, postedAt: now() });
+    return true;
+  }
+
+  async function advanceOneTriage(key, entry, repoCfg) {
+    const [owner, name] = repoCfg.fullName.split("/");
+    if (now() - entry.submittedAt > TRIAGE_GIVE_UP_MS) {
+      await store.saveTriage(key, { ...entry, status: "failed", reason: "timeout" });
+      return true;
+    }
+    const resubmit = async (reason) => {
+      if (entry.attempts >= MAX_TRIAGE_ATTEMPTS) {
+        await store.saveTriage(key, { ...entry, status: "failed", reason });
+        return true;
+      }
+      await requestTriage(key, repoCfg, owner, name, { number: entry.number, headSha: entry.sha }, entry.attempts + 1);
+      return true;
+    };
+    if (entry.status === "retry") return resubmit("submit_failed");
+    const service = await triageService(repoCfg);
+    if (!service) return false;
+    const state = await triage.status(service, entry.jobId);
+    if (state.status === "queued" || state.status === "running") return false;
+    if (state.status !== "done") return resubmit(state.error ?? state.status);
+    return postTriage(key, entry, repoCfg, owner, name, state.result);
+  }
+
+  /** Polls the submitted triage jobs and posts the finished ones. Returns how many entries moved forward. */
+  async function advanceTriage(config) {
+    let advanced = 0;
+    for (const key of await store.triageKeys()) {
+      const entry = await store.getTriage(key);
+      if (!entry || (entry.status !== "submitted" && entry.status !== "retry")) continue;
+      const repoCfg = config.repositories.get(entry.repo.toLowerCase());
+      if (!repoCfg?.triageService || repoCfg.killSwitch) continue;
+      try {
+        if (await advanceOneTriage(key, entry, repoCfg)) advanced += 1;
+      } catch (error) {
+        log.warn("github-pr-intake: triage step failed", { key, error: message(error) });
+      }
+    }
+    return advanced;
+  }
+
   async function reconcile({ maxProcess = 20 } = {}) {
-    const summary = { repos: 0, enqueued: 0, cancelled: 0, wakeRetried: 0, processed: 0, errors: 0 };
+    const summary = { repos: 0, enqueued: 0, cancelled: 0, wakeRetried: 0, processed: 0, errors: 0, triage: 0 };
     const config = await loadConfig();
 
     for (const repoCfg of config.repositories.values()) {
@@ -369,6 +484,7 @@ export function createEngine(ctx, deps = {}) {
         log.warn("github-pr-intake: reconcile failed for repository", { repo: repoCfg.fullName, error: message(error) });
       }
     }
+    summary.triage = await advanceTriage(config);
     summary.wakeRetried = await retryWakeups();
     summary.processed = await processDue(maxProcess);
     return summary;

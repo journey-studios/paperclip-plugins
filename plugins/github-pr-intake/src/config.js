@@ -6,6 +6,7 @@ const TOP_LEVEL_KEYS = new Set([
   "webhookSecretRef",
   "githubTokenRefs",
   "githubApp",
+  "triageService",
   "maxConcurrentReviews",
   "repositories",
 ]);
@@ -25,6 +26,7 @@ const REPO_KEYS = new Set([
   "killSwitch",
   "deliveryNotes",
   "reviewExistingPullRequests",
+  "triage",
 ]);
 const RULE_KEYS = new Set(["reviewerAgentId", "paths", "labels", "authors", "baseBranches"]);
 
@@ -42,6 +44,17 @@ export function isSecretRef(value) {
   );
 }
 
+/** The pr-triage service: an http(s) base URL plus the Paperclip secret holding its bearer token. */
+export function isTriageService(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!isSecretRef(value.tokenRef) || typeof value.url !== "string") return false;
+  try {
+    return ["http:", "https:"].includes(new URL(value.url).protocol);
+  } catch {
+    return false;
+  }
+}
+
 export function validateConfig(value) {
   const config = record(value);
   const errors = [];
@@ -56,6 +69,9 @@ export function validateConfig(value) {
   }
   if (config.githubApp !== undefined && !isGithubAppConfig(config.githubApp)) {
     errors.push("githubApp needs a numeric appId and a privateKeyRef secret reference");
+  }
+  if (config.triageService !== undefined && !isTriageService(config.triageService)) {
+    errors.push("triageService needs an http(s) url and a tokenRef secret reference");
   }
   for (const [owner, ref] of Object.entries(record(config.githubTokenRefs))) {
     if (!isSecretRef(ref)) errors.push(`githubTokenRefs.${owner} must be a Paperclip secret reference`);
@@ -83,6 +99,12 @@ export function validateConfig(value) {
     }
     if (r.authority !== undefined && !AUTHORITIES.includes(r.authority)) {
       errors.push(`${at}.authority must be one of ${AUTHORITIES.join(", ")}`);
+    }
+    if (r.triage !== undefined && typeof r.triage !== "boolean") {
+      errors.push(`${at}.triage must be a boolean`);
+    }
+    if (r.triage === true && !isTriageService(config.triageService)) {
+      errors.push(`${at}.triage needs the company-wide triageService setting`);
     }
     if (r.reviewExistingPullRequests !== undefined && typeof r.reviewExistingPullRequests !== "boolean") {
       errors.push(`${at}.reviewExistingPullRequests must be a boolean`);
@@ -154,6 +176,11 @@ export function normalizeConfig(raw, companyId) {
       killSwitch: r.killSwitch === true || config.killSwitch === true,
       deliveryNotes: typeof r.deliveryNotes === "string" ? r.deliveryNotes : "",
       reviewExistingPullRequests: r.reviewExistingPullRequests === true,
+      // Triage is advisory and opt-in per repository; it also needs the company-wide service settings.
+      triageService:
+        r.triage === true && isTriageService(config.triageService)
+          ? { url: config.triageService.url.replace(/\/+$/, ""), tokenRef: config.triageService.tokenRef }
+          : null,
     });
   }
   return {

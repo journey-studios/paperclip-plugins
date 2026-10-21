@@ -82,6 +82,19 @@ publisher may use. The pull request itself is passed as untrusted data, never as
 
 Instead of static tokens, set `githubApp: { appId, privateKeyRef }` (the key is a Paperclip secret holding the PEM). The plugin then mints a short-lived installation token per repository and never falls back to `githubTokenRefs` if the App cannot. The App needs Pull requests (read/write), Contents (read) and Metadata (read), and the `pull_request` event pointed at this plugin's webhook.
 
+## Quick triage (optional)
+
+A repository can also get a fast, advisory comment from a second reviewer (PR-Agent, served by `services/pr-triage`).
+It is a first-pass signal only: it never blocks a merge and never produces a verdict; the review issue and its
+verdict stay the only gate.
+
+- Company-wide: `triageService: { url, tokenRef }` (the service's base URL and the secret holding its bearer token).
+- Per repository: `triage: true`. It needs a GitHub App (`githubApp`): the service is handed a read-only,
+  single-repository installation token, which a static token cannot provide, so static-token setups are refused.
+- One comment per pull request, found by a hidden marker (and only if a bot wrote it), updated on every new head.
+  An answer about a head that is no longer current is dropped. If the service is down the review issue is created
+  as usual and the triage is retried (up to three attempts, thirty minutes).
+
 ## Operations
 
 - `killSwitch` (per company or per repository) pauses reviews; queued PRs resume when it is switched off.

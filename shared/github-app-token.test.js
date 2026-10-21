@@ -84,3 +84,17 @@ test("isGithubAppConfig accepts only a numeric id and a secret reference", () =>
   assert.ok(!isGithubAppConfig({ appId: "1", privateKeyRef: "pem" }));
   assert.ok(!isGithubAppConfig(null));
 });
+
+test("a narrower permissions subset is requested and cached separately from the full token", async () => {
+  const http = fakeHttp({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+  const tokens = createInstallationTokens(http);
+  const base = { appId: "1", privateKeyPem: privateKey, owner: "o", repo: "r" };
+  const full = await tokens.tokenFor(base);
+  const readOnly = await tokens.tokenFor({ ...base, permissions: { contents: "read", pull_requests: "read" } });
+  const readOnlyAgain = await tokens.tokenFor({ ...base, permissions: { pull_requests: "read", contents: "read" } });
+  assert.notEqual(full, readOnly);
+  assert.equal(readOnly, readOnlyAgain, "same subset in another order hits the cache");
+  const bodies = http.calls.filter((call) => call.url.endsWith("/access_tokens")).map((call) => JSON.parse(call.init.body));
+  assert.deepEqual(bodies[0], { repositories: ["r"] });
+  assert.deepEqual(bodies[1], { repositories: ["r"], permissions: { contents: "read", pull_requests: "read" } });
+});

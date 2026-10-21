@@ -24,7 +24,8 @@ export function signAppJwt(appId, privateKeyPem, nowMs = Date.now()) {
 
 /**
  * Mints and caches short-lived installation tokens for a GitHub App, one per repository.
- * A token is requested for that single repository only, with the App's own permissions.
+ * A token is requested for that single repository only, with the App's own permissions unless a narrower
+ * `permissions` subset (for example read-only) is asked for.
  *
  * @param {{ fetch: (url: string, init?: object) => Promise<Response> }} http
  * @param {{ now?: () => number }} [options]
@@ -50,12 +51,12 @@ export function createInstallationTokens(http, { now = () => Date.now() } = {}) 
     return response.json();
   };
 
-  async function mint(appId, privateKeyPem, owner, repo) {
+  async function mint(appId, privateKeyPem, owner, repo, permissions) {
     const jwt = signAppJwt(appId, privateKeyPem, now());
     const installation = await call(`${API}/repos/${owner}/${repo}/installation`, { method: "GET" }, jwt, "installation lookup");
     const created = await call(
       `${API}/app/installations/${installation.id}/access_tokens`,
-      { method: "POST", body: JSON.stringify({ repositories: [repo] }) },
+      { method: "POST", body: JSON.stringify({ repositories: [repo], ...(permissions ? { permissions } : {}) }) },
       jwt,
       "token request",
     );
@@ -65,13 +66,14 @@ export function createInstallationTokens(http, { now = () => Date.now() } = {}) 
 
   return {
     /** @returns {Promise<string>} a token valid for the given repository. */
-    async tokenFor({ appId, privateKeyPem, owner, repo }) {
-      const key = `${appId}:${owner}/${repo}`.toLowerCase();
+    async tokenFor({ appId, privateKeyPem, owner, repo, permissions }) {
+      const scope = permissions ? JSON.stringify(Object.entries(permissions).sort()) : "all";
+      const key = `${appId}:${owner}/${repo}:${scope}`.toLowerCase();
       const cached = tokens.get(key);
       if (cached && cached.expiresAt - now() > REFRESH_MARGIN_MS) return cached.token;
       let pending = inFlight.get(key);
       if (!pending) {
-        pending = mint(appId, privateKeyPem, owner, repo)
+        pending = mint(appId, privateKeyPem, owner, repo, permissions)
           .then((minted) => {
             tokens.set(key, minted);
             return minted;
