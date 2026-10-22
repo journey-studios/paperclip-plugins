@@ -67,6 +67,13 @@ export function createStore(ctx) {
       await removeFromIndex("queue-index", key);
     },
 
+    getCiWatch: (key) => read(`ci-watch:${key}`),
+    async saveCiWatch(key, entry) {
+      await write(`ci-watch:${key}`, entry);
+      await addToIndex("ci-watch-index", key);
+    },
+    ciWatchKeys: async () => (await read("ci-watch-index")) ?? [],
+
     getTriage: (key) => read(`triage:${key}`),
     async saveTriage(key, entry) {
       await write(`triage:${key}`, entry);

@@ -3,6 +3,7 @@ import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
 import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
+import { buildCiUpdateComment, ciPending, ciUnavailable } from "./review-evidence.js";
 import { TRIAGE_MARKER, createTriageClient, formatTriageComment } from "./triage.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
@@ -14,6 +15,7 @@ const MAX_FETCH_ATTEMPTS = 6;
 const MAX_WAKE_ATTEMPTS = 5;
 const CAPACITY_RETRY_MS = 60_000;
 const TRIAGE_GIVE_UP_MS = 30 * 60_000;
+const CI_WATCH_GIVE_UP_MS = 45 * 60_000;
 const MAX_TRIAGE_ATTEMPTS = 3;
 // The triage service is only ever given a token that can read; it never needs to write.
 const READ_ONLY_PERMISSIONS = { contents: "read", pull_requests: "read", metadata: "read" };
@@ -239,14 +241,15 @@ export function createEngine(ctx, deps = {}) {
       return "at_capacity";
     }
 
+    const ci = await readCi(token, owner, name, pull.headSha);
     if (issue && !isTerminal(issue)) {
-      await ctx.issues.createComment(issue.id, buildNewHeadComment({ pull, round, maxRounds: repoCfg.maxRoundsPerPr }), repoCfg.companyId);
+      await ctx.issues.createComment(issue.id, buildNewHeadComment({ pull, round, maxRounds: repoCfg.maxRoundsPerPr, files, ci }), repoCfg.companyId);
     } else {
       issue = await ctx.issues.create({
         companyId: repoCfg.companyId,
         projectId: repoCfg.projectId,
         title: issueTitle(pull),
-        description: buildIssueBody({ pull, files, repoCfg, round, filesTruncated }),
+        description: buildIssueBody({ pull, files, repoCfg, round, filesTruncated, ci }),
         status: "todo",
         priority: "medium",
         assigneeAgentId: decision.reviewerAgentId,
@@ -256,6 +259,9 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const queued = await wake(issue, repoCfg.companyId, key, pull.headSha);
+    if (ciPending(ci)) {
+      await store.saveCiWatch(key, { repo: repoCfg.fullName, number: pull.number, issueId: issue.id, companyId: repoCfg.companyId, sha: pull.headSha, startedAt: now(), status: "watching" });
+    }
     await requestTriage(key, repoCfg, owner, name, pull);
     await store.savePr(key, {
       repo: repoCfg.fullName,
@@ -326,6 +332,49 @@ export function createEngine(ctx, deps = {}) {
   }
 
   /** Source of truth: recovers events lost while the webhook was down and closes stale reviews. */
+  /** CI evidence for the review package. A failure to read it must never stop the review being requested. */
+  async function readCi(token, owner, name, sha) {
+    try {
+      const [checks, statuses] = await Promise.all([github.listCheckRuns(token, owner, name, sha), github.getCommitStatus(token, owner, name, sha)]);
+      return { checks, statuses };
+    } catch (error) {
+      log.warn("github-pr-intake: could not read CI", { owner, name, error: message(error) });
+      return { error: true };
+    }
+  }
+
+  /**
+   * When checks were still running as the review was requested, adds a comment with their final result to the
+   * review issue (once). Nothing is added to a finished issue or for a head that is no longer under review.
+   */
+  async function advanceCiWatch(config) {
+    for (const key of await store.ciWatchKeys()) {
+      const entry = await store.getCiWatch(key);
+      if (!entry || entry.status !== "watching") continue;
+      const repoCfg = config.repositories.get(entry.repo.toLowerCase());
+      if (!repoCfg || repoCfg.killSwitch) continue;
+      try {
+        const record = await store.getPr(key);
+        const issue = await ctx.issues.get(entry.issueId, entry.companyId);
+        if (!record || record.reviewedSha !== entry.sha || isTerminal(issue)) {
+          await store.saveCiWatch(key, { ...entry, status: "closed" });
+          continue;
+        }
+        const [owner, name] = repoCfg.fullName.split("/");
+        const token = await tokenFor(repoCfg, owner, name);
+        if (!token) continue;
+        const ci = await readCi(token, owner, name, entry.sha);
+        const timedOut = now() - entry.startedAt > CI_WATCH_GIVE_UP_MS;
+        // A read error or a momentarily unreadable CI is not a result: try again until the window closes.
+        if ((ciPending(ci) || ciUnavailable(ci)) && !timedOut) continue;
+        await ctx.issues.createComment(entry.issueId, buildCiUpdateComment({ sha: entry.sha, ci, final: !ciPending(ci) && !ciUnavailable(ci) }), entry.companyId);
+        await store.saveCiWatch(key, { ...entry, status: "posted", postedAt: now() });
+      } catch (error) {
+        log.warn("github-pr-intake: CI watch step failed", { key, error: message(error) });
+      }
+    }
+  }
+
   async function triageService(repoCfg) {
     if (!repoCfg.triageService) return null;
     const value = await ctx.secrets.resolve(repoCfg.triageService.tokenRef, {
@@ -485,6 +534,7 @@ export function createEngine(ctx, deps = {}) {
       }
     }
     summary.triage = await advanceTriage(config);
+    await advanceCiWatch(config);
     summary.wakeRetried = await retryWakeups();
     summary.processed = await processDue(maxProcess);
     return summary;
