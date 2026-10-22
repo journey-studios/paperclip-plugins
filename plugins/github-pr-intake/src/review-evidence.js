@@ -103,7 +103,7 @@ export function buildCiSection(ci, { final = false } = {}) {
   if (notRun > 0) {
     lines.push(
       "",
-      "Checks marked \"not run\" never executed (infrastructure, for example the GitHub Actions budget): they say nothing about this change. Do not attribute them to the code; report the CI gate as PARTIAL for them.",
+      "Checks marked \"not run\" never executed (infrastructure, for example the GitHub Actions budget): they say nothing about this change. Do not attribute them to the code; report the CI gate as PARTIAL in the summary, not as a finding.",
     );
   }
   if (count("pending") > 0 && !final) lines.push("", "Some checks were still running. A comment with their result is added to this issue when they finish; read the comments again before concluding the CI gate.");

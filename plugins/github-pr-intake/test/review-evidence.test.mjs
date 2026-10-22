@@ -266,6 +266,6 @@ test("a check that never started is told apart from one that failed on the code"
   const section = buildCiSection(ci);
   assert.match(section, /0 passed, 4 failed, 0 pending, 1 not run\./);
   assert.match(section, /- Web build: not run: The job was not started because an Actions budget/);
-  assert.match(section, /Do not attribute them to the code; report the CI gate as PARTIAL/);
+  assert.match(section, /Do not attribute them to the code; report the CI gate as PARTIAL in the summary, not as a finding/);
   assert.doesNotMatch(buildCiSection(checks(run("lint", "completed", "failure"))), /not run/);
 });

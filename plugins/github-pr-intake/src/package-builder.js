@@ -65,6 +65,7 @@ function verdictInstructions(pull, repoCfg) {
     "```",
     "",
     `Allowed outcomes for this repository: ${allowed.join(", ")}. Any blocker or major finding requires the outcome request_changes; use approve only when none remain. If the PR head SHA changed since you started, re-read it and review the new SHA.`,
+    "A CI gate that is PARTIAL (checks unavailable, not registered yet, or not run) is a status for the summary, never a finding: do not list it under findings at any severity. Only a check that ran and failed for a reason you can tie to this change is evidence against the code.",
     "Keep the block valid JSON on its own, and never write the character sequence `-->` or `<!--` inside it: it would close the comment early and the verdict would be rejected.",
     ...deliveryCommands(),
   ];
