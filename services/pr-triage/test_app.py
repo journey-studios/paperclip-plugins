@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from unittest import mock
 
 os.environ["PR_TRIAGE_TOKEN"] = "t" * 32
 
@@ -54,7 +55,10 @@ class ApiTests(unittest.TestCase):
         async def fake_review(request):
             return service.parse_prediction(PREDICTION)
 
-        service.run_review = fake_review
+        # Patched (not assigned) so the real run_review is back for the other test modules.
+        patcher = mock.patch.object(service, "run_review", fake_review)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_requires_a_valid_token(self):
         with TestClient(service.app) as client:

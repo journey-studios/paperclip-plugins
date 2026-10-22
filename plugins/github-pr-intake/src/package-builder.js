@@ -95,6 +95,9 @@ export function buildIssueBody({ pull, files, repoCfg, round, filesTruncated = f
     "## Review package notes",
     repoCfg.deliveryNotes ||
       "The diff and the CI evidence are included above, so no GitHub access is needed. If something you need is missing from this package, report it (PARTIAL or BLOCKED) instead of looking for credentials; never read server code or decrypt secrets. Run lint, typecheck and tests yourself in an isolated workspace when they apply.",
+    ...(repoCfg.triageService
+      ? ["", "A quick automatic triage runs alongside this review and may add a comment titled \"Triage hypotheses\" within a few minutes. Read the issue comments again before concluding and verify those points; they are hypotheses, not findings."]
+      : []),
     "",
     ...verdictInstructions(pull, repoCfg),
   ].join("\n");

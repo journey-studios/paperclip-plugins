@@ -4,7 +4,8 @@ Why asynchronous: a review takes minutes and the caller (a Paperclip plugin) can
 Why one job at a time: PR-Agent keeps its settings (including the GitHub token) in process-wide state.
 
 The service never publishes anything to GitHub. It receives a short-lived, read-only token per job, runs the
-reviewer with `publish_output=false`, and returns the parsed prediction as JSON.
+reviewer with `publish_output=false`, and returns the parsed prediction as JSON, together with the repository's
+risk radar hits (see repo_rules.py).
 """
 
 import asyncio
@@ -14,13 +15,18 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from itertools import islice
 from typing import Any, Optional
 
 import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from repo_rules import SETTINGS_FILE, RepoRules, applied, evaluate_radar, load_repo_rules, reviewer_overrides
+
 JOB_TTL_SECONDS = 3600
+# The radar only needs paths and patches; GitHub stops listing files at 3000 anyway.
+MAX_RADAR_FILES = 300
 JOB_TIMEOUT_SECONDS = int(os.environ.get("TRIAGE_JOB_TIMEOUT_SECONDS", "900"))
 MAX_QUEUED = int(os.environ.get("TRIAGE_MAX_QUEUED", "20"))
 MAX_ISSUES = 8
@@ -101,21 +107,41 @@ def parse_prediction(prediction: Optional[str]) -> dict[str, Any]:
     }
 
 
+def fetch_repo_context(request: TriageRequest) -> tuple[RepoRules, list[tuple[str, str]]]:
+    """Reads the repository's rules (default branch) and the pull request's patches. Blocking: run it in a thread."""
+    from github import Github, GithubException, UnknownObjectException
+
+    repo = Github(login_or_token=request.token, per_page=100).get_repo(request.repo)
+    try:
+        rules = load_repo_rules(repo.get_contents(SETTINGS_FILE).decoded_content)
+    except UnknownObjectException:
+        rules = load_repo_rules(None)
+    except GithubException as error:
+        # Reported in the result, so a token without Contents access shows up instead of silently using defaults.
+        rules = RepoRules(status=f"unreadable: GitHub {error.status}")
+    files = [(f.filename, f.patch or "") for f in islice(repo.get_pull(request.number).get_files(), MAX_RADAR_FILES)]
+    return rules, files
+
+
 async def run_review(request: TriageRequest) -> dict[str, Any]:
     """Runs PR-Agent's reviewer without publishing. Imported lazily so tests do not need PR-Agent."""
     from pr_agent.config_loader import get_settings
     from pr_agent.tools.pr_reviewer import PRReviewer
 
+    rules, files = await asyncio.to_thread(fetch_repo_context, request)
+    radar = evaluate_radar(rules.radar, files)
     settings = get_settings()
     settings.set("GITHUB.USER_TOKEN", request.token)
     settings.set("CONFIG.PUBLISH_OUTPUT", False)
     settings.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
     try:
-        reviewer = PRReviewer(f"https://github.com/{request.repo}/pull/{request.number}", args=[])
-        await reviewer.run()
-        return parse_prediction(reviewer.prediction)
+        with applied(settings, reviewer_overrides(rules, settings)):
+            reviewer = PRReviewer(f"https://github.com/{request.repo}/pull/{request.number}", args=[])
+            await reviewer.run()
+            prediction = reviewer.prediction
     finally:
         settings.set("GITHUB.USER_TOKEN", "")
+    return {**parse_prediction(prediction), "radar": radar, "repo_rules": rules.status}
 
 
 def _scrub(message: str, token: str) -> str:

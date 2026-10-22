@@ -4,7 +4,7 @@ import { normalizePull } from "./events.js";
 import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
 import { buildCiUpdateComment, ciEmpty, ciPending, ciUnavailable } from "./review-evidence.js";
-import { TRIAGE_MARKER, createTriageClient, formatTriageComment } from "./triage.js";
+import { TRIAGE_MARKER, createTriageClient, formatReviewerHypotheses, formatTriageComment } from "./triage.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
 import { createStore } from "./state.js";
@@ -447,8 +447,30 @@ export function createEngine(ctx, deps = {}) {
       }
     }
     posted ??= await github.createIssueComment(token, owner, name, entry.number, body);
-    await store.saveTriage(key, { ...entry, status: "posted", commentId: posted.id, postedAt: now() });
+    const reviewerNotified = await shareWithReviewer(key, entry, result);
+    await store.saveTriage(key, { ...entry, status: "posted", commentId: posted.id, postedAt: now(), reviewerNotified });
     return true;
+  }
+
+  /**
+   * Hands the triage to the reviewer agent as hypotheses to verify, so the full review starts from what the quick
+   * pass saw and a diff-only false positive is dismissed before anything is published. Only while the review issue
+   * for this same head is still open; a failure here never affects the public triage comment.
+   */
+  async function shareWithReviewer(key, entry, result) {
+    const body = formatReviewerHypotheses({ result, sha: entry.sha });
+    if (!body) return false;
+    try {
+      const record = await store.getPr(key);
+      if (!record?.issueId || record.reviewedSha !== entry.sha) return false;
+      const issue = await ctx.issues.get(record.issueId, record.companyId);
+      if (isTerminal(issue)) return false;
+      await ctx.issues.createComment(issue.id, body, record.companyId);
+      return true;
+    } catch (error) {
+      log.warn("github-pr-intake: could not share the triage with the reviewer", { key, error: message(error) });
+      return false;
+    }
   }
 
   async function advanceOneTriage(key, entry, repoCfg) {
