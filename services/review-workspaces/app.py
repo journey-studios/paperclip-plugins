@@ -11,7 +11,8 @@ Layout under WORKSPACES_ROOT:
   .mirrors/<owner>/<repo>.git        bare, shallow mirror per repository
   <owner>__<repo>/<number>-<sha12>   detached worktree at the head commit
   <owner>__<repo>/<number>-<sha12>.ready   "ok" or "error: ..." once the job ends
-Worktrees are removed after WORKSPACE_TTL_HOURS; there is no other cleanup to call.
+Worktrees are removed after WORKSPACE_TTL_HOURS (and directories a dead job left without a marker after an hour);
+there is no other cleanup to call.
 """
 
 import asyncio
@@ -39,6 +40,11 @@ SWEEP_INTERVAL_SECONDS = 600
 SERVICE_TOKEN = os.environ.get("REVIEW_WORKSPACES_TOKEN", "")
 if len(SERVICE_TOKEN) < 24:
     raise RuntimeError("REVIEW_WORKSPACES_TOKEN must be set (at least 24 characters)")
+# Git runs on content other people control (hooks are off in bare mirrors, but filters or helpers could be configured):
+# it never sees the service's own bearer token.
+GIT_BASE_ENV = {key: value for key, value in os.environ.items() if key != "REVIEW_WORKSPACES_TOKEN"}
+# A directory without a marker this old was left by a job that died (restart); the sweep removes it.
+ORPHAN_SECONDS = 3600
 
 
 class WorkspaceRequest(BaseModel):
@@ -81,7 +87,7 @@ def auth_env(token: str) -> dict[str, str]:
     """Git reads the header from the environment, so the token never appears in argv or in the mirror's config."""
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     return {
-        **os.environ,
+        **GIT_BASE_ENV,
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "http.extraHeader",
@@ -95,7 +101,7 @@ class GitError(RuntimeError):
 
 async def git(*args: str, cwd: Optional[Path] = None, env: Optional[dict[str, str]] = None) -> str:
     process = await asyncio.create_subprocess_exec(
-        "git", *args, cwd=cwd, env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        "git", *args, cwd=cwd, env=env or {**GIT_BASE_ENV, "GIT_TERMINAL_PROMPT": "0"},
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -193,6 +199,13 @@ async def sweep(now: Optional[float] = None) -> int:
         await remove_worktree(ROOT / ".mirrors" / owner / f"{name}.git", path)
         marker_path(path).unlink(missing_ok=True)
         removed += 1
+    for path in ROOT.glob("*__*/*"):
+        if not path.is_dir() or marker_path(path).exists() or str(path) in pending:
+            continue
+        if now - path.stat().st_mtime > ORPHAN_SECONDS:
+            owner, name = path.parent.name.split("__", 1)
+            await remove_worktree(ROOT / ".mirrors" / owner / f"{name}.git", path)
+            removed += 1
     return removed
 
 

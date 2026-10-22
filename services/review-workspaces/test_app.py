@@ -95,5 +95,20 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIsNone(service.read_marker(path))
 
 
+class HardeningTests(unittest.TestCase):
+    def test_git_never_sees_the_service_token(self):
+        self.assertNotIn("REVIEW_WORKSPACES_TOKEN", service.auth_env(TOKEN))
+        self.assertNotIn("REVIEW_WORKSPACES_TOKEN", service.GIT_BASE_ENV)
+
+    def test_sweep_removes_directories_a_dead_job_left_without_a_marker(self):
+        orphan = Path(os.environ["WORKSPACES_ROOT"]) / "wallynm__tesselapp" / "99-deadbeef0000"
+        orphan.mkdir(parents=True)
+        (orphan / "half.txt").write_text("x")
+        asyncio.run(service.sweep(now=time.time() + 60))
+        self.assertTrue(orphan.exists(), "a fresh directory may still be in progress")
+        asyncio.run(service.sweep(now=time.time() + service.ORPHAN_SECONDS + 60))
+        self.assertFalse(orphan.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,7 @@ test("the client refuses paths that could break out of the shell snippet", async
     { path: '/x"; rm -rf /; "', marker: "/x.ready" },
     { path: "/paperclip/../etc", marker: "/paperclip/../etc.ready" },
     { path: "relative/path", marker: "relative/path.ready" },
+    { path: `${ROOT}/5-1`, marker: "/paperclip/../etc/passwd" },
   ];
   for (const answer of answers) {
     const ctx = { http: { fetch: async () => new Response(JSON.stringify({ ...answer, status: "preparing" }), { status: 202 }) } };

@@ -13,7 +13,8 @@ export function createWorkspaceClient(ctx) {
       });
       if (!response.ok) throw Object.assign(new Error(`workspace submit failed: ${response.status}`), { status: response.status });
       const answer = await response.json();
-      if (!SAFE_PATH.test(answer?.path ?? "") || !SAFE_PATH.test(answer?.marker ?? "") || answer.path.includes("..")) {
+      // The service always answers `<path>.ready`: requiring that relation also keeps ".." out of the marker.
+      if (!SAFE_PATH.test(answer?.path ?? "") || answer.path.includes("..") || answer.marker !== `${answer.path}.ready`) {
         throw new Error("workspace service returned an unexpected path");
       }
       return { path: answer.path, marker: answer.marker, status: String(answer.status ?? "") };
