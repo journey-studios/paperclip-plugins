@@ -241,7 +241,7 @@ export function createEngine(ctx, deps = {}) {
       return "at_capacity";
     }
 
-    const ci = await readCi(token, owner, name, pull.headSha);
+    const ci = await readCi(repoCfg, owner, name, pull.headSha, token);
     if (issue && !isTerminal(issue)) {
       await ctx.issues.createComment(issue.id, buildNewHeadComment({ pull, round, maxRounds: repoCfg.maxRoundsPerPr, files, ci }), repoCfg.companyId);
     } else {
@@ -333,10 +333,21 @@ export function createEngine(ctx, deps = {}) {
 
   /** Source of truth: recovers events lost while the webhook was down and closes stale reviews. */
   /** CI evidence for the review package. A failure to read it must never stop the review being requested. */
-  async function readCi(token, owner, name, sha) {
-    try {
-      const [checks, statuses] = await Promise.all([github.listCheckRuns(token, owner, name, sha), github.getCommitStatus(token, owner, name, sha)]);
+  async function readCi(repoCfg, owner, name, sha, token) {
+    const read = async (value) => {
+      const [checks, statuses] = await Promise.all([github.listCheckRuns(value, owner, name, sha), github.getCommitStatus(value, owner, name, sha)]);
       return { checks, statuses };
+    };
+    try {
+      let ci = await read(token);
+      // A cached installation token keeps the permissions it was minted with, so CI can look "unavailable" right
+      // after the App was granted Checks access. Mint a fresh token once before saying so.
+      if (ciUnavailable(ci) && repoCfg.githubApp) {
+        appTokens.invalidate?.({ appId: repoCfg.githubApp.appId, owner, repo: name });
+        const fresh = await tokenFor(repoCfg, owner, name);
+        if (fresh && fresh !== token) ci = await read(fresh);
+      }
+      return ci;
     } catch (error) {
       log.warn("github-pr-intake: could not read CI", { owner, name, error: message(error) });
       return { error: true };
@@ -363,7 +374,7 @@ export function createEngine(ctx, deps = {}) {
         const [owner, name] = repoCfg.fullName.split("/");
         const token = await tokenFor(repoCfg, owner, name);
         if (!token) continue;
-        const ci = await readCi(token, owner, name, entry.sha);
+        const ci = await readCi(repoCfg, owner, name, entry.sha, token);
         const timedOut = now() - entry.startedAt > CI_WATCH_GIVE_UP_MS;
         // A read error or a momentarily unreadable CI is not a result: try again until the window closes.
         if ((ciPending(ci) || ciUnavailable(ci)) && !timedOut) continue;

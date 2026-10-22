@@ -65,6 +65,15 @@ export function createInstallationTokens(http, { now = () => Date.now() } = {}) 
   }
 
   return {
+    /**
+     * Forgets every cached token of one repository. A cached token keeps the permissions it was minted with, so
+     * after the App's permissions change (or when GitHub refuses with 403) a fresh one is needed.
+     */
+    invalidate({ appId, owner, repo }) {
+      const prefix = `${appId}:${owner}/${repo}:`.toLowerCase();
+      for (const key of [...tokens.keys()]) if (key.startsWith(prefix)) tokens.delete(key);
+    },
+
     /** @returns {Promise<string>} a token valid for the given repository. */
     async tokenFor({ appId, privateKeyPem, owner, repo, permissions }) {
       const scope = permissions ? JSON.stringify(Object.entries(permissions).sort()) : "all";
