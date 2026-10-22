@@ -68,6 +68,8 @@ export function summarizeCi(ci) {
 
 export const ciUnavailable = (ci) => !ci || ci.error === true || (ci.checks?.available !== true && ci.statuses?.available !== true);
 export const ciPending = (ci) => !ciUnavailable(ci) && summarizeCi(ci).some((item) => item.outcome === "pending");
+/** Readable, but nothing reported: right after a push the checks usually have not been registered yet. */
+export const ciEmpty = (ci) => !ciUnavailable(ci) && summarizeCi(ci).length === 0;
 
 /** CI evidence for the reviewer, so it never needs GitHub credentials to find it. */
 export function buildCiSection(ci, { final = false } = {}) {
@@ -82,7 +84,11 @@ export function buildCiSection(ci, { final = false } = {}) {
   }
   const items = summarizeCi(ci);
   if (items.length === 0) {
-    lines.push("No checks or statuses are reported for this commit.");
+    lines.push(
+      final
+        ? "No checks or statuses were reported for this commit within the waiting window."
+        : "No checks or statuses are reported for this commit yet (they may not have started). If some appear, a comment with their result is added to this issue; read the comments again before concluding the CI gate.",
+    );
     return lines.join("\n");
   }
   const count = (outcome) => items.filter((item) => item.outcome === outcome).length;

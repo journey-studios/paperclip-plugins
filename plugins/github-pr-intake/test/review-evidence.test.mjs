@@ -33,7 +33,8 @@ test("CI evidence says plainly when it cannot be read, and never invites the rev
   assert.match(unavailable, /cannot read checks yet/);
   assert.match(unavailable, /do not look for credentials/);
   assert.match(buildCiSection({ error: true }), /could not be read right now/);
-  assert.match(buildCiSection(checks()), /No checks or statuses are reported/);
+  assert.match(buildCiSection(checks()), /No checks or statuses are reported for this commit yet/);
+  assert.match(buildCiSection(checks(), { final: true }), /within the waiting window/);
 });
 
 test("CI evidence counts results and flags what is still running", () => {
@@ -195,4 +196,33 @@ test("when even a fresh token cannot read the CI the package says so", async () 
   await f.open(rawPull({ number: 5, sha: SHA1 }));
   assert.match(f.issues[0].description, /cannot read checks yet/);
   assert.equal(f.issues.length, 1);
+});
+
+test("checks that are not registered yet are followed up, once they appear, with one comment", async () => {
+  const f = fixture();
+  f.setCi(checks()); // the PR was just opened: no check has been registered yet
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  assert.match(f.issues[0].description, /No checks or statuses are reported for this commit yet/);
+
+  await f.engine.reconcile();
+  assert.equal(f.comments.length, 0, "still empty inside the window");
+
+  f.setCi(checks(run("Workers Builds: bot", "completed", "success")));
+  await f.engine.reconcile();
+  const updates = f.comments.filter((c) => /CI update for/.test(c.body));
+  assert.equal(updates.length, 1);
+  assert.match(updates[0].body, /1 passed, 0 failed, 0 pending/);
+});
+
+test("a repository without CI gets one final 'no checks' note after the window, not endless waiting", async () => {
+  const f = fixture();
+  f.setCi(checks());
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  f.advance(11 * 60_000);
+  await f.engine.reconcile();
+  const updates = f.comments.filter((c) => /CI update for/.test(c.body));
+  assert.equal(updates.length, 1);
+  assert.match(updates[0].body, /within the waiting window/);
+  await f.engine.reconcile();
+  assert.equal(f.comments.filter((c) => /CI update for/.test(c.body)).length, 1, "never twice");
 });

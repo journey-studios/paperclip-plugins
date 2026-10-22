@@ -3,7 +3,7 @@ import { loadConfig as loadMergedConfig } from "./company-config.js";
 import { normalizePull } from "./events.js";
 import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
-import { buildCiUpdateComment, ciPending, ciUnavailable } from "./review-evidence.js";
+import { buildCiUpdateComment, ciEmpty, ciPending, ciUnavailable } from "./review-evidence.js";
 import { TRIAGE_MARKER, createTriageClient, formatTriageComment } from "./triage.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
@@ -16,6 +16,8 @@ const MAX_WAKE_ATTEMPTS = 5;
 const CAPACITY_RETRY_MS = 60_000;
 const TRIAGE_GIVE_UP_MS = 30 * 60_000;
 const CI_WATCH_GIVE_UP_MS = 45 * 60_000;
+// Checks are registered shortly after a push; an empty list is only believed after this long.
+const CI_NO_CHECKS_WINDOW_MS = 10 * 60_000;
 const MAX_TRIAGE_ATTEMPTS = 3;
 // The triage service is only ever given a token that can read; it never needs to write.
 const READ_ONLY_PERMISSIONS = { contents: "read", pull_requests: "read", metadata: "read" };
@@ -259,7 +261,7 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const queued = await wake(issue, repoCfg.companyId, key, pull.headSha);
-    if (ciPending(ci)) {
+    if (ciPending(ci) || ciEmpty(ci)) {
       await store.saveCiWatch(key, { repo: repoCfg.fullName, number: pull.number, issueId: issue.id, companyId: repoCfg.companyId, sha: pull.headSha, startedAt: now(), status: "watching" });
     }
     await requestTriage(key, repoCfg, owner, name, pull);
@@ -375,9 +377,12 @@ export function createEngine(ctx, deps = {}) {
         const token = await tokenFor(repoCfg, owner, name);
         if (!token) continue;
         const ci = await readCi(repoCfg, owner, name, entry.sha, token);
-        const timedOut = now() - entry.startedAt > CI_WATCH_GIVE_UP_MS;
-        // A read error or a momentarily unreadable CI is not a result: try again until the window closes.
-        if ((ciPending(ci) || ciUnavailable(ci)) && !timedOut) continue;
+        const elapsed = now() - entry.startedAt;
+        const timedOut = elapsed > CI_WATCH_GIVE_UP_MS;
+        // A read error or a momentarily unreadable CI is not a result: try again until the window closes. An empty
+        // list is not a result either until the checks had time to be registered.
+        const waiting = ciPending(ci) || ciUnavailable(ci) || (ciEmpty(ci) && elapsed <= CI_NO_CHECKS_WINDOW_MS);
+        if (waiting && !timedOut) continue;
         await ctx.issues.createComment(entry.issueId, buildCiUpdateComment({ sha: entry.sha, ci, final: !ciPending(ci) && !ciUnavailable(ci) }), entry.companyId);
         await store.saveCiWatch(key, { ...entry, status: "posted", postedAt: now() });
       } catch (error) {
