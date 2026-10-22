@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { buildCiSection, buildDiffSection, ciPending, summarizeCi } from "../src/review-evidence.js";
 import { buildIssueBody, buildNewHeadComment } from "../src/package-builder.js";
 import { createGithubClient } from "../src/github-client.js";
-import { fixture, rawPull, repoConfig } from "./helpers.mjs";
+import { APP_KEY_REF, fixture, rawPull, repoConfig } from "./helpers.mjs";
 
 const SHA1 = "1".repeat(40);
 const run = (name, status, conclusion = null) => ({ name, status, conclusion });
@@ -170,4 +170,29 @@ test("a transient error while following the CI does not end the follow-up", asyn
   f.setCi(checks(run("build", "completed", "success")));
   await f.engine.reconcile();
   assert.equal(f.comments.filter((c) => /CI update for/.test(c.body)).length, 1, "the follow-up still happens once CI can be read");
+});
+
+test("CI looks unavailable only after a fresh installation token was tried", async () => {
+  // The cached token predates the permission grant; only a freshly minted one can read checks.
+  let invalidated = 0;
+  const appTokens = {
+    invalidate: () => { invalidated += 1; },
+    tokenFor: async () => (invalidated > 0 ? "fresh-token" : "stale-token"),
+  };
+  const f = fixture({ config: { githubApp: { appId: "5412678", privateKeyRef: APP_KEY_REF } }, appTokens });
+  f.requireCiToken("fresh-token");
+  f.setCi(checks(run("lint", "completed", "success")));
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  assert.equal(invalidated, 1);
+  assert.match(f.issues[0].description, /1 passed, 0 failed, 0 pending/);
+  assert.ok(!f.issues[0].description.includes("cannot read checks yet"));
+});
+
+test("when even a fresh token cannot read the CI the package says so", async () => {
+  const appTokens = { invalidate: () => {}, tokenFor: async () => "some-token" };
+  const f = fixture({ config: { githubApp: { appId: "5412678", privateKeyRef: APP_KEY_REF } }, appTokens });
+  f.requireCiToken("a-token-nobody-has");
+  await f.open(rawPull({ number: 5, sha: SHA1 }));
+  assert.match(f.issues[0].description, /cannot read checks yet/);
+  assert.equal(f.issues.length, 1);
 });

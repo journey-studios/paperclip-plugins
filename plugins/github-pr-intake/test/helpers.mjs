@@ -124,6 +124,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
   const issueComments = [];
   let ci = { checks: { available: true, runs: [] }, statuses: { available: true, statuses: [] } };
   let ciFails = false;
+  let ciRequiresToken = null;
   const github = {
     getPull: async (token, _o, _r, number) => {
       calls.getPull += 1;
@@ -139,11 +140,13 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
       };
     },
     listOpenPulls: async () => structuredClone(listing),
-    listCheckRuns: async () => {
+    // `ciRequiresToken` models GitHub refusing (403) a token minted before a permission was granted.
+    listCheckRuns: async (token) => {
       if (ciFails) throw new Error("GitHub down");
+      if (ciRequiresToken && token !== ciRequiresToken) return { available: false };
       return structuredClone(ci.checks);
     },
-    getCommitStatus: async () => structuredClone(ci.statuses),
+    getCommitStatus: async (token) => (ciRequiresToken && token !== ciRequiresToken ? { available: false } : structuredClone(ci.statuses)),
     // The pull request conversation, as GitHub's issue-comments API shows it.
     listIssueComments: async () => structuredClone(issueComments),
     createIssueComment: async (_t, _o, _r, number, body) => {
@@ -168,6 +171,7 @@ export function fixture({ config = {}, wakeQueued = true, otherCompanies = {}, a
     setListing: (next) => { listing = next; },
     setCi: (next) => { ci = { ...ci, ...next }; },
     failCi: (value = true) => { ciFails = value; },
+    requireCiToken: (token) => { ciRequiresToken = token; },
     setToken: (available) => { tokenAvailable = available; },
     advance: (ms) => { clock.t += ms; },
     // Opens a PR end to end: stores it on the fake GitHub, delivers the event and processes the queue.

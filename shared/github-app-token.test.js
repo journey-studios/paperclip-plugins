@@ -85,6 +85,20 @@ test("isGithubAppConfig accepts only a numeric id and a secret reference", () =>
   assert.ok(!isGithubAppConfig(null));
 });
 
+test("invalidate makes the next request mint a new token, for every permission scope of that repository", async () => {
+  const http = fakeHttp({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+  const tokens = createInstallationTokens(http);
+  const base = { appId: "1", privateKeyPem: privateKey, owner: "o", repo: "r" };
+  const full = await tokens.tokenFor(base);
+  const narrow = await tokens.tokenFor({ ...base, permissions: { contents: "read" } });
+  tokens.invalidate({ appId: "1", owner: "o", repo: "r" });
+  assert.notEqual(await tokens.tokenFor(base), full);
+  assert.notEqual(await tokens.tokenFor({ ...base, permissions: { contents: "read" } }), narrow);
+  const other = await tokens.tokenFor({ ...base, repo: "other" });
+  tokens.invalidate({ appId: "1", owner: "o", repo: "r" });
+  assert.equal(await tokens.tokenFor({ ...base, repo: "other" }), other, "other repositories keep their tokens");
+});
+
 test("a narrower permissions subset is requested and cached separately from the full token", async () => {
   const http = fakeHttp({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
   const tokens = createInstallationTokens(http);
