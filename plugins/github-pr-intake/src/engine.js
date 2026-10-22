@@ -5,6 +5,7 @@ import { createInstallationTokens } from "../../../shared/github-app-token.js";
 import { createGithubClient } from "./github-client.js";
 import { buildCiUpdateComment, ciEmpty, ciPending, ciUnavailable } from "./review-evidence.js";
 import { TRIAGE_MARKER, createTriageClient, formatReviewerHypotheses, formatTriageComment } from "./triage.js";
+import { createWorkspaceClient } from "./workspace.js";
 import { buildIssueBody, buildLimitComment, buildNewHeadComment, issueTitle } from "./package-builder.js";
 import { decideReview } from "./routing.js";
 import { createStore } from "./state.js";
@@ -36,6 +37,7 @@ export function createEngine(ctx, deps = {}) {
   const github = deps.github ?? createGithubClient(ctx);
   const appTokens = deps.appTokens ?? createInstallationTokens(ctx.http);
   const triage = deps.triage ?? createTriageClient(ctx);
+  const workspaces = deps.workspaces ?? createWorkspaceClient(ctx);
   const log = ctx.logger;
   const locks = new Map();
   let kicking = false;
@@ -244,14 +246,15 @@ export function createEngine(ctx, deps = {}) {
     }
 
     const ci = await readCi(repoCfg, owner, name, pull.headSha, token);
+    const workspace = await requestWorkspace(repoCfg, owner, name, pull);
     if (issue && !isTerminal(issue)) {
-      await ctx.issues.createComment(issue.id, buildNewHeadComment({ pull, round, maxRounds: repoCfg.maxRoundsPerPr, files, ci }), repoCfg.companyId);
+      await ctx.issues.createComment(issue.id, buildNewHeadComment({ pull, round, maxRounds: repoCfg.maxRoundsPerPr, files, ci, workspace }), repoCfg.companyId);
     } else {
       issue = await ctx.issues.create({
         companyId: repoCfg.companyId,
         projectId: repoCfg.projectId,
         title: issueTitle(pull),
-        description: buildIssueBody({ pull, files, repoCfg, round, filesTruncated, ci }),
+        description: buildIssueBody({ pull, files, repoCfg, round, filesTruncated, ci, workspace }),
         status: "todo",
         priority: "medium",
         assigneeAgentId: decision.reviewerAgentId,
@@ -391,14 +394,32 @@ export function createEngine(ctx, deps = {}) {
     }
   }
 
-  async function triageService(repoCfg) {
-    if (!repoCfg.triageService) return null;
-    const value = await ctx.secrets.resolve(repoCfg.triageService.tokenRef, {
-      companyId: repoCfg.companyId,
-      configPath: "triageService.tokenRef",
-    });
+  /** Resolves a helper service's bearer token (`triageService` or `workspaceService`) for one call. */
+  async function serviceFor(repoCfg, setting) {
+    const settings = repoCfg[setting];
+    if (!settings) return null;
+    const value = await ctx.secrets.resolve(settings.tokenRef, { companyId: repoCfg.companyId, configPath: `${setting}.tokenRef` });
     if (typeof value !== "string" || !value.trim()) return null;
-    return { url: repoCfg.triageService.url, token: value.trim() };
+    return { url: settings.url, token: value.trim() };
+  }
+
+  const triageService = (repoCfg) => serviceFor(repoCfg, "triageService");
+
+  /**
+   * Asks for a worktree of the PR at its head commit, for the reviewer to read. `undefined` when the repository does
+   * not use worktrees; `null` when preparing one failed, which never stops the review (the package says diff-only).
+   */
+  async function requestWorkspace(repoCfg, owner, name, pull) {
+    if (!repoCfg.workspaceService) return undefined;
+    try {
+      const service = await serviceFor(repoCfg, "workspaceService");
+      const readToken = await tokenFor(repoCfg, owner, name, { readOnly: true });
+      if (!service || !readToken) return null;
+      return await workspaces.submit(service, { repo: repoCfg.fullName, number: pull.number, head_sha: pull.headSha, token: readToken });
+    } catch (error) {
+      log.warn("github-pr-intake: worktree request failed", { repo: repoCfg.fullName, number: pull.number, error: message(error) });
+      return null;
+    }
   }
 
   /**

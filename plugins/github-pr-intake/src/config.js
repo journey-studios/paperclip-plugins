@@ -7,6 +7,7 @@ const TOP_LEVEL_KEYS = new Set([
   "githubTokenRefs",
   "githubApp",
   "triageService",
+  "workspaceService",
   "maxConcurrentReviews",
   "repositories",
 ]);
@@ -27,6 +28,7 @@ const REPO_KEYS = new Set([
   "deliveryNotes",
   "reviewExistingPullRequests",
   "triage",
+  "worktree",
 ]);
 const RULE_KEYS = new Set(["reviewerAgentId", "paths", "labels", "authors", "baseBranches"]);
 
@@ -44,8 +46,8 @@ export function isSecretRef(value) {
   );
 }
 
-/** The pr-triage service: an http(s) base URL plus the Paperclip secret holding its bearer token. */
-export function isTriageService(value) {
+/** A helper service (pr-triage, review-workspaces): an http(s) base URL plus the secret holding its bearer token. */
+export function isServiceSettings(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   if (!isSecretRef(value.tokenRef) || typeof value.url !== "string") return false;
   try {
@@ -70,8 +72,11 @@ export function validateConfig(value) {
   if (config.githubApp !== undefined && !isGithubAppConfig(config.githubApp)) {
     errors.push("githubApp needs a numeric appId and a privateKeyRef secret reference");
   }
-  if (config.triageService !== undefined && !isTriageService(config.triageService)) {
+  if (config.triageService !== undefined && !isServiceSettings(config.triageService)) {
     errors.push("triageService needs an http(s) url and a tokenRef secret reference");
+  }
+  if (config.workspaceService !== undefined && !isServiceSettings(config.workspaceService)) {
+    errors.push("workspaceService needs an http(s) url and a tokenRef secret reference");
   }
   for (const [owner, ref] of Object.entries(record(config.githubTokenRefs))) {
     if (!isSecretRef(ref)) errors.push(`githubTokenRefs.${owner} must be a Paperclip secret reference`);
@@ -103,8 +108,14 @@ export function validateConfig(value) {
     if (r.triage !== undefined && typeof r.triage !== "boolean") {
       errors.push(`${at}.triage must be a boolean`);
     }
-    if (r.triage === true && !isTriageService(config.triageService)) {
+    if (r.triage === true && !isServiceSettings(config.triageService)) {
       errors.push(`${at}.triage needs the company-wide triageService setting`);
+    }
+    if (r.worktree !== undefined && typeof r.worktree !== "boolean") {
+      errors.push(`${at}.worktree must be a boolean`);
+    }
+    if (r.worktree === true && !isServiceSettings(config.workspaceService)) {
+      errors.push(`${at}.worktree needs the company-wide workspaceService setting`);
     }
     if (r.reviewExistingPullRequests !== undefined && typeof r.reviewExistingPullRequests !== "boolean") {
       errors.push(`${at}.reviewExistingPullRequests must be a boolean`);
@@ -178,8 +189,13 @@ export function normalizeConfig(raw, companyId) {
       reviewExistingPullRequests: r.reviewExistingPullRequests === true,
       // Triage is advisory and opt-in per repository; it also needs the company-wide service settings.
       triageService:
-        r.triage === true && isTriageService(config.triageService)
+        r.triage === true && isServiceSettings(config.triageService)
           ? { url: config.triageService.url.replace(/\/+$/, ""), tokenRef: config.triageService.tokenRef }
+          : null,
+      // A worktree of the PR at its head commit for the reviewer to read; opt-in per repository.
+      workspaceService:
+        r.worktree === true && isServiceSettings(config.workspaceService)
+          ? { url: config.workspaceService.url.replace(/\/+$/, ""), tokenRef: config.workspaceService.tokenRef }
           : null,
     });
   }

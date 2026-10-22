@@ -200,3 +200,12 @@ test("company configurations are read concurrently but merged in company order",
   assert.equal(merged.repositories.get("wallynm/tesselapp").companyId, "company-a", "the first company wins the duplicate even if the second answered first");
   assert.deepEqual(merged.duplicates, ["wallynm/tesselapp"]);
 });
+
+test("issue package carries the exact delivery commands, so reviewers do not reverse-engineer the contract", () => {
+  const pull = normalizePull("wallynm/tesselapp", rawPull({ number: 9 }));
+  const body = buildIssueBody({ pull, files: [], repoCfg: normalizeConfig({ repositories: [repoConfig()] }, "c").repositories.get("wallynm/tesselapp"), round: 1, ci: { error: true } });
+  assert.match(body, /## Commands \(everything you need is in this issue\)/);
+  assert.match(body, /curl -sS -X POST .*\$PAPERCLIP_API_URL\/api\/issues\/\$PAPERCLIP_TASK_ID\/comments/);
+  assert.match(body, /curl -sS -X PATCH .*\{"status":"done"\}/);
+  assert.match(body, /Do not list other issues, search the server or plugin bundles/);
+});

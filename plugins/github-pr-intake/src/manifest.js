@@ -55,6 +55,11 @@ const repository = {
       default: false,
       title: "Post a quick advisory triage comment (needs triageService and a GitHub App)",
     },
+    worktree: {
+      type: "boolean",
+      default: false,
+      title: "Prepare a git worktree of the PR at its head commit for the reviewer (needs workspaceService and a GitHub App)",
+    },
     reviewExistingPullRequests: {
       type: "boolean",
       default: false,
@@ -67,7 +72,7 @@ const repository = {
 const manifest = {
   id: PLUGIN_KEY,
   apiVersion: 1,
-  version: "0.6.0",
+  version: "0.7.0",
   displayName: "GitHub PR intake",
   description:
     "Listen to GitHub pull requests (webhook plus reconciliation) and route each one to a Paperclip review agent.",
@@ -129,6 +134,17 @@ const manifest = {
         type: "object",
         title: "pr-triage service (quick advisory comment)",
         description: "PR-Agent behind an authenticated HTTP API. Repositories opt in with `triage: true`.",
+        required: ["url", "tokenRef"],
+        additionalProperties: false,
+        properties: {
+          url: { type: "string", format: "uri", title: "Service base URL" },
+          tokenRef: { ...secretRef, title: "Service bearer token" },
+        },
+      },
+      workspaceService: {
+        type: "object",
+        title: "review-workspaces service (worktree of the PR for the reviewer)",
+        description: "Prepares a git worktree at the PR's head commit. Repositories opt in with `worktree: true`.",
         required: ["url", "tokenRef"],
         additionalProperties: false,
         properties: {

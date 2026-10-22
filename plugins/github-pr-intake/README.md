@@ -114,6 +114,24 @@ verdict stay the only gate.
   added to the issue as one "Triage hypotheses" comment: the reviewer verifies each point before reporting it, so a
   diff-only false positive is dismissed before anything is published.
 
+## Worktree of the PR (optional)
+
+The reviewer agent has no checkout of the repository. With a worktree it can read whole files and related code,
+not only the diff.
+
+- Company-wide: `workspaceService: { url, tokenRef }` (the `services/review-workspaces` service).
+- Per repository: `worktree: true`. Like triage it needs a GitHub App: the service gets a read-only,
+  single-repository installation token per request.
+- Each new head asks for a worktree at that exact commit (`refs/pull/N/head`, so forks work). The issue (or the
+  new-head comment) names its path and the marker file the reviewer waits for. A failed request never stops the
+  review: the package says to review from the diff.
+
+## Delivery commands
+
+Every package ends with a "Commands" section: the exact calls to read the issue's comments, post the verdict and mark
+the issue done. Without it reviewers spent most of each run reverse-engineering the contract (listing other issues,
+grepping plugin bundles and the server for the markers).
+
 ## Operations
 
 - `killSwitch` (per company or per repository) pauses reviews; queued PRs resume when it is switched off.
