@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildVerdictBody,
   effectiveOutcome,
+  escapeControlCharsInStrings,
   mapVerdictOutcomeToEvent,
   parseIntakeHeader,
   parseVerdict,
@@ -140,4 +141,51 @@ test("the public review body comes from the verdict only", () => {
   assert.match(body, /\*\*blocker\*\* `a\.ts:9`: Null deref\./);
   assert.match(body, /> Approval withheld\./);
   assert.match(body, /JOU-12/);
+});
+
+// A model writing a multi-line summary puts real line breaks inside the JSON string. That used to be rejected
+// as invalid_json and the review never reached GitHub (JOU-750).
+const withRawLineBreaks = (summary, findingMessage = "Short.") =>
+  `{\n  "v": 1,\n  "repo": "o/r",\n  "number": 5,\n  "headSha": "${SHA}",\n  "outcome": "request_changes",\n  "summary": "${summary}",\n  "findings": [\n    { "severity": "major", "path": "a.js", "line": 2, "message": "${findingMessage}" }\n  ]\n}`;
+
+test("parseVerdict accepts raw line breaks and tabs inside strings and keeps the text", () => {
+  const result = parseVerdict(block(withRawLineBreaks("Three points:\n1. First.\n\t2. Second.", "Line one.\nLine two.")));
+  assert.equal(result.ok, true);
+  assert.equal(result.verdict.summary, "Three points:\n1. First.\n\t2. Second.");
+  assert.equal(result.verdict.findings[0].message, "Line one.\nLine two.");
+  assert.equal(result.verdict.outcome, "request_changes");
+});
+
+test("parseVerdict still reads properly escaped strings and pretty-printed JSON", () => {
+  const escaped = parseVerdict(block(valid({ summary: 'He said "no".\nSecond line.' })));
+  assert.equal(escaped.ok, true);
+  assert.equal(escaped.verdict.summary, 'He said "no".\nSecond line.');
+  const pretty = parseVerdict(block(JSON.stringify(valid({ summary: "ok" }), null, 2)));
+  assert.equal(pretty.ok, true);
+});
+
+test("parseVerdict stays fail-closed for every other kind of broken JSON", () => {
+  const unescapedQuote = '{"v":1,"repo":"o/r","number":5,"headSha":"' + SHA + '","outcome":"approve","summary":"say "no" now"}';
+  assert.equal(parseVerdict(block(unescapedQuote)).error, "invalid_json");
+  assert.equal(parseVerdict(block(`{"v":1,"repo":"o/r",}`)).error, "invalid_json");
+  assert.equal(parseVerdict(block(`{'v':1}`)).error, "invalid_json");
+  assert.equal(parseVerdict(block(`{"v":1,"summary":"never closed\nsecond line`)).error, "invalid_json");
+  // A line break after a lone backslash is not a valid escape and is not guessed at.
+  assert.equal(parseVerdict(block('{"v":1,"summary":"a\\\nb"}')).error, "invalid_json");
+});
+
+test("the repaired block is still validated field by field", () => {
+  const wrongRepo = withRawLineBreaks("Two\nlines.").replace('"o/r"', '"bad"');
+  assert.equal(parseVerdict(block(wrongRepo)).error, "invalid_repo");
+  const wrongSeverity = withRawLineBreaks("Two\nlines.").replace('"major"', '"fatal"');
+  assert.equal(parseVerdict(block(wrongSeverity)).error, "invalid_finding");
+});
+
+test("escapeControlCharsInStrings only touches control characters inside string literals", () => {
+  assert.equal(escapeControlCharsInStrings('{\n  "a": "x\ny",\n\t"b": 1\n}'), '{\n  "a": "x\\ny",\n\t"b": 1\n}');
+  assert.equal(escapeControlCharsInStrings('"a\tb\rc\u0001d"'), '"a\\tb\\rc\\u0001d"');
+  // Already escaped text is left as it is, including an escaped quote and a trailing escaped backslash.
+  const clean = '{"a":"x\\ny \\"q\\" \\\\","b":"z"}';
+  assert.equal(escapeControlCharsInStrings(clean), clean);
+  assert.equal(escapeControlCharsInStrings(undefined), "");
 });
