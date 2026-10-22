@@ -16,8 +16,9 @@ const header = (authority = "approve") =>
 const verdictBody = (overrides = {}) =>
   `Done.\n<!-- paperclip-review-verdict\n${JSON.stringify({ v: 1, repo: "o/r", number: 5, headSha: SHA, outcome: "approve", summary: "Fine.", findings: [], ...overrides })}\n-->`;
 
-function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, botLogin = "review-bot", token = "tok", submit } = {}) {
+function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, botLogin = "review-bot", token = "tok", submit, repair = { queued: true } } = {}) {
   const posted = [];
+  const repairs = [];
   const notes = [];
   const receipts = new Map();
   const issueRecord = {
@@ -51,11 +52,12 @@ function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, b
     submitReview: submit ?? (async (_ctx, input) => { posted.push(input); return { id: "900", url: "https://github.com/o/r/pull/5#pullrequestreview-900" }; }),
     getReceipt: async (_ctx, key) => receipts.get(key) ?? null,
     upsertReceipt: async (_ctx, row) => { receipts.set(row.receiptKey, { ...row, status: row.status, github_review_id: row.githubReviewId }); },
+    requestRepair: async (_ctx, input) => { repairs.push(input); return repair; },
     listRetryableReceipts: async () =>
       [...receipts.values()].filter((r) => r.status === "failed").map((r) => ({ receipt_key: r.receiptKey, company_id: r.companyId, issue_id: r.issueId, decision_id: r.decisionId })),
   };
   const run = (commentId = "c1") => processVerdictComment(ctx, { companyId: COMPANY, issueId: ISSUE, commentId }, deps);
-  return { ctx, deps, posted, notes, receipts, run, comments };
+  return { ctx, deps, posted, notes, receipts, repairs, run, comments };
 }
 
 test("an approve verdict from the assigned reviewer is published with a receipt", async () => {
@@ -102,6 +104,25 @@ test("comments without a verdict are ignored, malformed ones are reported", asyn
   assert.equal((await bad.run()).rejected, "invalid_head_sha");
   assert.match(bad.notes[0], /rejected/);
   assert.equal(bad.posted.length, 0);
+});
+
+test("a rejected block is queued for correction and the note says the reviewer will be asked", async () => {
+  const f = fixture({ comment: { body: "```json\n<!-- paperclip-review-verdict\n{broken\n-->" } });
+  const result = await f.run();
+  assert.deepEqual(result, { rejected: "invalid_json", repair: true });
+  assert.deepEqual(f.repairs, [{ companyId: COMPANY, issueId: ISSUE, commentId: "c1", error: "invalid_json" }]);
+  assert.match(f.notes[0], /invalid_json/);
+  assert.match(f.notes[0], /asked to post a corrected block/);
+});
+
+test("when the reviewer cannot be asked again the note sends the review to a human", async () => {
+  const f = fixture({ comment: { body: verdictBody({ headSha: "short" }) }, repair: { queued: false, reason: "limit_reached" } });
+  assert.deepEqual(await f.run(), { rejected: "invalid_head_sha", repair: false });
+  assert.match(f.notes[0], /by hand/);
+
+  const other = fixture({ comment: { body: verdictBody({ headSha: "short" }) }, repair: { queued: false, reason: "not_repairable" } });
+  await other.run();
+  assert.match(other.notes[0], /Post one valid block/);
 });
 
 test("a verdict for another PR than the issue's is rejected", async () => {

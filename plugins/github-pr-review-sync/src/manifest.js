@@ -13,7 +13,7 @@ const secretRef = {
 const manifest = {
   id: "journey-studios.github-pr-review-sync",
   apiVersion: 1,
-  version: "0.2.2",
+  version: "0.3.0",
   displayName: "GitHub PR review sync",
   description:
     "Publish Paperclip native PR-linked review decisions as formal GitHub pull request reviews with idempotent receipts.",
@@ -24,6 +24,8 @@ const manifest = {
     "events.subscribe",
     "jobs.schedule",
     "issues.read",
+    "issues.update",
+    "issues.wakeup",
     "issue.comments.read",
     "issue.comments.create",
     "artifacts.read",
@@ -43,6 +45,12 @@ const manifest = {
       jobKey: "retry-failed",
       displayName: "Retry failed verdict publications",
       description: "Retries recent verdict publications that failed for transient reasons.",
+      schedule: "*/5 * * * *",
+    },
+    {
+      jobKey: "repair-rejected",
+      displayName: "Ask reviewers to correct rejected verdicts",
+      description: "Reopens a review issue and wakes its reviewer when the verdict block was rejected and nothing was published.",
       schedule: "*/5 * * * *",
     },
   ],

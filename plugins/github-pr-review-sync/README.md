@@ -22,6 +22,12 @@ Runtime may also read `GITHUB_REVIEW_BOT_TOKEN` from the worker environment when
   breaks, carriage returns and tabs are kept in the published text; the other control characters are removed by
   `sanitize` before publication. Any other broken JSON or invalid field is rejected with a comment on the issue.
 - Persists receipt rows in plugin namespace `github_pr_review_sync`.
+- A rejected verdict block is not lost. The job `repair-rejected` (every 5 minutes) reopens the review issue if the
+  reviewer already closed it, comments with what to fix and wakes the reviewer to post a corrected block. It waits
+  60 seconds after the rejection so the reviewer's own run can end first, asks at most twice per issue, stops after
+  2 hours, and does nothing when the pull request is no longer open, the issue was cancelled or the reviewer has
+  already posted a newer block. A wrong pull request (`verdict_mismatch`) is never repaired. Needs the capabilities
+  `issues.update` and `issues.wakeup`.
 
 ## Tests
 
