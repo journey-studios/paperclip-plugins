@@ -226,3 +226,46 @@ test("a repository without CI gets one final 'no checks' note after the window, 
   await f.engine.reconcile();
   assert.equal(f.comments.filter((c) => /CI update for/.test(c.body)).length, 1, "never twice");
 });
+
+test("a check that never started is told apart from one that failed on the code", async () => {
+  const at = (seconds) => new Date(Date.UTC(2026, 9, 22, 1, 52, seconds)).toISOString();
+  const checkRun = (id, name, seconds, annotations = 1) => ({
+    id, name, status: "completed", conclusion: "failure", started_at: at(0), completed_at: at(seconds), output: { annotations_count: annotations },
+  });
+  const annotationsById = {
+    1: [{ message: "The job was not started because an Actions budget is preventing further use." }],
+    2: [{ message: "Process completed with exit code 1." }],
+  };
+  const reads = [];
+  const client = createGithubClient({
+    http: {
+      fetch: async (url) => {
+        const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+        if (url.includes("/check-runs?")) {
+          return json({ check_runs: [checkRun(1, "Web build", 2), checkRun(2, "Lint", 20), checkRun(3, "Tests", 600), checkRun(4, "Flaky", 3), checkRun(5, "Quiet", 1, 0)] });
+        }
+        const id = Number(url.match(/check-runs\/(\d+)\/annotations/)?.[1]);
+        reads.push(id);
+        if (id === 4) return json({ message: "boom" }, 500);
+        return json(annotationsById[id] ?? []);
+      },
+    },
+  });
+  const listed = await client.listCheckRuns("t", "o", "r", SHA1);
+  const byName = Object.fromEntries(listed.runs.map((r) => [r.name, r]));
+  assert.match(byName["Web build"].notRun, /Actions budget/);
+  assert.equal(byName.Lint.notRun, undefined, "a fast failure with an ordinary message is a failure");
+  assert.equal(byName.Flaky.notRun, undefined, "an unreadable annotation keeps the check as a failure");
+  assert.deepEqual(reads.sort(), [1, 2, 4], "slow checks and checks without annotations are not looked up");
+
+  const ci = { checks: listed, statuses: { available: true, statuses: [] } };
+  const items = Object.fromEntries(summarizeCi(ci).map((item) => [item.name, item]));
+  assert.equal(items["Web build"].outcome, "not_run");
+  assert.equal(items.Lint.outcome, "failed");
+  assert.equal(ciPending(ci), false, "a check that never started is not waited for");
+  const section = buildCiSection(ci);
+  assert.match(section, /0 passed, 4 failed, 0 pending, 1 not run\./);
+  assert.match(section, /- Web build: not run: The job was not started because an Actions budget/);
+  assert.match(section, /Do not attribute them to the code; report the CI gate as PARTIAL/);
+  assert.doesNotMatch(buildCiSection(checks(run("lint", "completed", "failure"))), /not run/);
+});

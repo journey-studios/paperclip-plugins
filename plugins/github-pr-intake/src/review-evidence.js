@@ -51,10 +51,14 @@ export function buildDiffSection(files, { perFile = MAX_PER_FILE, total = MAX_TO
 
 const label = (run) => sanitizeModelText(run.conclusion ?? run.status ?? "unknown", 40);
 
-/** Normalizes check runs and commit statuses into one list of { name, outcome: passed|failed|pending }. */
+/** Normalizes check runs and commit statuses into one list of { name, outcome: passed|failed|pending|not_run }. */
 export function summarizeCi(ci) {
   const items = [];
   for (const run of ci?.checks?.runs ?? []) {
+    if (run.notRun) {
+      items.push({ name: run.name, outcome: "not_run", detail: `not run: ${sanitizeModelText(run.notRun, 160)}` });
+      continue;
+    }
     let outcome = "pending";
     if (run.status === "completed") outcome = PASSED.has(run.conclusion) ? "passed" : FAILED.has(run.conclusion) ? "failed" : "pending";
     items.push({ name: run.name, outcome, detail: label(run) });
@@ -92,9 +96,16 @@ export function buildCiSection(ci, { final = false } = {}) {
     return lines.join("\n");
   }
   const count = (outcome) => items.filter((item) => item.outcome === outcome).length;
-  lines.push(`${count("passed")} passed, ${count("failed")} failed, ${count("pending")} pending.`, "");
+  const notRun = count("not_run");
+  lines.push(`${count("passed")} passed, ${count("failed")} failed, ${count("pending")} pending${notRun ? `, ${notRun} not run` : ""}.`, "");
   for (const item of items.slice(0, MAX_CI_LINES)) lines.push(`- ${sanitizeModelText(item.name, 120)}: ${item.detail}`);
   if (items.length > MAX_CI_LINES) lines.push(`- … and ${items.length - MAX_CI_LINES} more`);
+  if (notRun > 0) {
+    lines.push(
+      "",
+      "Checks marked \"not run\" never executed (infrastructure, for example the GitHub Actions budget): they say nothing about this change. Do not attribute them to the code; report the CI gate as PARTIAL for them.",
+    );
+  }
   if (count("pending") > 0 && !final) lines.push("", "Some checks were still running. A comment with their result is added to this issue when they finish; read the comments again before concluding the CI gate.");
   return lines.join("\n");
 }

@@ -4,6 +4,11 @@ const MAX_LIST_PAGES = 3;
 // Patches are kept only up to a total budget: the review package shows a bounded diff anyway.
 const MAX_PATCH_PER_FILE = 20_000;
 const MAX_PATCH_TOTAL = 120_000;
+// A check that failed this fast may never have run; only then are its annotations read (one call each, bounded).
+const NOT_RUN_MAX_SECONDS = 60;
+const MAX_ANNOTATION_READS = 10;
+// What GitHub writes when a job never started (billing, spending limit, budget) rather than failed on the code.
+const NOT_STARTED = /not started|budget|spending limit|billing|payment|recent account payments/i;
 
 function headers(token, extra = {}) {
   return {
@@ -24,9 +29,27 @@ async function failure(response, what) {
   });
 }
 
+function mayNotHaveRun(run) {
+  if (run.status !== "completed" || !["failure", "startup_failure", "cancelled"].includes(run.conclusion)) return false;
+  if (!(run.output?.annotations_count > 0)) return false;
+  const seconds = (Date.parse(run.completed_at) - Date.parse(run.started_at)) / 1000;
+  return Number.isFinite(seconds) && seconds <= NOT_RUN_MAX_SECONDS;
+}
+
 /** Read-only GitHub REST calls over the host's outbound HTTP (capability `http.outbound`). */
 export function createGithubClient(ctx) {
   const get = (token, path, extra) => ctx.http.fetch(`${API}${path}`, { headers: headers(token, extra) });
+  /** Telling "never ran" apart from "failed": a read error leaves the check as an ordinary failure. */
+  async function notStartedReason(token, owner, repo, id) {
+    try {
+      const response = await get(token, `/repos/${owner}/${repo}/check-runs/${id}/annotations?per_page=10`);
+      if (!response.ok) return null;
+      const message = (await response.json()).map((a) => String(a?.message ?? "")).find((m) => NOT_STARTED.test(m));
+      return message ? message.replace(/\s+/g, " ").trim().slice(0, 160) : null;
+    } catch {
+      return null;
+    }
+  }
   const write = (token, method, path, payload) =>
     ctx.http.fetch(`${API}${path}`, {
       method,
@@ -76,10 +99,18 @@ export function createGithubClient(ctx) {
       if (response.status === 403 || response.status === 404) return { available: false };
       if (!response.ok) throw await failure(response, "check runs fetch");
       const body = await response.json();
-      return {
-        available: true,
-        runs: (body.check_runs ?? []).map((run) => ({ name: String(run.name ?? ""), status: String(run.status ?? ""), conclusion: run.conclusion ?? null })),
-      };
+      const runs = [];
+      let annotationReads = 0;
+      for (const run of body.check_runs ?? []) {
+        const entry = { name: String(run.name ?? ""), status: String(run.status ?? ""), conclusion: run.conclusion ?? null };
+        if (mayNotHaveRun(run) && annotationReads < MAX_ANNOTATION_READS) {
+          annotationReads += 1;
+          const reason = await notStartedReason(token, owner, repo, run.id);
+          if (reason) entry.notRun = reason;
+        }
+        runs.push(entry);
+      }
+      return { available: true, runs };
     },
 
     /** Legacy commit statuses (some CI systems report only these). Same 403/404 handling as `listCheckRuns`. */
