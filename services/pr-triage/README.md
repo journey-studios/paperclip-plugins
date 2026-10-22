@@ -17,6 +17,33 @@ one at a time, and the per-job GitHub token is dropped as soon as the job ends.
 The token the caller passes must be a short-lived, read-only installation token for that single repository
 (the plugin mints it from its GitHub App with `contents`, `pull_requests` and `metadata` set to `read`).
 
+## Repository rules (`.pr_agent.toml`)
+
+Read from the repository's **default branch** for every job, so a pull request cannot change the rules it is
+checked against. Only these keys are used; anything else in the file is ignored, so a repository can never point
+the model endpoint, the token or the model elsewhere. A file that fails validation is rejected as a whole and the
+job runs with the defaults; the result says why (`repo_rules`).
+
+```toml
+[pr_reviewer]
+extra_instructions = "Conventions the reviewer should check in the diff."   # up to 4000 characters
+num_max_findings = 5                                                        # 1 to 10
+
+[ignore]
+glob = ["apps/web/src/routeTree.gen.ts"]      # extends the service's own ignore list
+
+# Risk radar: deterministic, no model involved. A hit is reported when a changed file matches `paths`
+# (fnmatch: `*` also crosses directories) and, if given, an added line matches `added_matches` (a regex).
+[[review_radar.rules]]
+id = "rls-notes"
+paths = ["supabase/migrations/*.sql"]
+added_matches = "(?i)policy"
+note = "Run the RLS check on staging before and after applying the migration."
+```
+
+The result carries `radar` (`[{id, note, files, more_files}]`) and `repo_rules` (`loaded`, `absent`,
+`invalid: …` or `unreadable: GitHub <status>`) next to PR-Agent's fields.
+
 ## Configuration (environment)
 
 `PR_TRIAGE_TOKEN` (required, 24+ characters) plus PR-Agent's own settings, for example:
@@ -42,7 +69,7 @@ shared Docker network.
 
 ```
 docker build -t pr-triage:local services/pr-triage
-python -m unittest -v test_app   # run inside the image: docker run --rm -v "$PWD:/t" -w /t -e PYTHONPATH=/t:/app --entrypoint python pr-triage:local -m unittest -v test_app
+python -m unittest -v test_app test_repo_rules   # run inside the image: docker run --rm -v "$PWD:/t" -w /t -e PYTHONPATH=/t:/app --entrypoint python pr-triage:local -m unittest -v test_app test_repo_rules
 ```
 
 The base image is pinned by digest on purpose; update it deliberately.

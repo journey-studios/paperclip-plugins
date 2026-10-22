@@ -107,6 +107,12 @@ verdict stay the only gate.
 - One comment per pull request, found by a hidden marker (and only if a bot wrote it), updated on every new head.
   An answer about a head that is no longer current is dropped. If the service is down the review issue is created
   as usual and the triage is retried (up to three attempts, thirty minutes).
+- The repository's own rules live in `.pr_agent.toml` on its default branch (a pull request cannot change the
+  rules it is checked against): reviewer guidance for PR-Agent and a deterministic risk radar of path rules. See
+  `services/pr-triage/README.md` for the format. A rules file that cannot be applied is named on the comment.
+- When the triage has radar hits or model findings and the review issue for that same head is still open, they are
+  added to the issue as one "Triage hypotheses" comment: the reviewer verifies each point before reporting it, so a
+  diff-only false positive is dismissed before anything is published.
 
 ## Operations
 
