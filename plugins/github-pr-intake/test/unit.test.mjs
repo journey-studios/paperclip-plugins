@@ -208,4 +208,5 @@ test("issue package carries the exact delivery commands, so reviewers do not rev
   assert.match(body, /curl -sS -X POST .*\$PAPERCLIP_API_URL\/api\/issues\/\$PAPERCLIP_TASK_ID\/comments/);
   assert.match(body, /curl -sS -X PATCH .*\{"status":"done"\}/);
   assert.match(body, /Do not list other issues, search the server or plugin bundles/);
+  assert.match(body, /A CI gate that is PARTIAL .* is a status for the summary, never a finding/);
 });
