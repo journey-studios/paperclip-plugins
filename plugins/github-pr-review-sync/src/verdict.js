@@ -30,21 +30,77 @@ function safePath(value) {
   return value;
 }
 
+const CONTROL_ESCAPES = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+function escapeControlChar(char) {
+  const known = CONTROL_ESCAPES[char];
+  if (known) return known;
+  return `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+/**
+ * Escapes the control characters (real line breaks, tabs) that sit inside JSON string literals. A multi-line
+ * `summary` written by a model is the usual case: JSON forbids a raw line break in a string, but the intent is
+ * unambiguous and escaping keeps the exact text the reviewer wrote. Quotes, structure and everything outside
+ * string literals are left alone, so a block that is broken in any other way still fails to parse.
+ */
+export function escapeControlCharsInStrings(text) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of String(text ?? "")) {
+    if (!inString) {
+      if (char === '"') inString = true;
+      out += char;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      out += char;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      out += char;
+      continue;
+    }
+    if (char === '"') {
+      inString = false;
+      out += char;
+      continue;
+    }
+    if (char.charCodeAt(0) < 0x20) {
+      out += escapeControlChar(char);
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
+function parseJson(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /**
  * Parses the single verdict block of a reviewer comment. Fail-closed: zero blocks means "not a
  * verdict", but more than one block, bad JSON or any invalid field is rejected, never guessed.
+ * The one tolerated slip is a raw line break or tab inside a string (see escapeControlCharsInStrings).
  * @returns {{ ok: true, verdict: object } | { ok: false, error: string }}
  */
 export function parseVerdict(body) {
   const blocks = [...String(body ?? "").matchAll(VERDICT_RE)];
   if (blocks.length === 0) return { ok: false, error: "no_verdict" };
   if (blocks.length > 1) return { ok: false, error: "multiple_verdicts" };
-  let raw;
-  try {
-    raw = JSON.parse(blocks[0][1]);
-  } catch {
-    return { ok: false, error: "invalid_json" };
-  }
+  const source = blocks[0][1];
+  const strict = parseJson(source);
+  const parsed = strict.ok ? strict : parseJson(escapeControlCharsInStrings(source));
+  if (!parsed.ok) return { ok: false, error: "invalid_json" };
+  const raw = parsed.value;
   if (!raw || typeof raw !== "object" || raw.v !== 1) return { ok: false, error: "unsupported_version" };
   if (typeof raw.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(raw.repo)) return { ok: false, error: "invalid_repo" };
   if (!Number.isInteger(raw.number) || raw.number <= 0) return { ok: false, error: "invalid_number" };

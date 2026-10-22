@@ -17,6 +17,9 @@ Runtime may also read `GITHUB_REVIEW_BOT_TOKEN` from the worker environment when
 - Resolves linked PRs from issue description, comments, and work-product artifacts.
 - Idempotent receipts keyed by company, issue, decision, PR, head SHA, and GitHub event.
 - Fail-closed on missing token, missing PR link, or self-review (bot login === PR author).
+- The verdict block must be valid JSON, with one tolerated slip: a raw line break or tab inside a string (a
+  multi-line `summary`) is escaped before parsing and the text is kept as written. Any other broken JSON or invalid
+  field is rejected with a comment on the issue.
 - Persists receipt rows in plugin namespace `github_pr_review_sync`.
 
 ## Tests

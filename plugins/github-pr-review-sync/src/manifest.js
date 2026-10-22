@@ -13,7 +13,7 @@ const secretRef = {
 const manifest = {
   id: "journey-studios.github-pr-review-sync",
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.2.2",
   displayName: "GitHub PR review sync",
   description:
     "Publish Paperclip native PR-linked review decisions as formal GitHub pull request reviews with idempotent receipts.",

@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/github-pr-review-sync",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "type": "module",
   "description": "Sync Paperclip native review decisions to formal GitHub pull request reviews (JOU-490).",
