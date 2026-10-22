@@ -1,0 +1,29 @@
+name: review
+services:
+  review-workspaces:
+    image: review-workspaces:local
+    container_name: review-workspaces
+    restart: unless-stopped
+    env_file: [/path/to/review-workspaces.env] # root-owned, mode 600; holds REVIEW_WORKSPACES_TOKEN
+    environment:
+      WORKSPACES_ROOT: /paperclip/review-worktrees
+    networks: [edge-net]
+    # Mounted at the SAME path as inside the Paperclip app container: worktrees point at their mirror by absolute path.
+    volumes:
+      - /srv/data/paperclip_data/review-worktrees:/paperclip/review-worktrees
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+networks:
+  edge-net:
+    external: true
