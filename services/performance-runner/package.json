@@ -1,0 +1,9 @@
+{
+  "name": "@journey-studios/performance-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test test/*.spec.mjs"},
+  "dependencies": {"@lhci/cli": "0.15.1", "lighthouse": "13.4.1", "puppeteer": "24.12.1"},
+  "pnpm": {"overrides": {"lighthouse": "13.4.1"}}
+}

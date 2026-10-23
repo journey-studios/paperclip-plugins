@@ -28,6 +28,8 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 - [`@journey-studios/paperclip-plugin-project-dashboards`](plugins/project-dashboards/README.md): agents publish project tracking dashboards (KPIs, charts, filterable tables, Markdown, Mermaid) from a declarative spec, rendered natively, with provenance and revision history.
 - [`@journey-studios/paperclip-plugin-project-hierarchy`](plugins/project-hierarchy/README.md): sub-projects without core changes: a Sub-projects tab on every project, a company-wide project tree, agent tools and REST routes to set a project's parent.
 
+- [`@journey-studios/performance-observatory`](plugins/performance-observatory/README.md): scheduled and on-demand Lighthouse reviews, ephemeral VPS executors, environment-separated charts, native agent tools and an authenticated external CLI/API.
+
 ## Administrative MCP tools
 
 The optional [plugin MCP bridge](services/plugin-mcp-bridge/README.md) adds five Observatory tools and six Project Dashboards tools (list, read, status, create/update, validate) to the official Paperclip MCP server through a separate stdio process. It calls company-scoped plugin APIs, preserves the official server's tools and protocol, and requires no change to Paperclip Core or its Tool Gateway. The plugin worker receives no board API key. The bridge and plugin can be disabled independently.
