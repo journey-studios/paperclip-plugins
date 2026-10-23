@@ -77,6 +77,10 @@ instruction paths. Images must already exist locally; replay does not pull mutab
 The auxiliary OpenCode model is pinned to the same route, so title calls consume the same recorded request budget.
 Set `reviewer.maxSteps` below the gateway request cap to let OpenCode conclude with text before the proxy
 denies another request. At least three requests beyond that step limit are reserved for final/auxiliary calls.
+Set `gateway.normalizeStepLimitRole: true` for both treatments when using that limit: OpenCode's synthetic
+`CRITICAL - MAXIMUM STEPS REACHED` notice is sent as a user instruction with `tool_choice: none`, instead of
+an assistant message without `reasoning_content` that DeepSeek rejects. Actual model reasoning and tool
+messages remain unchanged; the adapter never fabricates reasoning for a synthetic message.
 Choose output limits that include reasoning tokens; an 8,192-token cap can truncate DeepSeek's reasoning
 before it returns any review. Record such calibration calls separately and freeze a new experiment after a correction.
 

@@ -50,6 +50,20 @@ class GatewaySpec(unittest.TestCase):
                 self.gateway.forward(body)
         self.assertEqual(len(self.backend.requests), 0)
 
+    def test_step_limit_instruction_does_not_fabricate_or_discard_model_reasoning(self):
+        self.config["normalizeStepLimitRole"] = True
+        original = {"role": "assistant", "content": "Observed tool response", "reasoning_content": "fixture-reasoning"}
+        notice = {"role": "assistant", "content": "CRITICAL - MAXIMUM STEPS REACHED\nConclude now", "reasoning_content": ""}
+        body = {**self.body(), "messages": [original, notice], "tools": [{"type": "function", "function": {"name": "read"}}]}
+        self.gateway.forward(body)
+        sent = json.loads(self.backend.requests[0].data)
+        self.assertEqual(sent["messages"][0], original)
+        self.assertEqual(sent["messages"][1], {"role": "user", "content": notice["content"]})
+        self.assertEqual(sent["tool_choice"], "none")
+        untouched = {**notice, "role": "assistant", "reasoning_content": "real-model-reasoning"}
+        self.gateway.forward({**self.body(), "messages": [untouched]})
+        self.assertEqual(json.loads(self.backend.requests[1].data)["messages"], [untouched])
+
     def test_response_model_drift_is_recorded_as_failed(self):
         self.backend.response = b'{"model":"another-model","choices":[]}'
         with self.assertRaisesRegex(ValueError, "response_model_drift"):

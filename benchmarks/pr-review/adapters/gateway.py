@@ -38,6 +38,13 @@ class Gateway:
             content = message.get("content")
             if isinstance(content, list) and any(part.get("type") != "text" for part in content):
                 raise ValueError("remote_media_denied")
+            # A runtime stop notice is an instruction, not model output with a reasoning history.
+            if (self.config.get("normalizeStepLimitRole") and message.get("role") == "assistant"
+                    and isinstance(content, str) and content.lstrip().startswith("CRITICAL - MAXIMUM STEPS REACHED")
+                    and not message.get("tool_calls") and not message.get("reasoning_content")):
+                message["role"] = "user"
+                message.pop("reasoning_content", None)
+                body["tool_choice"] = "none"
         with self.lock:
             if self.calls >= self.config["maxRequests"]:
                 raise ValueError("request_budget_exhausted")

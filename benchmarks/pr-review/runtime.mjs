@@ -26,6 +26,9 @@ export async function freezeProfile(profile, layer) {
     requireValue(Number.isSafeInteger(profile.gateway[key]) && profile.gateway[key] > 0, `Set a positive gateway ${key}`);
   }
   requireValue(["unknown", "subscription"].includes(profile.gateway.costBasis), "This adapter reports unpriced gateway usage; dollar estimates need a separate rate receipt");
+  if (profile.gateway.normalizeStepLimitRole !== undefined) {
+    requireValue(typeof profile.gateway.normalizeStepLimitRole === "boolean", "Step-limit role normalization must be an explicit boolean");
+  }
   requireValue(Number.isSafeInteger(profile.timeoutSeconds) && profile.timeoutSeconds > 0 && profile.timeoutSeconds <= 3600, "Set a reviewer timeout at most one hour");
   requireValue(/^\d{4,6}:\d{4,6}$/.test(profile.user), "Run the reviewer as an unprivileged uid:gid");
   requireValue(profile.reviewer?.requestModel === profile.gateway.requestModel, "Reviewer/gateway model mismatch");
