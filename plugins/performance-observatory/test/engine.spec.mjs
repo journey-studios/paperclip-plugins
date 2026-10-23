@@ -54,3 +54,17 @@ test("one unavailable project does not prevent other targets from being schedule
   assert.equal(warnings.length, 1);
   assert.ok(writes.some((write) => write.sql.startsWith("INSERT") && write.values.includes(good.key)));
 });
+test("controller delivery is acknowledged only after the terminal state is saved", async () => {
+  const { ctx, writes } = context(); const original = globalThis.fetch;
+  let acknowledged = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/ack")) {
+      assert.ok(writes.some((write) => write.sql.includes("status = 'failed'")));
+      acknowledged = true;
+      return new Response(JSON.stringify({ ok: true }));
+    }
+    return new Response(JSON.stringify({ status: "failed", errorCode: "COLLECTION_FAILED" }));
+  };
+  try { await reconcile(ctx); } finally { globalThis.fetch = original; }
+  assert.equal(acknowledged, true);
+});

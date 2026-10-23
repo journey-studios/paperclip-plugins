@@ -18,6 +18,10 @@ async function controller(ctx, config, path, body) {
   if (text.length > 500000) throw new Error("CONTROLLER_RESPONSE_TOO_LARGE");
   return record(JSON.parse(text));
 }
+async function acknowledge(ctx, config, runId) {
+  try { await controller(ctx, config, `/runs/${runId}/ack`, { companyId: config.companyId }); }
+  catch { ctx.logger.warn("performance: result retained by controller until acknowledgement", { companyId: config.companyId, runId }); }
+}
 export async function reconcile(ctx) {
   for (const company of await ctx.companies.list({ limit: 200 })) {
     const companyId = company.id;
@@ -52,11 +56,13 @@ export async function reconcile(ctx) {
           if (!result.gatePassed) status = "regression";
           await ctx.db.execute(`UPDATE ${table(ctx)} SET status = $3, result = $4::jsonb, finished_at = now(), error_code = NULL
             WHERE company_id = $1 AND id = $2 AND status IN ('queued','running')`, [companyId, run.id, status, JSON.stringify(result)]);
+          await acknowledge(ctx, config, run.id);
         } else if (state.status === "failed") {
           let code = "COLLECTION_FAILED";
           if (typeof state.errorCode === "string" && /^[A-Z0-9_]{1,80}$/.test(state.errorCode)) code = state.errorCode;
           await ctx.db.execute(`UPDATE ${table(ctx)} SET status = 'failed', error_code = $3, finished_at = now()
             WHERE company_id = $1 AND id = $2 AND status IN ('queued','running')`, [companyId, run.id, code]);
+          await acknowledge(ctx, config, run.id);
         }
       } catch (error) {
         // Transport failures remain resumable; an already submitted container must never be duplicated.
@@ -64,6 +70,7 @@ export async function reconcile(ctx) {
         if (error instanceof Error && /^[A-Z0-9_]{1,80}$/.test(error.message)) code = error.message;
         if (receivedCompletion || /^CONTROLLER_HTTP_(400|404|409|413|422)$/.test(code)) {
           await ctx.db.execute(`UPDATE ${table(ctx)} SET status = 'failed', error_code = $3, finished_at = now() WHERE company_id = $1 AND id = $2 AND status IN ('queued','running')`, [companyId, run.id, code]);
+          if (receivedCompletion) await acknowledge(ctx, config, run.id);
           continue;
         }
         await ctx.db.execute(`UPDATE ${table(ctx)} SET error_code = $3 WHERE company_id = $1 AND id = $2 AND status IN ('queued','running')`, [companyId, run.id, code]);

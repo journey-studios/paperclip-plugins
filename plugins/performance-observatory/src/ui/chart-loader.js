@@ -15,7 +15,7 @@ export function loadCharts() {
     if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("CHART_ASSET_DISCOVERY_FAILED");
     return new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = `/_plugins/${encodeURIComponent(id)}/ui/echarts.js?v=0.1.3`;
+      script.src = `/_plugins/${encodeURIComponent(id)}/ui/echarts.js?v=0.1.4`;
       script.async = true;
       script.onload = () => {
         if (globalThis.JourneyPerformanceECharts) return resolve(globalThis.JourneyPerformanceECharts);

@@ -9,7 +9,7 @@ export const TOOLS = [
   { name: "list_targets", displayName: "List performance targets", description: "List configured environments, scenarios and collection intervals without exposing credentials or private URLs.", parametersSchema: object({}) },
 ];
 export default {
-  id: PLUGIN_ID, apiVersion: 1, version: "0.1.3", displayName: "Performance Observatory", author: "Journey Studios",
+  id: PLUGIN_ID, apiVersion: 1, version: "0.1.4", displayName: "Performance Observatory", author: "Journey Studios",
   description: "Private on-demand and scheduled Lighthouse reviews, ephemeral executors, environment-separated charts and queryable metrics.",
   categories: ["ui", "automation"],
   capabilities: ["agent.tools.register", "api.routes.register", "companies.read", "projects.read", "http.outbound", "secrets.read-ref", "jobs.schedule", "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "ui.sidebar.register", "ui.page.register", "ui.detailTab.register"],

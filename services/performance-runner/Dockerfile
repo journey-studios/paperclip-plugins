@@ -8,4 +8,5 @@ COPY services/performance-runner/package.json services/performance-runner/pnpm-l
 RUN pnpm --ignore-workspace install --prod --frozen-lockfile
 COPY services/performance-runner/src ./src
 COPY plugins/performance-observatory/src/contract.js /opt/review/plugins/performance-observatory/src/contract.js
+USER pwuser
 ENTRYPOINT ["node", "src/run.mjs"]

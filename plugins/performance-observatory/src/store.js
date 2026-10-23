@@ -32,7 +32,8 @@ export async function listRuns(ctx, companyId, params = {}) {
   }
   values.push(integer(Number(params.limit ?? 20), 1, 200));
   return ctx.db.query(`SELECT id, project_id, target_key, title, environment, scenario, profile, status, source,
-    created_at::text AS created_at, finished_at::text AS finished_at, error_code, result - 'samples' AS result FROM ${table(ctx)} WHERE ${clauses.join(" AND ")}
+    created_at::text AS created_at, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at_display,
+    finished_at::text AS finished_at, error_code, result - 'samples' AS result FROM ${table(ctx)} WHERE ${clauses.join(" AND ")}
     ORDER BY created_at DESC, id DESC LIMIT $${values.length}`, values);
 }
 export async function getRun(ctx, companyId, runId) {

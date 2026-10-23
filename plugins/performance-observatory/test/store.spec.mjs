@@ -37,6 +37,7 @@ test("migration, idempotent queue and company-filtered history use real PostgreS
     assert.equal(page2.length, 1);
     assert.notEqual(page1[0].id, page2[0].id);
     assert.match(page1[0].created_at, /123456/);
+    assert.equal(page1[0].created_at_display, "2026-10-23T12:00:00.123Z");
     assert.equal((await listRuns(ctx, companyId, { before: page2[0].created_at, beforeId: page2[0].id })).length, 0);
 
   } finally { await db.close(); }

@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import shutil
+import time
 from pathlib import Path
 import tempfile
 import threading
@@ -22,6 +24,13 @@ other = "22222222-2222-4222-8222-222222222222"
 run_id = "33333333-3333-4333-8333-333333333333"
 
 class ControllerSpec(unittest.TestCase):
+    def setUp(self):
+        for folder in controller.ROOT.iterdir():
+            if folder.is_dir():
+                shutil.rmtree(folder)
+        with controller.lock:
+            controller.active.clear()
+
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), controller.Handler)
@@ -90,6 +99,45 @@ class ControllerSpec(unittest.TestCase):
         state = controller.read(folder / "state.json")
         self.assertEqual(state["status"], "failed")
         self.assertEqual(state["errorCode"], "AUTH_PROFILE_NOT_CONFIGURED")
+
+    def test_executor_uses_non_root_and_isolated_network(self):
+        from unittest.mock import patch
+        self.request("/runs", self.payload())
+        folder = controller.ROOT / run_id
+        controller.write(folder / "result.json", {"ok": True, "result": {}})
+        with patch.object(controller.os, "chown") as ownership, patch.object(controller.subprocess, "run") as docker:
+            docker.return_value.returncode = 0
+            controller.run_one(folder, controller.read(folder / "state.json"))
+        arguments = docker.call_args_list[0].args[0]
+        self.assertEqual(arguments[arguments.index("--network") + 1], "journey-performance-egress")
+        self.assertEqual(arguments[arguments.index("--user") + 1], f"{controller.RUNNER_UID}:{controller.RUNNER_GID}")
+        self.assertNotEqual(controller.RUNNER_UID, 0)
+        self.assertEqual(ownership.call_count, 2)
+
+    def test_retention_requires_durable_ack_and_company_match(self):
+        self.request("/runs", self.payload())
+        file = controller.ROOT / run_id / "state.json"
+        state = controller.read(file)
+        state.update(status="completed", finishedAt=time.time() - 10 * 86400)
+        controller.write(file, state)
+        controller.recover_active()
+        self.assertEqual(controller.clean_acknowledged(time.time()), 0)
+        self.assertEqual(self.request(f"/runs/{run_id}/ack", {"companyId": other})[0], 404)
+        self.assertEqual(self.request(f"/runs/{run_id}/ack", {"companyId": company})[0], 200)
+        self.assertEqual(controller.clean_acknowledged(time.time()), 0)
+        state = controller.read(file)
+        state["acknowledgedAt"] = time.time() - 8 * 86400
+        controller.write(file, state)
+        self.assertEqual(controller.clean_acknowledged(time.time()), 1)
+        self.assertFalse(file.parent.exists())
+
+    def test_recovery_indexes_pending_and_never_acknowledges_running_work(self):
+        self.request("/runs", self.payload())
+        controller.active.clear()
+        controller.recover_active()
+        self.assertIn(run_id, controller.active)
+        self.assertEqual(self.request(f"/runs/{run_id}/ack", {"companyId": company})[0], 409)
+        self.assertEqual(controller.clean_acknowledged(time.time() + 10 * 86400), 0)
 
 if __name__ == "__main__":
     unittest.main()

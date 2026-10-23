@@ -13,6 +13,18 @@ durable directory), `PERFORMANCE_BIND` (private bridge only), `PERFORMANCE_IMAGE
 `storage-state.json`). The API accepts profile names, never paths, Docker arguments
 or shell commands. It rejects URLs containing credentials, query strings or fragments.
 
+Run `sh services/performance-runner/setup-network.sh` as part of controller startup. It idempotently
+creates a dedicated bridge and scopes firewall rules to that subnet: public HTTPS/DNS egress only,
+with host, private networks, metadata addresses and peer containers blocked. Do not join agents-net.
+The controller uses a non-root UID/GID (configure PERFORMANCE_RUNNER_UID/GID to the image's pwuser
+IDs), assigns only its job/profile mount ownership, and preserves 700/600 modes. The final image also
+defaults to pwuser. Persist the network setup as an ExecStartPre with access to the xtables lock.
+
+An active-run index is rebuilt once at startup; polling and queue counts do not scan historical files.
+Once Paperclip saves a terminal SQL record it acknowledges delivery. Only acknowledged terminal run
+folders older than seven days are removed by daily housekeeping. Pending and unacknowledged results
+are preserved, including during a long Paperclip outage; complete SQL history and metrics are retained.
+
 Build from repository root with the provided Dockerfile. The default pinned Playwright base supplies
 Chromium 1194; an identical existing private evidence base may be selected with RUNNER_BASE to reuse
 already available browser layers. Record the resulting immutable image ID at activation. There is no

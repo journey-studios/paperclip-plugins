@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -18,9 +19,16 @@ BIND = os.environ.get("PERFORMANCE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("PERFORMANCE_PORT", "8787"))
 ORIGINS = json.loads(os.environ.get("PERFORMANCE_ORIGINS", '{"prod":["https://dash.tessel.app","https://tessel.app"],"staging":["https://dash-staging.tessel.app"],"test":[]}'))
 PROFILES = json.loads(os.environ.get("PERFORMANCE_PROFILES", '{}'))
+NETWORK = "journey-performance-egress"
+RUNNER_UID = int(os.environ.get("PERFORMANCE_RUNNER_UID", "1001"))
+RUNNER_GID = int(os.environ.get("PERFORMANCE_RUNNER_GID", "1001"))
+if RUNNER_UID <= 0 or RUNNER_GID <= 0:
+    raise ValueError("NON_ROOT_EXECUTOR_REQUIRED")
+RETENTION_SECONDS = 7 * 86400
 UUID = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
 lock = threading.Lock()
+active = {}
 
 def write(path, data):
     temp = path.with_suffix(".tmp")
@@ -30,6 +38,39 @@ def write(path, data):
 
 def read(path):
     return json.loads(path.read_text())
+
+def recover_active():
+    with lock:
+        active.clear()
+        for folder in ROOT.iterdir():
+            if not folder.is_dir() or not UUID.fullmatch(folder.name):
+                continue
+            file = folder / "state.json"
+            if not file.is_file():
+                continue
+            state = read(file)
+            if state.get("status") in ("queued", "running"):
+                active[folder.name] = state
+
+def clean_acknowledged(now):
+    removed = 0
+    with lock:
+        for folder in ROOT.iterdir():
+            if not folder.is_dir() or not UUID.fullmatch(folder.name) or folder.name in active:
+                continue
+            file = folder / "state.json"
+            if not file.is_file():
+                continue
+            state = read(file)
+            acknowledged = state.get("acknowledgedAt")
+            if state.get("status") not in ("completed", "failed") or not isinstance(acknowledged, (int, float)):
+                continue
+            if now - acknowledged < RETENTION_SECONDS:
+                continue
+            # Only remove delivery files after Paperclip confirms that its durable history is saved.
+            shutil.rmtree(folder)
+            removed += 1
+    return removed
 
 def valid_request(body):
     if not UUID.fullmatch(str(body.get("id", ""))) or not UUID.fullmatch(str(body.get("companyId", ""))):
@@ -56,7 +97,8 @@ def run_one(folder, state):
         if state["status"] == "queued":
             request = read(folder / "request.json")
             args = ["docker", "run", "-d", "--rm", "--name", name,
-                    "--label", "journey.performance=true", "--network", "agents-net",
+                    "--label", "journey.performance=true", "--network", NETWORK,
+                    "--user", f"{RUNNER_UID}:{RUNNER_GID}",
                     "--cpus=2", "--memory=3g", "--memory-swap=3g", "--pids-limit=512",
                     "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
                     "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
@@ -66,7 +108,11 @@ def run_one(folder, state):
                 path = PROFILES.get(profile)
                 if not path or not Path(path).is_dir() or not (Path(path) / "storage-state.json").is_file():
                     raise ValueError("AUTH_PROFILE_NOT_CONFIGURED")
+                os.chown(path, RUNNER_UID, RUNNER_GID)
+                os.chown(Path(path) / "storage-state.json", RUNNER_UID, RUNNER_GID)
                 args += ["-v", f"{path}:/auth:rw"]
+            os.chown(folder, RUNNER_UID, RUNNER_GID)
+            os.chown(folder / "request.json", RUNNER_UID, RUNNER_GID)
             args.append(IMAGE)
             started = subprocess.run(args, capture_output=True, timeout=45)
             if started.returncode:
@@ -98,22 +144,21 @@ def run_one(folder, state):
     write(folder / "state.json", state)
 
 def work():
+    next_cleanup = 0
     while True:
         try:
-            pending = []
-            for folder in ROOT.iterdir():
-                if not folder.is_dir() or not UUID.fullmatch(folder.name):
-                    continue
-                state_file = folder / "state.json"
-                if not state_file.exists():
-                    continue
-                state = read(state_file)
-                if state["status"] in ("queued", "running"):
-                    pending.append((state.get("createdAt", 0), folder, state))
+            if time.time() >= next_cleanup:
+                clean_acknowledged(time.time())
+                next_cleanup = time.time() + 86400
+            with lock:
+                pending = [(state.get("createdAt", 0), ROOT / identifier, state) for identifier, state in active.items()]
             pending.sort(key=lambda item: item[0])
             if pending:
                 _, folder, state = pending[0]
                 run_one(folder, state)
+                if state["status"] not in ("queued", "running"):
+                    with lock:
+                        active.pop(folder.name, None)
             else:
                 time.sleep(2)
         except Exception:
@@ -156,13 +201,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorized():
             return self.reply(401, {"error": "UNAUTHORIZED"})
-        if self.path != "/runs":
+        ack = re.fullmatch(r"/runs/([a-f0-9-]{36})/ack", self.path)
+        if self.path != "/runs" and not ack:
             return self.reply(404, {"error": "NOT_FOUND"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length < 16000:
                 raise ValueError("INVALID_BODY")
-            request = valid_request(json.loads(self.rfile.read(length)))
+            body = json.loads(self.rfile.read(length))
+            if ack:
+                company = body.get("companyId", "")
+                if not UUID.fullmatch(ack[1]) or not UUID.fullmatch(str(company)):
+                    raise ValueError("INVALID_ID")
+                with lock:
+                    file = ROOT / ack[1] / "state.json"
+                    if not file.is_file():
+                        return self.reply(404, {"error": "RUN_NOT_FOUND"})
+                    state = read(file)
+                    if state["companyId"] != company:
+                        return self.reply(404, {"error": "RUN_NOT_FOUND"})
+                    if state["status"] not in ("completed", "failed"):
+                        return self.reply(409, {"error": "RUN_NOT_TERMINAL"})
+                    state.setdefault("acknowledgedAt", time.time())
+                    write(file, state)
+                    active.pop(ack[1], None)
+                return self.reply(200, {"ok": True})
+            request = valid_request(body)
             with lock:
                 folder = ROOT / request["id"]
                 state_file = folder / "state.json"
@@ -171,13 +235,13 @@ class Handler(BaseHTTPRequestHandler):
                     if state["companyId"] != request["companyId"]:
                         return self.reply(409, {"error": "RUN_ID_CONFLICT"})
                     return self.reply(200, state)
-                queued = sum(1 for path in ROOT.glob("*/state.json") if read(path)["status"] in ("queued", "running"))
-                if queued >= 40:
+                if len(active) >= 40:
                     return self.reply(429, {"error": "QUEUE_FULL"})
                 folder.mkdir(mode=0o700)
                 write(folder / "request.json", request)
                 state = {"id": request["id"], "companyId": request["companyId"], "status": "queued", "createdAt": time.time()}
                 write(state_file, state)
+                active[state["id"]] = state
             self.reply(202, state)
         except Exception as error:
             code = str(error)
@@ -186,5 +250,6 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": code})
 
 if __name__ == "__main__":
+    recover_active()
     threading.Thread(target=work, daemon=True).start()
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()

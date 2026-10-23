@@ -58,6 +58,10 @@ The native one-minute job queues due slots and reconciles results. The controlle
 It starts one `docker run --rm` container with 2 CPUs, 3 GiB RAM, 512 PIDs, a read-only root filesystem
 and private temporary storage. After the process ends only sanitized result JSON remains. There is no
 idle Chrome/container. The controller is a small authenticated private launcher, not a browser runner.
+The executor runs as a non-root user on an isolated egress network; it cannot reach the VPS host or
+peer containers. Delivered files may be removed after seven days only after acknowledgement that
+Paperclip saved the terminal result. All SQL history remains available. The full-precision SQL cursor
+is separate from the UTC ISO timestamp used for display and chart rendering across browsers.
 
 Each run uses pinned Lighthouse 13.4.1 and `lhci collect` plus `lhci assert`. Actual Chrome version is
 recorded. Three cold HTTP-cache runs and three independently warmed runs are collected, with a new

@@ -17,7 +17,7 @@ function chartOptions(runs: Run[], metric: string) {
       const value = Reflect.get(cohort, metric);
       let numeric = null;
       if (typeof value === "number") numeric = value;
-      values.push([new Date(run.created_at).getTime(), numeric]);
+      values.push([new Date(run.created_at_display).getTime(), numeric]);
       groups.set(label, values);
     }
   }
