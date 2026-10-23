@@ -76,6 +76,49 @@ is not a resolved model identity. Until provider evidence exists, `resolved_mode
 `billing` is unknown; a missing price is never reported as zero cost. Spotted tests are static evidence, not
 test execution.
 
+### DeepSeek through OmniRoute
+
+Enable OmniRoute's built-in `deepseek` provider with a valid upstream credential. The native route is
+`ds/deepseek-flash`; this differs from the Devin CLI bridge (`dva/...`) and OpenCode's free models (`oc/...`),
+which have their own runtime and access requirements. Keep the upstream credential in the gateway and give
+the services an OmniRoute key.
+
+For triage, use these settings alongside the endpoint, context and logging settings above:
+
+```text
+CONFIG.MODEL=openai/ds/deepseek-flash
+CONFIG.FALLBACK_MODELS=[]
+```
+
+The full OpenCode reviewer uses `model: omniroute/ds/deepseek-flash`. Register `ds/deepseek-flash` in the
+custom `omniroute` provider's models map supplied through `PAPERCLIP_OPENCODE_PROVIDERS`:
+
+```json
+{
+  "name": "DeepSeek V4.1 Flash",
+  "reasoning": true,
+  "tool_call": true,
+  "interleaved": { "field": "reasoning_content" },
+  "limit": { "context": 200000, "input": 167232, "output": 32768 }
+}
+```
+
+Preserve the provider's existing `@ai-sdk/openai-compatible` package, endpoint and credential placeholder.
+Set `PAPERCLIP_OPENCODE_SMALL_MODEL=omniroute/ds/deepseek-flash` as well, so auxiliary requests use the same
+route. The operational context limit is deliberately below the upstream model's advertised capacity.
+
+Without inference, check authenticated model discovery from both consumers, the upstream `/models` and
+`/user/balance` endpoints, OpenCode's model resolution, and triage's effective settings. Avoid gateway tests
+that can fall back to a chat completion; when provisioning through `/api/providers/bulk`, explicitly set
+`validateKeys: false` and check authentication separately. Model discovery and available balance do not
+prove that generation or tool calls work; those need a separately authorized live review. Keep billing
+unknown until token usage and pricing are supported by provider evidence.
+
+Before changing the running triage container, retain its environment for rollback and let pending jobs
+finish and be collected by intake. Results live in memory, so an early restart can lose a completed result
+and cause a second model request when intake resubmits it. Restore any temporary intake pause after the
+new container is healthy.
+
 ## Run
 
 Build the image next to `Dockerfile`, then start it with `compose.example.yml` (no published port, read-only
