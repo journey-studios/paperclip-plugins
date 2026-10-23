@@ -77,10 +77,20 @@ test("the planned schedule is reproducible, paired and complete for every repeti
   assert.deepEqual(plan, buildPlan(study, corpus));
   assert.notDeepEqual(plan.jobs, buildPlan({ ...study, seed: "different" }, corpus).jobs);
   assert.equal(new Set(plan.jobs.map((job) => job.id)).size, 180);
-  assert.throws(() => buildPlan({ ...study, repetitions: 1 }, corpus), /three repetitions/);
+  assert.throws(() => buildPlan({ ...study, repetitions: 1 }, corpus), /two repetitions/);
   assert.throws(() => buildPlan({ ...study, layers: ["triage", "triage"] }, corpus), /Duplicate layers/);
   assert.throws(() => buildPlan(study, { ...corpus, cases: [corpus.cases[0], { ...corpus.cases[0], id: "other", split: "development" }] }), /cannot cross/);
   assert.throws(() => buildPlan(study, { ...corpus, cases: [{ ...corpus.cases[0], head: "main" }] }), /pin base and head/);
+});
+
+test("a small paired pilot has two treatments and two repetitions without relaxing quality gates", () => {
+  const small = { ...study, repetitions: 2, split: "development", treatments: study.treatments.slice(0, 2) };
+  const selected = { ...corpus, cases: corpus.cases.slice(0, 2).map((item) => ({ ...item, split: "development" })) };
+  const plan = buildPlan(small, selected);
+  assert.equal(plan.jobs.length, 16);
+  assert.equal(new Set(plan.jobs.map((job) => job.id)).size, 16);
+  assert.ok(compareTreatments(plan, fixtureResults(plan)).comparisons.every((row) => !row.qualityImprovementEstablished));
+  assert.throws(() => buildPlan({ ...small, treatments: [small.treatments[0]] }, selected), /two or three/);
 });
 
 test("only the preselected candidate on a complete holdout can establish improvement", () => {

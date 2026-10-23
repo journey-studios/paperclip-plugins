@@ -11,8 +11,16 @@ export async function freezeProfile(profile, layer) {
   requireValue(IMAGE.test(profile.gateway?.image), "Pin the gateway image id");
   requireValue(/^[a-zA-Z0-9_.-]+$/.test(profile.gateway.network), "Invalid model network name");
   requireValue(/^https?:\/\/[a-zA-Z0-9_.:-]+(?:\/v1)?\/?$/.test(profile.gateway.upstream), "Use a fixed model gateway endpoint without credentials or query strings");
-  for (const key of ["requestModel", "effectiveModel"]) {
-    requireValue(typeof profile.gateway[key] === "string" && profile.gateway[key].length > 0 && !/pool|^auto\//i.test(profile.gateway[key]), "Select a fixed model route; automatic pools cannot be frozen");
+  const gateway = profile.gateway;
+  requireValue(typeof gateway.effectiveModel === "string" && gateway.effectiveModel.length > 0 && !/pool|^auto\//i.test(gateway.effectiveModel), "Select a fixed model response; automatic pools cannot be frozen");
+  requireValue(typeof gateway.requestModel === "string" && gateway.requestModel.length > 0 && !/^auto\//i.test(gateway.requestModel), "Select a fixed model route");
+  if (/pool/i.test(gateway.requestModel)) {
+    const snapshot = gateway.routingSnapshot;
+    const responseModel = snapshot?.responseModel ?? snapshot?.models?.[0]?.model;
+    requireValue(snapshot?.name === gateway.requestModel && snapshot.models?.length === 1 && responseModel === gateway.effectiveModel && typeof snapshot.models[0].provider === "string", "Select a fixed model route or snapshot a single-model pool; every response remains checked");
+    if (snapshot.responseModel) {
+      requireValue(typeof snapshot.responseModelEvidence === "string" && snapshot.responseModelEvidence.trim(), "A different reported response model needs calibration evidence");
+    }
   }
   for (const key of ["maxRequests", "maxOutputTokens", "maxInputBytes", "timeoutSeconds"]) {
     requireValue(Number.isSafeInteger(profile.gateway[key]) && profile.gateway[key] > 0, `Set a positive gateway ${key}`);

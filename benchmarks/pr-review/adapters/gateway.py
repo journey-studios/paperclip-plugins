@@ -53,6 +53,7 @@ class Gateway:
         attempt = self.validate(body)
         started = time.monotonic()
         self.record({"event": "started", "attempt": attempt})
+        models = []
         try:
             request = urllib.request.Request(
                 self.config["upstream"].rstrip("/") + "/chat/completions",
@@ -67,6 +68,13 @@ class Gateway:
             content_type = "application/json"
             if body.get("stream"):
                 chunks = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: ") and line[6:].strip() != "[DONE]"]
+                # OmniRoute emits empty keepalive chunks with a protocol marker in the model field.
+                chunks = [chunk for chunk in chunks if not (
+                    chunk.get("model") == "keepalive" and not chunk.get("usage") and all(
+                        not choice.get("delta") and not choice.get("finish_reason")
+                        for choice in chunk.get("choices", [])
+                    )
+                )]
                 content_type = "text/event-stream"
             else:
                 chunks = [json.loads(raw)]
@@ -80,11 +88,19 @@ class Gateway:
                 cached = raw_usage.get("prompt_tokens_details", {}).get("cached_tokens")
                 if isinstance(cached, int):
                     usage["cached_tokens"] = cached
+                reasoning = raw_usage.get("completion_tokens_details", {}).get("reasoning_tokens")
+                if isinstance(reasoning, int):
+                    usage["reasoning_tokens"] = reasoning
             finish = [choice.get("finish_reason") for chunk in chunks for choice in chunk.get("choices", []) if choice.get("finish_reason")]
             self.record({"event": "finished", "attempt": attempt, "model": models[0], "usage": usage, "finishReasons": finish, "durationMs": round((time.monotonic() - started) * 1000)})
             return raw, content_type
-        except Exception:
-            self.record({"event": "failed", "attempt": attempt, "durationMs": round((time.monotonic() - started) * 1000)})
+        except Exception as error:
+            failure = {"event": "failed", "attempt": attempt, "durationMs": round((time.monotonic() - started) * 1000)}
+            if isinstance(error, urllib.error.HTTPError):
+                failure["httpStatus"] = error.code
+            if models:
+                failure["observedModels"] = models
+            self.record(failure)
             raise
 
 

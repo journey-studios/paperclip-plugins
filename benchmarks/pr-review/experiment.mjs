@@ -24,15 +24,15 @@ function shuffle(items, random) {
 export function buildPlan(study, corpus) {
   requireValue(study.schemaVersion === 1 && corpus.schemaVersion === 1, "Unsupported schema version");
   requireValue(SHA.test(corpus.source?.revision), "Corpus source must be pinned to a commit");
-  requireValue(Number.isInteger(study.repetitions) && study.repetitions >= 3, "Use at least three repetitions");
+  requireValue(Number.isInteger(study.repetitions) && study.repetitions >= 2, "Use at least two repetitions");
   requireValue(typeof study.seed === "string" && study.seed.length > 0, "Missing randomization seed");
   requireValue(Array.isArray(study.layers) && study.layers.length > 0, "Missing layers");
   requireValue(new Set(study.layers).size === study.layers.length, "Duplicate layers");
   requireValue(study.layers.every((layer) => ["triage", "thermo"].includes(layer)), "Unknown review layer");
-  requireValue(study.treatments?.length === 3, "The pilot compares exactly three treatments");
+  requireValue(study.treatments?.length >= 2 && study.treatments.length <= 3, "Compare two or three treatments");
   const treatmentIds = study.treatments.map((item) => item.id);
   requireValue(treatmentIds.every((id) => typeof id === "string" && ID.test(id)), "Invalid treatment id");
-  requireValue(new Set(treatmentIds).size === 3, "Duplicate treatments");
+  requireValue(new Set(treatmentIds).size === treatmentIds.length, "Duplicate treatments");
   requireValue(treatmentIds.includes(study.baseline), "Unknown baseline");
   requireValue(treatmentIds.includes(study.primaryCandidate) && study.primaryCandidate !== study.baseline, "Preselect one primary candidate before the holdout");
   const treatmentPins = {};

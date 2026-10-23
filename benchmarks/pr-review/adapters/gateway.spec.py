@@ -81,6 +81,17 @@ class GatewaySpec(unittest.TestCase):
             self.gateway.forward(self.body())
         self.assertEqual(len(self.backend.requests), 2)
 
+    def test_empty_gateway_heartbeats_are_not_a_second_model(self):
+        heartbeat = {"model": "keepalive", "choices": [{"delta": {}, "finish_reason": None}]}
+        answer = {"model": "model-v1", "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 11, "completion_tokens": 2}}
+        self.backend.response = ("data: " + json.dumps(heartbeat) + "\n\ndata: " + json.dumps(answer) + "\n\ndata: [DONE]\n\n").encode()
+        self.gateway.forward({**self.body(), "stream": True})
+        self.assertEqual(json.loads(self.path.read_text().splitlines()[-1])["model"], "model-v1")
+        heartbeat["choices"][0]["delta"] = {"content": "a real answer must not be ignored"}
+        self.backend.response = ("data: " + json.dumps(heartbeat) + "\n\ndata: " + json.dumps(answer) + "\n\n").encode()
+        with self.assertRaisesRegex(ValueError, "response_model_drift"):
+            self.gateway.forward({**self.body(), "stream": True})
+
 
 if __name__ == "__main__":
     unittest.main()

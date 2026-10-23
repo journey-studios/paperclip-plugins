@@ -71,6 +71,13 @@ test("runtime freezing detects instruction changes, model pools and mutable imag
     assert.equal(first.frozen.reviewer.instructions[0], "Review instructions v1");
     await assert.rejects(() => freezeProfile({ ...profile, image: "latest" }, "thermo"), /immutable/);
     await assert.rejects(() => freezeProfile({ ...profile, gateway: { ...profile.gateway, requestModel: "antigravity-pool" } }, "thermo"), /fixed model/);
+    const pooled = { ...profile, gateway: { ...profile.gateway, requestModel: "antigravity-pool", routingSnapshot: { name: "antigravity-pool", models: [{ provider: "agy", model: "model-v1" }] } }, reviewer: { ...profile.reviewer, requestModel: "antigravity-pool" } };
+    assert.equal((await freezeProfile(pooled, "thermo")).pins.effectiveModel, "model-v1");
+    const reported = { ...pooled, gateway: { ...pooled.gateway, effectiveModel: "reported-model-v1", routingSnapshot: { ...pooled.gateway.routingSnapshot, responseModel: "reported-model-v1", responseModelEvidence: "Frozen calibration journal with exact response metadata" } } };
+    assert.equal((await freezeProfile(reported, "thermo")).pins.effectiveModel, "reported-model-v1");
+    await assert.rejects(() => freezeProfile({ ...reported, gateway: { ...reported.gateway, routingSnapshot: { ...reported.gateway.routingSnapshot, responseModelEvidence: "" } } }, "thermo"), /calibration evidence/);
+    await assert.rejects(() => freezeProfile({ ...pooled, gateway: { ...pooled.gateway, routingSnapshot: { ...pooled.gateway.routingSnapshot, models: [{ provider: "agy", model: "model-v2" }] } } }, "thermo"), /single-model pool/);
+    await assert.rejects(() => freezeProfile({ ...pooled, gateway: { ...pooled.gateway, routingSnapshot: { ...pooled.gateway.routingSnapshot, models: [...pooled.gateway.routingSnapshot.models, { provider: "agy", model: "model-v2" }] } } }, "thermo"), /single-model pool/);
     await assert.rejects(() => freezeProfile({ ...profile, gateway: { ...profile.gateway, upstream: "http://user:key@host/v1" } }, "thermo"), /without credentials/);
     assert.notEqual(digest(first.frozen), digest(second.frozen));
   } finally {

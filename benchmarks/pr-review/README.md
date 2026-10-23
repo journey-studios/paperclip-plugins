@@ -40,6 +40,8 @@ private, recent PRs are the stronger later check of transfer to our code.
 `study.json` defines the experiment and `plan` emits a reproducibly shuffled, paired schedule. The default
 development plan has **6 PRs × 3 treatments × 3 repetitions × 2 layers = 108 review trials**. Repetitions start
 fresh sessions. The holdout is a separate plan; do not use it to tune a configuration.
+Small exploratory pilots may use two treatments and two repetitions. This does not relax the held-out
+sample-size, coverage or scoring requirements for establishing an improvement.
 
 - **Baseline:** snapshot the deployed reviewer and its input construction.
 - **Candidate A:** change one thing, such as context coverage or one prompt/instruction revision.
@@ -55,9 +57,15 @@ Set each treatment's `pins.triage` / `pins.thermo` to `{reviewerRevision, effect
 must be a full commit or image digest and `configDigest` a SHA-256 of the actual frozen configuration. The example
 intentionally leaves these unset: `plan` returns `ready: false` and lists `unconfigured`; comparisons refuse
 to run until these identities have been selected. Collected trial identities must match the predeclared pins.
-`antigravity-pool` alone does not identify a fixed model: record the resolved model or the result is not suitable
-for comparison. Retries consume time and money; record their total, including failures. Do not reuse production
+`antigravity-pool` alone does not identify a fixed model. A single-model pool may supply `gateway.routingSnapshot`
+with its exact `name`, one `{provider, model}` entry, and its routing configuration. Check that snapshot against
+the live route before and after collection. The gateway still rejects every response whose model differs from
+`effectiveModel`; a multi-model pool cannot be frozen this way. Retries consume time and money; record their total, including failures. Do not reuse production
 Paperclip sessions or let a treatment see another treatment's output.
+If a streaming endpoint reports a different model identifier, freeze `routingSnapshot.responseModel` and
+`responseModelEvidence` from a retained calibration journal for that layer. Report both the configured route
+and the observed response identifier; this does not prove that two provider aliases are the same model version.
+Empty OmniRoute keepalive frames do not identify a model; a frame carrying content is always checked.
 
 Preselect `primaryCandidate` before opening the holdout. Other comparisons remain exploratory, avoiding a
 claim based on whichever of several candidates happened to win. Changing a study or corpus changes its digest;

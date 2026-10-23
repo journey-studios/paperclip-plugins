@@ -72,6 +72,9 @@ For Thermo, use the OpenCode image's unprivileged uid/gid and replace `reviewer.
 requiring the usual verdict block in the final local response. Snapshot the real instruction/skill contents,
 and make one declared change per candidate. `freeze` hashes contents and adapters, rather than machine-specific
 instruction paths. Images must already exist locally; replay does not pull mutable tags.
+`reviewer.modelMetadata` can preserve provider metadata such as DeepSeek's
+`{reasoning: true, tool_call: true, interleaved: {field: "reasoning_content"}}`.
+The auxiliary OpenCode model is pinned to the same route, so title calls consume the same recorded request budget.
 
 ```sh
 pnpm --silent review-bench freeze benchmarks/pr-review/study.json execution.json > frozen-study.json
