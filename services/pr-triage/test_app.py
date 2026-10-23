@@ -1,9 +1,12 @@
 import asyncio
+import io
 import os
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 os.environ["PR_TRIAGE_TOKEN"] = "t" * 32
+os.environ["CONFIG.LOG_LEVEL"] = "INFO"
 
 import app as service  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -33,6 +36,47 @@ review:
 
 
 class ParseTests(unittest.TestCase):
+    def test_coverage_never_calls_a_pruned_or_missing_file_complete(self):
+        diff = "## File: 'a.ts'\n+one\n"
+        result = service.summarize_coverage(diff, diff, ["a.ts"])
+        self.assertEqual(result["status"], "complete")
+        self.assertFalse(result["context_truncated"])
+        result = service.summarize_coverage(diff, diff + "+two\n", ["a.ts"])
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue(result["context_truncated"])
+        result = service.summarize_coverage(diff, diff, ["a.ts", "binary.png"])
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["missing_files"], ["binary.png"])
+        self.assertEqual(service.summarize_coverage("", "", ["a.ts"])["status"], "partial")
+
+    def test_runtime_configures_the_real_logger_and_reports_the_effective_cap(self):
+        from pr_agent.config_loader import get_settings
+        from repo_rules import applied
+        settings = get_settings()
+        with applied(settings, {"CONFIG.MODEL": "openai/fixture", "CONFIG.LOG_LEVEL": "INFO", "CONFIG.MAX_MODEL_TOKENS": 200000, "CONFIG.CUSTOM_MODEL_MAX_TOKENS": 200000}):
+            runtime = service.configure_runtime()
+            self.assertEqual(runtime["effective_max_tokens"], 200000)
+            self.assertEqual(runtime["configured_model"], "openai/fixture")
+            self.assertIsNone(runtime["resolved_model"])
+            self.assertIsNone(runtime["cost_usd"])
+            self.assertEqual(runtime["billing"], "unknown")
+            with redirect_stdout(io.StringIO()) as output:
+                service.configure_runtime()
+                from loguru import logger
+                logger.debug("private-diff-fixture")
+                logger.info("operational-fixture")
+                private_token = "private-token-fixture"
+                try:
+                    assert private_token == "different"
+                except AssertionError:
+                    logger.exception("sanitized-failure-fixture")
+            self.assertNotIn("private-diff-fixture", output.getvalue())
+            self.assertIn("operational-fixture", output.getvalue())
+            self.assertNotIn("private-token-fixture", output.getvalue())
+        with applied(settings, {"CONFIG.LOG_LEVEL": "DEBUG"}):
+            with self.assertRaisesRegex(ValueError, "DEBUG exposes"):
+                service.configure_runtime()
+
     def test_parses_fenced_yaml(self):
         result = service.parse_prediction(PREDICTION)
         self.assertEqual(result["effort"], 2)

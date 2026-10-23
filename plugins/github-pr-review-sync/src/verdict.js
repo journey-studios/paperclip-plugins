@@ -20,6 +20,7 @@ export function mapVerdictOutcomeToEvent(outcome) {
 
 // Shared with github-pr-intake: the same rules protect every text this system puts on a public PR.
 import { sanitize, stripCommentDelimiters } from "../../../shared/github-text.js";
+import { parseValidation } from "./validation.js";
 
 export { sanitize, stripCommentDelimiters };
 
@@ -129,6 +130,7 @@ export function parseVerdict(body) {
       outcome: raw.outcome,
       summary: sanitize(raw.summary, MAX_SUMMARY),
       findings,
+      validation: parseValidation(raw.validation),
     },
   };
 }
@@ -174,9 +176,10 @@ export function effectiveOutcome(verdict, authority) {
 const TITLES = { approve: "Approved", request_changes: "Changes requested", comment: "Review comments" };
 
 /** The public review text is built from the validated verdict only, never from issue comments. */
-export function buildVerdictBody({ verdict, outcome, notes, issueRef }) {
+export function buildVerdictBody({ verdict, outcome, notes, issueRef, evidenceLines = [] }) {
   const lines = [`## Automated review: ${TITLES[outcome]}`, "", `Reviewed commit \`${verdict.headSha.slice(0, 12)}\`.`];
-  if (verdict.summary) lines.push("", verdict.summary);
+  if (evidenceLines.length) lines.push("", "### Execution evidence", "", ...evidenceLines);
+  if (verdict.summary) lines.push("", "### Reviewer assessment", "", verdict.summary);
   if (verdict.findings.length) {
     lines.push("", "### Findings");
     for (const finding of verdict.findings) {

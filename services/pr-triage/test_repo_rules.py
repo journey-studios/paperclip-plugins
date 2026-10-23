@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 os.environ.setdefault("PR_TRIAGE_TOKEN", "t" * 32)
+os.environ.setdefault("CONFIG.LOG_LEVEL", "INFO")
 
 import app as service  # noqa: E402
 import repo_rules  # noqa: E402
@@ -170,6 +171,41 @@ class FetchTests(unittest.TestCase):
 class RunReviewTests(unittest.TestCase):
     """Runs inside the PR-Agent image: the real settings object, a fake reviewer and a fake GitHub."""
 
+    def test_changed_head_is_rejected_before_model_execution(self):
+        request = service.TriageRequest(repo="wallynm/tesselapp", number=7, head_sha=SHA, token="ghs_exampletoken123")
+        with mock.patch.object(service, "fetch_repo_context", return_value=(repo_rules.load_repo_rules(None), [])), mock.patch("pr_agent.tools.pr_reviewer.PRReviewer") as create:
+            create.return_value.git_provider.pr.head.sha = "b" * 40
+            with self.assertRaisesRegex(ValueError, "head changed"):
+                asyncio.run(service.run_review(request))
+            create.return_value.run.assert_not_called()
+        from pr_agent.config_loader import get_settings
+        self.assertEqual(get_settings().get("GITHUB.USER_TOKEN"), "")
+
+    def test_real_diff_renderer_distinguishes_full_and_pruned_model_input(self):
+        from types import SimpleNamespace
+        from pr_agent.algo.types import FilePatchInfo, EDIT_TYPE
+        from pr_agent.algo.pr_processing import get_pr_diff
+        from pr_agent.config_loader import get_settings
+
+        provider = mock.Mock()
+        lines = "".join(f"+value_{n} = {n}\n" for n in range(200))
+        provider.get_diff_files.return_value = [FilePatchInfo("old\n", "new\n", "@@ -1 +1,200 @@\n-old\n" + lines, "a.py", edit_type=EDIT_TYPE.MODIFIED)]
+        provider.get_languages.return_value = {"Python": 100}
+        provider.get_files.return_value = ["a.py"]
+        counter = SimpleNamespace(prompt_tokens=0, count_tokens=lambda text: len(text))
+        reviewer = SimpleNamespace(git_provider=provider, token_handler=counter)
+        settings = get_settings()
+        common = {"CONFIG.MODEL": "openai/fixture", "CONFIG.CUSTOM_MODEL_MAX_TOKENS": 200000}
+        with repo_rules.applied(settings, {**common, "CONFIG.MAX_MODEL_TOKENS": 200000}):
+            reviewer.patches_diff = get_pr_diff(provider, counter, "openai/fixture", add_line_numbers_to_hunks=True)
+            full = service.review_coverage(reviewer, settings)
+        self.assertEqual(full["status"], "complete", full)
+        with repo_rules.applied(settings, {**common, "CONFIG.MAX_MODEL_TOKENS": 2000}):
+            reviewer.patches_diff = get_pr_diff(provider, counter, "openai/fixture", add_line_numbers_to_hunks=True)
+            pruned = service.review_coverage(reviewer, settings)
+        self.assertEqual(pruned["status"], "partial", pruned)
+        self.assertTrue(pruned["context_truncated"], pruned)
+
     def test_rules_apply_during_the_review_only(self):
         from pr_agent.config_loader import get_settings
 
@@ -185,6 +221,8 @@ class RunReviewTests(unittest.TestCase):
                 seen["ignore"] = list(settings.get("IGNORE.GLOB"))
                 seen["token"] = settings.get("GITHUB.USER_TOKEN")
                 self.prediction = PREDICTION
+                self.git_provider = mock.Mock()
+                self.git_provider.pr.head.sha = SHA
 
             async def run(self):
                 return None

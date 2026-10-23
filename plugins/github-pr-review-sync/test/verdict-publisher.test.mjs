@@ -10,11 +10,12 @@ const ISSUE = "issue-1";
 const THERMO = "agent-thermo";
 const SHA = "a".repeat(40);
 const NEW_SHA = "b".repeat(40);
+const VALIDATION = { headSha: SHA, tests: { status: "pass", source: "ci", checks: ["unit-tests"] }, coverage: "complete" };
 
 const header = (authority = "approve") =>
   `<!-- paperclip-pr-intake {"v":1,"repo":"o/r","number":5,"headSha":"${SHA}","authority":"${authority}","round":1} -->\n# Review`;
 const verdictBody = (overrides = {}) =>
-  `Done.\n<!-- paperclip-review-verdict\n${JSON.stringify({ v: 1, repo: "o/r", number: 5, headSha: SHA, outcome: "approve", summary: "Fine.", findings: [], ...overrides })}\n-->`;
+  `Done.\n<!-- paperclip-review-verdict\n${JSON.stringify({ v: 1, repo: "o/r", number: 5, headSha: SHA, outcome: "approve", summary: "Fine.", findings: [], validation: VALIDATION, ...overrides })}\n-->`;
 
 function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, botLogin = "review-bot", token = "tok", submit } = {}) {
   const posted = [];
@@ -48,6 +49,7 @@ function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, b
     publicOrigin: async () => null,
     fetchPull: async () => ({ state: "open", head: { sha: SHA }, user: { login: "wallynm" }, ...pull }),
     fetchLogin: async () => botLogin,
+    fetchApprovalEvidence: async () => ({ headSha: SHA, status: "pass", successfulChecks: ["unit-tests", "lint"] }),
     submitReview: submit ?? (async (_ctx, input) => { posted.push(input); return { id: "900", url: "https://github.com/o/r/pull/5#pullrequestreview-900" }; }),
     getReceipt: async (_ctx, key) => receipts.get(key) ?? null,
     upsertReceipt: async (_ctx, row) => { receipts.set(row.receiptKey, { ...row, status: row.status, github_review_id: row.githubReviewId }); },
@@ -55,8 +57,96 @@ function fixture({ authority = "approve", comment = {}, issue = {}, pull = {}, b
       [...receipts.values()].filter((r) => r.status === "failed").map((r) => ({ receipt_key: r.receiptKey, company_id: r.companyId, issue_id: r.issueId, decision_id: r.decisionId })),
   };
   const run = (commentId = "c1") => processVerdictComment(ctx, { companyId: COMPANY, issueId: ISSUE, commentId }, deps);
-  return { ctx, deps, posted, notes, receipts, run, comments };
+  return { ctx, deps, posted, notes, receipts, run, comments, issueRecord };
 }
+
+test("a completed intake issue still publishes its pending verdict", async () => {
+  const f = fixture({ issue: { status: "done" } });
+  assert.equal((await f.run()).status, "published");
+  assert.equal((await f.run()).status, "already_published");
+  assert.equal(f.posted.length, 1);
+});
+
+test("a transient failure is retried after the reviewer completes the issue", async () => {
+  let attempts = 0;
+  const f = fixture({ submit: async () => {
+    attempts += 1;
+    if (attempts === 1) throw Object.assign(new Error("502 Bad Gateway"), { status: 502 });
+    return { id: "901", url: "https://github.com/o/r/pull/5#pullrequestreview-901" };
+  } });
+  assert.equal((await f.run()).status, "failed");
+  f.issueRecord.status = "done";
+  const retried = await retryFailedVerdicts(f.ctx, f.deps);
+  assert.equal(retried[0].status, "published");
+  assert.equal(attempts, 2);
+  assert.equal([...f.receipts.values()][0].status, "published");
+});
+
+test("a transient token or identity lookup failure also leaves a retryable receipt", async () => {
+  for (const key of ["resolveToken", "fetchLogin"]) {
+    const f = fixture();
+    const original = f.deps[key];
+    f.deps[key] = async () => { throw new Error("502 lookup unavailable"); };
+    assert.equal((await f.run()).status, "failed");
+    assert.equal([...f.receipts.values()][0].status, "failed");
+    f.issueRecord.status = "done";
+    f.deps[key] = original;
+    assert.equal((await retryFailedVerdicts(f.ctx, f.deps))[0].status, "published");
+  }
+});
+
+test("completion never bypasses cancellation, a closed PR or a changed head", async () => {
+  const cancelled = fixture({ issue: { status: "cancelled" } });
+  assert.equal((await cancelled.run()).skipped, "issue_cancelled");
+  for (const pull of [{ state: "closed" }, { head: { sha: NEW_SHA } }]) {
+    const f = fixture({ issue: { status: "done" }, pull });
+    assert.equal((await f.run()).status, "skipped_stale");
+    assert.equal(f.posted.length, 0);
+  }
+});
+
+test("legacy, static and incomplete test evidence can publish a comment but never approve", async () => {
+  for (const validation of [undefined, null, {},
+    { ...VALIDATION, headSha: NEW_SHA },
+    { ...VALIDATION, coverage: "partial" },
+    { ...VALIDATION, tests: { status: "pass", source: "static", checks: ["unit-tests"] } },
+    { ...VALIDATION, tests: { status: "partial", source: "ci", checks: ["unit-tests"] } },
+    { ...VALIDATION, tests: { status: "pass", source: "ci", checks: ["invented-tests"] } },
+  ]) {
+    const f = fixture({ comment: { body: verdictBody({ validation, summary: "Tests PASS from reading the code." }) } });
+    assert.equal((await f.run()).event, "COMMENT", JSON.stringify(validation));
+    assert.match(f.posted[0].body, /Approval withheld.*execution evidence/i);
+  }
+});
+
+test("a passing model claim cannot override failed, pending, missing or wrong-head CI", async () => {
+  for (const evidence of [
+    { headSha: SHA, status: "fail", successfulChecks: ["unit-tests"] },
+    { headSha: SHA, status: "partial", successfulChecks: ["unit-tests"] },
+    { headSha: NEW_SHA, status: "pass", successfulChecks: ["unit-tests"] },
+  ]) {
+    const f = fixture();
+    f.deps.fetchApprovalEvidence = async () => evidence;
+    assert.equal((await f.run()).event, "COMMENT");
+    assert.equal(f.posted[0].event, "COMMENT");
+  }
+});
+
+test("a CI read failure retains the review as a comment, with the missing evidence explicit", async () => {
+  const f = fixture();
+  f.deps.fetchApprovalEvidence = async () => { throw new Error("503 unavailable"); };
+  assert.equal((await f.run()).event, "COMMENT");
+  assert.match(f.posted[0].body, /CI.*PARTIAL/);
+});
+
+test("a change in CI after publication cannot duplicate or upgrade the same verdict", async () => {
+  const f = fixture();
+  f.deps.fetchApprovalEvidence = async () => ({ headSha: SHA, status: "partial", successfulChecks: [] });
+  assert.equal((await f.run()).event, "COMMENT");
+  f.deps.fetchApprovalEvidence = async () => ({ headSha: SHA, status: "pass", successfulChecks: ["unit-tests"] });
+  assert.equal((await f.run()).status, "already_published");
+  assert.equal(f.posted.length, 1);
+});
 
 test("an approve verdict from the assigned reviewer is published with a receipt", async () => {
   const f = fixture();

@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/github-pr-intake",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": false,
   "type": "module",
   "description": "Listen to GitHub pull requests and route them to Paperclip review agents (webhook + reconciliation).",

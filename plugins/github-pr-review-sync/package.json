@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/github-pr-review-sync",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": false,
   "type": "module",
   "description": "Sync Paperclip native review decisions to formal GitHub pull request reviews (JOU-490).",
@@ -9,8 +9,8 @@
   "files": ["dist", "migrations", "README.md"],
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "node --test",
-    "typecheck": "node --check src/review-sync-core.js && node --check src/config.js && node --check src/pull-resolution.js && node --check src/github-api.js && node --check src/receipt-store.js && node --check src/review-body.js && node --check src/publisher.js && node --check src/verdict.js && node --check src/verdict-publisher.js && node --check src/worker.js && node --check src/manifest.js"
+    "test": "node --test test/*.test.mjs test/*.spec.mjs",
+    "typecheck": "node --check src/review-sync-core.js && node --check src/config.js && node --check src/pull-resolution.js && node --check src/github-api.js && node --check src/receipt-store.js && node --check src/review-body.js && node --check src/publisher.js && node --check src/validation.js && node --check src/verdict.js && node --check src/verdict-publisher.js && node --check src/worker.js && node --check src/manifest.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

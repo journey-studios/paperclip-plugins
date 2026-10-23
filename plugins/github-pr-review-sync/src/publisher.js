@@ -14,6 +14,7 @@ import {
   mapOutcomeToGitHubEvent,
 } from "./review-sync-core.js";
 import { buildReviewBody } from "./review-body.js";
+import { INTAKE_ORIGIN_KIND } from "./verdict.js";
 
 const STATE_NAMESPACE = "review-sync";
 const lastDecisionScope = (issueId) => ({
@@ -44,6 +45,7 @@ export function readDecisionFromIssueState(executionState) {
 export async function publishReviewDecisionsForIssue(ctx, companyId, issueId, transition) {
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue) return { skipped: "issue_missing" };
+  if (issue.originKind === INTAKE_ORIGIN_KIND) return { skipped: "intake_verdict_required" };
 
   const decision =
     transition ?? readDecisionFromIssueState(issue.executionState);

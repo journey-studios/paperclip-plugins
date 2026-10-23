@@ -54,12 +54,27 @@ OPENAI.API_BASE=http://omniroute:20128/v1
 CONFIG.GIT_PROVIDER=github
 CONFIG.MODEL=openai/<model>
 CONFIG.CUSTOM_MODEL_MAX_TOKENS=200000
+CONFIG.MAX_MODEL_TOKENS=200000
 CONFIG.LOG_LEVEL=INFO
 CONFIG.AI_TIMEOUT=600
 CONFIG.PUBLISH_OUTPUT=false
 ```
 
-Keep `CONFIG.LOG_LEVEL=INFO`: PR-Agent's default (`DEBUG`) writes the pull request's source into the log.
+Set both context settings deliberately: PR-Agent takes the minimum of the model capacity and
+`CONFIG.MAX_MODEL_TOKENS` (upstream defaults to 32000). Use a capacity supported by the configured route.
+The wrapper applies `CONFIG.LOG_LEVEL` to the actual logger at startup and before each review. INFO or higher
+is required; DEBUG is rejected because it writes prompts, source diffs and response metadata.
+
+Every result includes `coverage` (complete, partial or unknown), the number of represented/changed files,
+whether the diff was pruned, and a bounded list of omitted files. It compares the actual model input against
+the uncapped upstream diff renderer. Ignored, binary or otherwise omitted files prevent a claim of complete
+coverage. A measurement error is explicit unknown coverage. The intake comment and reviewer handoff carry
+this limitation even when the model reports no findings. A changed PR head is rejected before inference.
+
+`runtime` reports the configured model route, effective context limit and applied log level. A pooled route
+is not a resolved model identity. Until provider evidence exists, `resolved_model` and `cost_usd` are null and
+`billing` is unknown; a missing price is never reported as zero cost. Spotted tests are static evidence, not
+test execution.
 
 ## Run
 

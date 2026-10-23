@@ -14,6 +14,17 @@ const RESULT = {
   key_issues: [{ file: "src/a.ts", header: "Possible null access", content: "value may be undefined", start_line: 10, end_line: 12 }],
 };
 
+test("public triage exposes partial coverage and distinguishes spotted tests from execution", () => {
+  const result = { ...RESULT, coverage: { status: "partial", reviewed_files: 1, total_files: 3, context_truncated: true }, runtime: { effective_max_tokens: 200000 } };
+  const body = formatTriageComment({ result, sha: SHA1 });
+  assert.match(body, /Coverage: PARTIAL.*1\/3/);
+  assert.match(body, /diff was reduced/);
+  assert.match(body, /200000 tokens/);
+  assert.match(body, /static reading, not execution/);
+  assert.match(formatTriageComment({ result: {}, sha: SHA1 }), /Coverage: UNKNOWN/);
+  assert.match(formatReviewerHypotheses({ result: { ...result, key_issues: [] }, sha: SHA1 }), /Coverage: PARTIAL/);
+});
+
 /** A fake pr-triage service: records submissions and answers with whatever the test scripts. */
 function fakeTriage() {
   const service = { submitted: [], answers: new Map(), failSubmit: false, nextId: 1 };

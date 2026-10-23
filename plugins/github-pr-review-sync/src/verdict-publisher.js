@@ -1,5 +1,6 @@
 import { companyPublicOrigin, resolveReviewBotToken } from "./config.js";
-import { fetchAuthenticatedLogin, fetchPull, publicationMarker, submitFormalReview } from "./github-api.js";
+import { fetchApprovalEvidence, fetchAuthenticatedLogin, fetchPull, publicationMarker, submitFormalReview } from "./github-api.js";
+import { assessValidation } from "./validation.js";
 import { getReceipt, listRetryableReceipts, upsertReceipt } from "./receipt-store.js";
 import { buildReceiptKey, parsePullReference } from "./review-sync-core.js";
 import {
@@ -11,13 +12,12 @@ import {
   parseVerdict,
 } from "./verdict.js";
 
-const TERMINAL = new Set(["done", "cancelled"]);
-
 const defaultDeps = {
   resolveToken: resolveReviewBotToken,
   publicOrigin: companyPublicOrigin,
   fetchPull,
   fetchLogin: fetchAuthenticatedLogin,
+  fetchApprovalEvidence,
   submitReview: submitFormalReview,
   getReceipt,
   upsertReceipt,
@@ -47,7 +47,9 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue || issue.companyId !== companyId) return { skipped: "issue_missing" };
   if (issue.originKind !== INTAKE_ORIGIN_KIND) return { skipped: "not_intake_issue" };
-  if (TERMINAL.has(issue.status)) return { skipped: "issue_closed" };
+  // Comment delivery and retries may run after the reviewer has completed the task.
+  // Cancellation remains an explicit stop; PR state and head are checked independently below.
+  if (issue.status === "cancelled") return { skipped: "issue_cancelled" };
 
   const comments = await ctx.issues.listComments(issueId, companyId);
   const comment = comments.find((entry) => entry.id === commentId);
@@ -76,15 +78,9 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
     return { rejected: "verdict_mismatch" };
   }
 
-  const token = await deps.resolveToken(ctx, companyId, { owner: pull.owner, repo: pull.repo });
-  if (!token) {
-    ctx.logger.error("github-pr-review-sync: review bot token unavailable", { companyId, issueId });
-    await note(ctx, issue, "The review bot token is not configured; the verdict could not be published.");
-    return { skipped: "missing_token" };
-  }
-
-  const { outcome, notes } = effectiveOutcome(verdict, header.authority);
-  const event = mapVerdictOutcomeToEvent(outcome);
+  let { outcome, notes } = effectiveOutcome(verdict, header.authority);
+  let event = mapVerdictOutcomeToEvent(outcome);
+  // Keep this key independent of live CI: replaying a published comment must never upgrade it.
   const receiptKey = buildReceiptKey({ companyId, issueId, decisionId: commentId, pull, headSha: verdict.headSha, event });
   const marker = publicationMarker(receiptKey);
   const base = {
@@ -102,6 +98,19 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
 
   const existing = await deps.getReceipt(ctx, receiptKey);
   if (existing?.status === "published" && existing.github_review_id) return { status: "already_published" };
+
+  let token;
+  try {
+    token = await deps.resolveToken(ctx, companyId, { owner: pull.owner, repo: pull.repo });
+  } catch (error) {
+    await deps.upsertReceipt(ctx, { ...base, status: "failed", errorCode: "token_resolution_failed", errorMessage: message(error).slice(0, 2000) });
+    return { status: "failed", error: "token_resolution_failed" };
+  }
+  if (!token) {
+    ctx.logger.error("github-pr-review-sync: review bot token unavailable", { companyId, issueId });
+    await note(ctx, issue, "The review bot token is not configured; the verdict could not be published.");
+    return { skipped: "missing_token" };
+  }
 
   let pullData;
   try {
@@ -122,23 +131,37 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
     return { status: "skipped_stale" };
   }
 
-  if (event !== "COMMENT") {
-    const botLogin = await deps.fetchLogin(ctx, token);
-    const author = pullData.user?.login;
-    if (botLogin && author && botLogin.toLowerCase() === author.toLowerCase()) {
-      await deps.upsertReceipt(ctx, {
-        ...base,
-        status: "pending_identity",
-        errorCode: "self_review_blocked",
-        errorMessage: "Review bot login matches the PR author; a separate GitHub identity is required",
-      });
-      await note(ctx, issue, "The review bot is the pull request author, so GitHub forbids approving or requesting changes. Nothing was published.");
-      return { status: "pending_identity" };
-    }
+  let evidence;
+  try {
+    evidence = await deps.fetchApprovalEvidence(ctx, token, pull.owner, pull.repo, verdict.headSha);
+  } catch {
+    // A missing CI read is missing evidence, not evidence that the code failed.
+    evidence = { headSha: verdict.headSha, status: "partial", successfulChecks: [] };
+  }
+  const validation = assessValidation(verdict, evidence);
+  if (outcome === "approve" && !validation.canApprove) {
+    outcome = "comment";
+    event = "COMMENT";
+    base.githubEvent = event;
+    notes.push("Approval withheld: execution evidence and complete review coverage are required at this commit. Static reading is not a passing test run; missing CI is not a code finding.");
   }
 
   try {
-    const body = buildVerdictBody({ verdict, outcome, notes, issueRef: issue.identifier ?? undefined });
+    if (event !== "COMMENT") {
+      const botLogin = await deps.fetchLogin(ctx, token);
+      const author = pullData.user?.login;
+      if (botLogin && author && botLogin.toLowerCase() === author.toLowerCase()) {
+        await deps.upsertReceipt(ctx, {
+          ...base,
+          status: "pending_identity",
+          errorCode: "self_review_blocked",
+          errorMessage: "Review bot login matches the PR author; a separate GitHub identity is required",
+        });
+        await note(ctx, issue, "The review bot is the pull request author, so GitHub forbids approving or requesting changes. Nothing was published.");
+        return { status: "pending_identity" };
+      }
+    }
+    const body = buildVerdictBody({ verdict, outcome, notes, issueRef: issue.identifier ?? undefined, evidenceLines: validation.lines });
     const posted = await deps.submitReview(ctx, {
       token,
       owner: pull.owner,

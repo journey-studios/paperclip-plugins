@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from itertools import islice
@@ -126,6 +127,7 @@ def fetch_repo_context(request: TriageRequest) -> tuple[RepoRules, list[tuple[st
 async def run_review(request: TriageRequest) -> dict[str, Any]:
     """Runs PR-Agent's reviewer without publishing. Imported lazily so tests do not need PR-Agent."""
     from pr_agent.config_loader import get_settings
+    runtime = configure_runtime()
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     rules, files = await asyncio.to_thread(fetch_repo_context, request)
@@ -137,11 +139,63 @@ async def run_review(request: TriageRequest) -> dict[str, Any]:
     try:
         with applied(settings, reviewer_overrides(rules, settings)):
             reviewer = PRReviewer(f"https://github.com/{request.repo}/pull/{request.number}", args=[])
+            if reviewer.git_provider.pr.head.sha != request.head_sha:
+                raise ValueError("pull request head changed before triage")
             await reviewer.run()
             prediction = reviewer.prediction
+            coverage = review_coverage(reviewer, settings)
     finally:
         settings.set("GITHUB.USER_TOKEN", "")
-    return {**parse_prediction(prediction), "radar": radar, "repo_rules": rules.status}
+    return {**parse_prediction(prediction), "radar": radar, "repo_rules": rules.status, "coverage": coverage, "runtime": runtime}
+
+
+def configure_runtime() -> dict[str, Any]:
+    from pr_agent.config_loader import get_settings
+    from pr_agent.log import get_logger
+    from pr_agent.algo.utils import get_max_tokens
+
+    settings = get_settings()
+    level = str(settings.get("CONFIG.LOG_LEVEL") or "INFO").upper()
+    if level not in ("INFO", "WARNING", "ERROR", "CRITICAL"):
+        raise ValueError("CONFIG.LOG_LEVEL must be INFO or higher; DEBUG exposes review content")
+    logger = get_logger()
+    logger.remove()
+    # Exception diagnostics can expose local prompts/tokens even above DEBUG.
+    logger.add(sys.stdout, level=level, diagnose=False, backtrace=False)
+    model = settings.get("CONFIG.MODEL")
+    return {"configured_model": model, "resolved_model": None, "effective_max_tokens": get_max_tokens(model),
+            "log_level": level, "cost_usd": None, "billing": "unknown"}
+
+
+def summarize_coverage(rendered: str, complete: str, changed: list[str]) -> dict[str, Any]:
+    represented = set(re.findall(r"^## File: '(.+)'\s*$", rendered, re.MULTILINE))
+    missing = sorted(set(changed) - represented)
+    truncated = rendered != complete
+    status = "partial"
+    if rendered and not truncated and not missing and represented == set(changed):
+        status = "complete"
+    return {"status": status, "context_truncated": truncated, "reviewed_files": len(represented),
+            "total_files": len(set(changed)), "missing_files": missing[:20], "rendered_diff_bytes": len(rendered.encode())}
+
+
+def review_coverage(reviewer, settings) -> dict[str, Any]:
+    from pr_agent.algo.language_handler import sort_files_by_main_languages
+    from pr_agent.algo.pr_processing import cap_and_log_extra_lines, pr_generate_extended_diff
+
+    try:
+        # Render the uncapped diff through the same upstream renderer, without its pruning step.
+        # Raising a custom cap would not uncap models with a built-in maximum.
+        provider = reviewer.git_provider
+        languages = sort_files_by_main_languages(provider.get_languages(), provider.get_diff_files())
+        patches, _, _ = pr_generate_extended_diff(
+            languages, reviewer.token_handler, True,
+            patch_extra_lines_before=cap_and_log_extra_lines(settings.get("CONFIG.PATCH_EXTRA_LINES_BEFORE"), "before"),
+            patch_extra_lines_after=cap_and_log_extra_lines(settings.get("CONFIG.PATCH_EXTRA_LINES_AFTER"), "after"))
+        complete = "\n".join(patches)
+        return summarize_coverage(reviewer.patches_diff or "", complete, reviewer.git_provider.get_files())
+    except Exception as error:
+        # A measurement failure is explicit missing evidence, never "complete" coverage.
+        return {"status": "unknown", "measurement_error": type(error).__name__}
 
 
 def _scrub(message: str, token: str) -> str:
@@ -172,6 +226,7 @@ def _purge_expired() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global queue
+    configure_runtime()
     queue = asyncio.Queue()
     task = asyncio.create_task(worker())
     try:
@@ -185,7 +240,7 @@ app = FastAPI(title="pr-triage", docs_url=None, redoc_url=None, openapi_url=None
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
-    return {"ok": True, "queued": queue.qsize(), "jobs": len(jobs)}
+    return {"ok": True, "queued": queue.qsize(), "running": sum(job.status == "running" for job in jobs.values()), "jobs": len(jobs)}
 
 
 @app.post("/v1/triage", status_code=202, dependencies=[Depends(require_auth)])
