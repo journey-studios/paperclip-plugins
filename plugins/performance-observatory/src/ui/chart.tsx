@@ -1,31 +1,9 @@
 import { useMemo } from "react";
 import ReactECharts from "echarts-for-react/esm/core.js";
 import { useEffect, useState } from "react";
+import { loadCharts } from "./chart-loader.js";
 type EChartsModule = typeof import("echarts/core");
 declare global { var JourneyPerformanceECharts: EChartsModule | undefined; }
-let pending: Promise<EChartsModule> | undefined;
-function loadCharts(): Promise<EChartsModule> {
- if (globalThis.JourneyPerformanceECharts) return Promise.resolve(globalThis.JourneyPerformanceECharts);
- if (pending) return pending;
- pending = (async () => {
-  const response = await fetch("/api/plugins/ui-contributions");
-  if (!response.ok) throw new Error("CHART_ASSET_DISCOVERY_FAILED");
-  const contributions: unknown = await response.json();
-  if (!Array.isArray(contributions)) throw new Error("CHART_ASSET_DISCOVERY_FAILED");
-  const entry = contributions.find((item) => item && typeof item === "object" && Reflect.get(item, "pluginKey") === "journey-studios.performance-observatory");
-  const id = entry && Reflect.get(entry, "pluginId");
-  if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("CHART_ASSET_DISCOVERY_FAILED");
-  return new Promise<EChartsModule>((resolve, reject) => {
-   const script = document.createElement("script");
-   script.src = `/_plugins/${encodeURIComponent(id)}/ui/echarts.js?v=0.1.2`;
-   script.async = true;
-   script.onload = () => { if (globalThis.JourneyPerformanceECharts) resolve(globalThis.JourneyPerformanceECharts); else reject(new Error("CHART_LIBRARY_UNAVAILABLE")); };
-   script.onerror = () => reject(new Error("CHART_LIBRARY_UNAVAILABLE"));
-   document.head.append(script);
-  });
- })();
- return pending;
-}
 
 import type { Run } from "./contracts.js";
 const metrics: Record<string,string> = { score: "Performance · 0–100", lcp: "LCP · ms", fcp: "FCP · ms", tbt: "TBT · ms", cls: "CLS", bytes: "Transferência · bytes", requests: "Requisições", uiReadyMs: "Interface pronta · ms" };
@@ -53,9 +31,10 @@ function chartOptions(runs: Run[], metric: string) {
 export default function Chart({runs, metric}: {runs: Run[]; metric: string}) {
  const [library, setLibrary] = useState<EChartsModule | null>(null);
  const [error, setError] = useState(false);
+ const [attempt, setAttempt] = useState(0);
  const options = useMemo(() => chartOptions(runs, metric), [runs, metric]);
- useEffect(() => { let mounted = true; loadCharts().then((value) => { if (mounted) setLibrary(value); }).catch(() => { if (mounted) setError(true); }); return () => { mounted = false; }; }, []);
- if (error) return <p role="alert">Não foi possível carregar o gráfico. As métricas continuam disponíveis na tabela.</p>;
+ useEffect(() => { let mounted = true; setError(false); loadCharts().then((value) => { if (mounted) setLibrary(value); }).catch(() => { if (mounted) setError(true); }); return () => { mounted = false; }; }, [attempt]);
+ if (error) return <div><p role="alert">Não foi possível carregar o gráfico. As métricas continuam disponíveis na tabela.</p><button type="button" onClick={() => setAttempt((value) => value + 1)}>Tentar novamente</button></div>;
  if (!library) return <p>Carregando gráfico…</p>;
  let theme;
  if (document.documentElement.classList.contains("dark")) theme = "dark";

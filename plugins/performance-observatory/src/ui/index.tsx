@@ -42,12 +42,14 @@ function Panel({ companyId, projectId }: { companyId: string; projectId?: string
   const request = usePluginAction("request_review");
   const runs = list.data ?? [];
   const pending = runs.some((run) => ["queued", "running"].includes(run.status));
+  const refresh = useRef(list.refresh);
+  useEffect(() => { refresh.current = list.refresh; }, [list.refresh]);
   useEffect(() => {
     let interval = 60000;
     if (pending) interval = 15000;
-    const timer = setInterval(() => { if (document.visibilityState === "visible") list.refresh(); }, interval);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") refresh.current(); }, interval);
     return () => clearInterval(timer);
-  }, [list.refresh, pending]);
+  }, [pending]);
   const filteredTargets = (catalog.data ?? []).filter((t) => !projectId || t.projectId === projectId);
   const valid = runs.filter((r) => r.result);
   const latest = valid[0];

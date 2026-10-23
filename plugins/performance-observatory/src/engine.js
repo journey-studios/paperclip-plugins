@@ -30,7 +30,8 @@ export async function reconcile(ctx) {
       const recent = await ctx.db.query(`SELECT created_at FROM ${table(ctx)} WHERE company_id = $1 AND target_key = $2 ORDER BY created_at DESC LIMIT 1`, [companyId, target.key]);
       if (recent.length && Date.now() - new Date(recent[0].created_at).getTime() < target.intervalMinutes * 60000) continue;
       const slot = Math.floor(Date.now() / (target.intervalMinutes * 60000));
-      await enqueue(ctx, companyId, target.key, "schedule", `schedule:${slot}`);
+      try { await enqueue(ctx, companyId, target.key, "schedule", `schedule:${slot}`); }
+      catch { ctx.logger.warn("performance: could not schedule target", { companyId, targetKey: target.key }); }
     }
     const pending = await ctx.db.query(`SELECT id, status, target_snapshot FROM ${table(ctx)}
       WHERE company_id = $1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 40`, [companyId]);
@@ -61,7 +62,7 @@ export async function reconcile(ctx) {
         // Transport failures remain resumable; an already submitted container must never be duplicated.
         let code = "RECONCILIATION_FAILED";
         if (error instanceof Error && /^[A-Z0-9_]{1,80}$/.test(error.message)) code = error.message;
-        if (receivedCompletion) {
+        if (receivedCompletion || /^CONTROLLER_HTTP_(400|404|409|413|422)$/.test(code)) {
           await ctx.db.execute(`UPDATE ${table(ctx)} SET status = 'failed', error_code = $3, finished_at = now() WHERE company_id = $1 AND id = $2 AND status IN ('queued','running')`, [companyId, run.id, code]);
           continue;
         }

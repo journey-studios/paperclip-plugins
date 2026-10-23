@@ -24,3 +24,33 @@ test("transport failure keeps an already submitted run resumable", async () => {
   assert.ok(writes.some((write) => write.values.includes("CONTROLLER_UNREACHABLE")));
   assert.equal(writes.some((write) => write.sql.includes("status = 'failed'")), false);
 });
+test("permanent controller rejection terminates a run instead of blocking the target forever", async () => {
+  const { ctx, writes } = context(); const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response("", { status: 400 });
+  try { await reconcile(ctx); } finally { globalThis.fetch = original; }
+  assert.ok(writes.some((write) => write.sql.includes("status = 'failed'") && write.values.includes("CONTROLLER_HTTP_400")));
+});
+test("temporary controller unavailability remains resumable", async () => {
+  const { ctx, writes } = context(); const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response("", { status: 503 });
+  try { await reconcile(ctx); } finally { globalThis.fetch = original; }
+  assert.equal(writes.some((write) => write.sql.includes("status = 'failed'")), false);
+});
+test("one unavailable project does not prevent other targets from being scheduled", async () => {
+  const { ctx, writes } = context();
+  const bad = { ...target, enabled: true, key: "unavailable" };
+  const good = { ...target, enabled: true, key: "available", projectId: "33333333-3333-4333-8333-333333333333" };
+  const checked = [];
+  const warnings = [];
+  ctx.config.get = async () => ({ targets: [bad, good] });
+  ctx.projects = { get: async (id) => { checked.push(id); if (id === bad.projectId) return null; return { id }; } };
+  ctx.logger.warn = (...args) => warnings.push(args);
+  ctx.db.query = async (sql) => {
+    if (sql.includes("request_key =")) return [{ id: "44444444-4444-4444-8444-444444444444" }];
+    return [];
+  };
+  await reconcile(ctx);
+  assert.deepEqual(checked, [bad.projectId, good.projectId]);
+  assert.equal(warnings.length, 1);
+  assert.ok(writes.some((write) => write.sql.startsWith("INSERT") && write.values.includes(good.key)));
+});
