@@ -1,0 +1,4 @@
+interface:
+  display_name: "Performance na VPS"
+  short_description: "Meça Lighthouse na VPS e consulte métricas"
+  default_prompt: "Use $vps-performance-review para medir performance na VPS e consultar o histórico no Paperclip, separando cache frio e quente."

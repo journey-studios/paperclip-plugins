@@ -40,6 +40,19 @@ performance runs prod-chat-reload --limit 20
 performance show RUN_ID
 ```
 
+## Reusable measurement skill
+
+The [vps-performance-review skill](../../skills/vps-performance-review/SKILL.md) explains target
+discovery, idempotent submissions, history pagination, cold/warm comparisons and invalid-run diagnosis.
+It also covers authentication evidence, ephemeral executor cleanup and the limits of API attribution.
+
+Copy the complete `skills/vps-performance-review/` directory into a supported local skills directory
+to use `$vps-performance-review`, or import its files into your company's Paperclip skill library.
+This repository copy contains reusable instructions; installation addresses, company identifiers,
+session locations and operational receipts belong in your authorized private deployment records.
+The skill is installed separately and is not included in the plugin package or attached to agents
+automatically.
+
 ## Configuration
 
 Configure the controller URL, a company-scoped Paperclip secret reference and targets in the native
