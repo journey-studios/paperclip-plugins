@@ -80,6 +80,9 @@ test("runtime freezing detects instruction changes, model pools and mutable imag
     await assert.rejects(() => freezeProfile({ ...pooled, gateway: { ...pooled.gateway, routingSnapshot: { ...pooled.gateway.routingSnapshot, models: [...pooled.gateway.routingSnapshot.models, { provider: "agy", model: "model-v2" }] } } }, "thermo"), /single-model pool/);
     await assert.rejects(() => freezeProfile({ ...profile, gateway: { ...profile.gateway, upstream: "http://user:key@host/v1" } }, "thermo"), /without credentials/);
     assert.notEqual(digest(first.frozen), digest(second.frozen));
+    await assert.rejects(() => freezeProfile({ ...profile, reviewer: { ...profile.reviewer, maxSteps: 3 } }, "thermo"), /Reserve requests/);
+    const bounded = await freezeProfile({ ...profile, gateway: { ...profile.gateway, maxRequests: 6 }, reviewer: { ...profile.reviewer, maxSteps: 3 } }, "thermo");
+    assert.equal(bounded.frozen.reviewer.maxSteps, 3);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

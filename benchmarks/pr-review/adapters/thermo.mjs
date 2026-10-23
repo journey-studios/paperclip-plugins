@@ -17,7 +17,7 @@ const localConfig = {
   provider: { benchmark: { npm: "@ai-sdk/openai-compatible", name: "Benchmark", options: { baseURL: "http://benchmark-gateway:8080/v1", apiKey: "benchmark-no-provider-key" }, models: { [config.requestModel]: { ...config.modelMetadata, name: config.requestModel, limit: config.modelLimit } } } },
   instructions: config.instructions.map((_, i) => `/instructions/${i}.md`),
   permission: permissions,
-  agent: { review: { mode: "primary", description: "Frozen review replay", permission: permissions } },
+  agent: { review: { mode: "primary", description: "Frozen review replay", permission: permissions, steps: config.maxSteps } },
   share: "disabled", autoupdate: false,
 };
 await writeFile(`${home}/opencode.json`, JSON.stringify(localConfig));

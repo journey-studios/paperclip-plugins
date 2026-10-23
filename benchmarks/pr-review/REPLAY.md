@@ -75,6 +75,10 @@ instruction paths. Images must already exist locally; replay does not pull mutab
 `reviewer.modelMetadata` can preserve provider metadata such as DeepSeek's
 `{reasoning: true, tool_call: true, interleaved: {field: "reasoning_content"}}`.
 The auxiliary OpenCode model is pinned to the same route, so title calls consume the same recorded request budget.
+Set `reviewer.maxSteps` below the gateway request cap to let OpenCode conclude with text before the proxy
+denies another request. At least three requests beyond that step limit are reserved for final/auxiliary calls.
+Choose output limits that include reasoning tokens; an 8,192-token cap can truncate DeepSeek's reasoning
+before it returns any review. Record such calibration calls separately and freeze a new experiment after a correction.
 
 ```sh
 pnpm --silent review-bench freeze benchmarks/pr-review/study.json execution.json > frozen-study.json

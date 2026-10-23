@@ -34,6 +34,9 @@ export async function freezeProfile(profile, layer) {
     requireValue(profile.reviewer.instructions?.length > 0, "Snapshot the real Thermo instructions and skills first");
     requireValue(typeof profile.reviewer.deliveryInstructions === "string" && profile.reviewer.deliveryInstructions.trim(), "Missing local verdict delivery contract");
     requireValue(profile.reviewer.cliVersion && profile.reviewer.modelLimit?.context > 0 && profile.reviewer.modelLimit?.output > 0, "Pin the CLI version and model limits");
+    if (profile.reviewer.maxSteps !== undefined) {
+      requireValue(Number.isSafeInteger(profile.reviewer.maxSteps) && profile.reviewer.maxSteps > 0 && profile.gateway.maxRequests >= profile.reviewer.maxSteps + 3, "Reserve requests for the final response and auxiliary model after the agent step limit");
+    }
     for (const path of profile.reviewer.instructions) {
       requireValue(typeof path === "string" && path.endsWith(".md"), "Instructions must name explicit Markdown files");
       instructions.push(await readFile(path, "utf8"));
