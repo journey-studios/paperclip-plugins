@@ -64,9 +64,9 @@ def run_one(folder, state):
             profile = request["target"].get("authProfile", "public")
             if profile != "public":
                 path = PROFILES.get(profile)
-                if not path or not Path(path).is_file():
+                if not path or not Path(path).is_dir() or not (Path(path) / "storage-state.json").is_file():
                     raise ValueError("AUTH_PROFILE_NOT_CONFIGURED")
-                args += ["-v", f"{path}:/auth/storage-state.json:ro"]
+                args += ["-v", f"{path}:/auth:rw"]
             args.append(IMAGE)
             started = subprocess.run(args, capture_output=True, timeout=45)
             if started.returncode:

@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { cookiesForHost, saveSession } = require("./session.cjs");
 function save(file, value) {
   fs.writeFileSync(file + ".tmp", JSON.stringify(value), { mode: 0o600 });
   fs.renameSync(file + ".tmp", file);
@@ -31,7 +32,7 @@ module.exports = async function prepare(browser) {
   for (const page of await browser.pages()) await watch(page);
   if (target.authProfile !== "public") {
     const state = JSON.parse(fs.readFileSync("/auth/storage-state.json", "utf8"));
-    const cookies = (state.cookies || []).filter((cookie) => expected.hostname === cookie.domain.replace(/^\./, "") || expected.hostname.endsWith(cookie.domain.startsWith(".") ? cookie.domain : "." + cookie.domain));
+    const cookies = cookiesForHost(state.cookies || [], expected.hostname);
     if (!cookies.length) throw new Error("AUTH_PROFILE_EMPTY");
     await browser.setCookie(...cookies);
   }
@@ -72,6 +73,19 @@ module.exports = async function prepare(browser) {
   if (target.selectors?.history) await page.waitForSelector(target.selectors.history, { timeout: 45000 });
   proof.preflightHistory = true;
   if (new URL(page.url()).origin + new URL(page.url()).pathname !== expected.origin + expected.pathname) throw new Error("AUTH_OR_ROUTE_INVALID");
+  if (target.authProfile !== "public") {
+    await saveSession(browser, page, expected.origin);
+    const close = browser.close.bind(browser);
+    browser.close = async () => {
+      try {
+        const pages = await browser.pages();
+        const active = pages.find((candidate) => {
+          try { return new URL(candidate.url()).origin === expected.origin; } catch { return false; }
+        });
+        await saveSession(browser, active, expected.origin);
+      } finally { await close(); }
+    };
+  }
   proof.uiReadyMs = performance.now() - clickAt;
   // The real audit is a navigation. UI journey timings are a separate preflight measurement.
   const session = await page.createCDPSession();

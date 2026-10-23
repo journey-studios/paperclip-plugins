@@ -21,12 +21,18 @@ export async function listRuns(ctx, companyId, params = {}) {
   if (params.before) {
     const before = new Date(String(params.before));
     if (!Number.isFinite(before.getTime())) throw new Error("INVALID_CURSOR");
-    values.push(before.toISOString());
-    clauses.push(`created_at < $${values.length}`);
+    values.push(String(params.before));
+    const timeIndex = values.length;
+    if (params.beforeId) {
+      values.push(uuid(params.beforeId));
+      clauses.push(`(created_at, id) < ($${timeIndex}::timestamptz, $${values.length}::uuid)`);
+    } else {
+      clauses.push(`created_at < $${timeIndex}::timestamptz`);
+    }
   }
-  values.push(integer(Number(params.limit ?? 100), 1, 200));
+  values.push(integer(Number(params.limit ?? 20), 1, 200));
   return ctx.db.query(`SELECT id, project_id, target_key, title, environment, scenario, profile, status, source,
-    created_at, finished_at, error_code, result FROM ${table(ctx)} WHERE ${clauses.join(" AND ")}
+    created_at::text AS created_at, finished_at::text AS finished_at, error_code, result - 'samples' AS result FROM ${table(ctx)} WHERE ${clauses.join(" AND ")}
     ORDER BY created_at DESC, id DESC LIMIT $${values.length}`, values);
 }
 export async function getRun(ctx, companyId, runId) {

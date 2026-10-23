@@ -2,10 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Chart from "./chart.js";
 import { useHostNavigation, usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
 
-type Cohort = { cache: string; score: number; lcp: number; fcp: number; tbt: number; cls: number; bytes: number; requests: number; uiReadyMs: number | null };
-type Run = { id: string; target_key: string; title: string; environment: string; scenario: string; profile: string; status: string; source: string; created_at: string; error_code: string | null;
-  result: null | { buildId: string; lighthouseVersion: string; chromeVersion: string; cohorts: Cohort[]; samples: unknown[] } };
-type Target = { key: string; title: string; projectId: string; environment: string; scenario: string; profile: string; enabled: boolean; intervalMinutes: number };
+import type { Run, Target } from "./contracts.js";
 const statuses: Record<string, string> = { queued: "Na fila", running: "Em execução", passed: "Metas atingidas", regression: "Abaixo da meta", failed: "Coleta inválida" };
 const metrics: Record<string, string> = { score: "Performance · 0–100", lcp: "LCP · ms", fcp: "FCP · ms", tbt: "TBT · ms", cls: "CLS", bytes: "Transferência · bytes", requests: "Requisições", uiReadyMs: "Interface pronta · ms" };
 const css = `
@@ -22,19 +19,35 @@ function number(value: number | undefined | null) {
   return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 }).format(value);
 }
 
+function RunDetails({ companyId, runId }: { companyId: string; runId: string }) {
+ const [open, setOpen] = useState(false);
+ return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary>Ver métricas</summary>{open && <RunBody companyId={companyId} runId={runId}/>}</details>;
+}
+function RunBody({ companyId, runId }: { companyId: string; runId: string }) {
+ const query = usePluginData<Run | null>("run", { companyId, runId });
+ if (query.loading) return <p>Carregando métricas…</p>;
+ if (query.error) return <p role="alert">Falha ao carregar as métricas.</p>;
+ return <pre>{JSON.stringify(query.data, null, 2)}</pre>;
+}
 function Panel({ companyId, projectId }: { companyId: string; projectId?: string }) {
   const [environment, setEnvironment] = useState("");
   const [targetKey, setTargetKey] = useState("");
   const [metric, setMetric] = useState("score");
-  const [before, setBefore] = useState<string | undefined>();
+  const [before, setBefore] = useState<{ at: string; id: string } | undefined>();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const requestKey = useRef<string | null>(null);
-  const list = usePluginData<Run[]>("runs", { companyId, projectId, targetKey, environment, before, limit: 200 });
+  const list = usePluginData<Run[]>("runs", { companyId, projectId, targetKey, environment, before: before?.at, beforeId: before?.id, limit: 200 });
   const catalog = usePluginData<Target[]>("targets", { companyId });
   const request = usePluginAction("request_review");
-  useEffect(() => { const timer = setInterval(() => list.refresh(), 15000); return () => clearInterval(timer); }, [list.refresh]);
   const runs = list.data ?? [];
+  const pending = runs.some((run) => ["queued", "running"].includes(run.status));
+  useEffect(() => {
+    let interval = 60000;
+    if (pending) interval = 15000;
+    const timer = setInterval(() => { if (document.visibilityState === "visible") list.refresh(); }, interval);
+    return () => clearInterval(timer);
+  }, [list.refresh, pending]);
   const filteredTargets = (catalog.data ?? []).filter((t) => !projectId || t.projectId === projectId);
   const valid = runs.filter((r) => r.result);
   const latest = valid[0];
@@ -69,9 +82,9 @@ function Panel({ companyId, projectId }: { companyId: string; projectId?: string
     <div className="po-scroll"><table><thead><tr>{["Quando", "Alvo / ambiente", "Estado", "Frio", "Quente", "LCP frio / quente", "Build", "Detalhes"].map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead><tbody>{runs.map((run) => {
       const cold = run.result?.cohorts.find((c) => c.cache === "cold");
       const warm = run.result?.cohorts.find((c) => c.cache === "warm");
-      return <tr key={run.id}><td>{new Date(run.created_at).toLocaleString("pt-BR")}</td><td>{run.title}<br/><span className="po-small">{run.environment} · {run.scenario} · {run.profile} · {run.source}</span></td><td><span className="po-status" data-status={run.status}>{statuses[run.status] || run.status}</span>{run.error_code && <p><code>{run.error_code}</code></p>}</td><td>{number(cold?.score)}</td><td>{number(warm?.score)}</td><td>{number(cold?.lcp)} / {number(warm?.lcp)} ms</td><td><code>{run.result?.buildId || "—"}</code></td><td><details><summary>Ver métricas</summary><pre>{JSON.stringify({ id: run.id, ...run.result }, null, 2)}</pre></details></td></tr>;
+      return <tr key={run.id}><td>{new Date(run.created_at).toLocaleString("pt-BR")}</td><td>{run.title}<br/><span className="po-small">{run.environment} · {run.scenario} · {run.profile} · {run.source}</span></td><td><span className="po-status" data-status={run.status}>{statuses[run.status] || run.status}</span>{run.error_code && <p><code>{run.error_code}</code></p>}</td><td>{number(cold?.score)}</td><td>{number(warm?.score)}</td><td>{number(cold?.lcp)} / {number(warm?.lcp)} ms</td><td><code>{run.result?.buildId || "—"}</code></td><td><RunDetails companyId={companyId} runId={run.id}/></td></tr>;
     })}</tbody></table></div>
-    <div className="po-tools" style={{ marginTop: 16 }}>{before && <button type="button" onClick={() => setBefore(undefined)}>Mais recentes</button>}{runs.length === 200 && <button type="button" onClick={() => setBefore(String(runs[runs.length - 1].created_at))}>Mais antigas</button>}</div></section>
+    <div className="po-tools" style={{ marginTop: 16 }}>{before && <button type="button" onClick={() => setBefore(undefined)}>Mais recentes</button>}{runs.length === 200 && <button type="button" onClick={() => setBefore({ at: String(runs[runs.length - 1].created_at), id: runs[runs.length - 1].id })}>Mais antigas</button>}</div></section>
     <section className="po-panel"><h2>Agendamento e comandos</h2>{filteredTargets.length === 0 && <p>Adicione os alvos nas configurações deste plugin para habilitar revisões.</p>}{filteredTargets.map((t) => <p key={t.key}><strong>{t.title}</strong> · {t.environment} · {t.enabled ? `a cada ${t.intervalMinutes} min` : "somente sob demanda"} · <code>{t.key}</code></p>)}<p>Agentes: <code>list_targets</code>, <code>request_review</code>, <code>list_runs</code>, <code>get_run</code>. API externa autenticada: <code>/api/plugins/journey-studios.performance-observatory/api</code>.</p>{latest && <p>Última coleta válida: Lighthouse {latest.result?.lighthouseVersion} · {latest.result?.chromeVersion}. Todos os dados permanecem privados.</p>}</section>
   </div>;
 }

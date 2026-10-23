@@ -12,7 +12,7 @@ is valid evidence; an invalid or incomplete collection never becomes a favorable
 ## Commands for agents and external clients
 
 Native tools: `request_review({targetKey,requestKey})`, `list_targets({})`,
-`list_runs({targetKey?,environment?,limit?})`, `get_run({runId})`.
+`list_runs({targetKey?,environment?,limit?,before?,beforeId?})`, `get_run({runId})`.
 The host derives company identity from the agent execution, never the tool payload.
 Use a stable request key when retrying a submission: the same target and key returns the same run.
 
@@ -26,7 +26,8 @@ GET  /api/plugins/journey-studios.performance-observatory/api/runs?companyId=COM
 GET  /api/plugins/journey-studios.performance-observatory/api/runs/RUN_ID?companyId=COMPANY
 ```
 
-`list_runs` returns status and cold/warm metrics. `get_run` includes every sanitized sample. The
+`list_runs` returns status and cold/warm metrics (default 20, at most 200 per page).
+Pass the last row's `created_at` and `id` as `before` and `beforeId` to continue through all history. `get_run` includes every sanitized sample. The
 external Paperclip connector can call these routes with `paperclipApiRequest` too.
 
 The packaged CLI reads `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` and `PAPERCLIP_COMPANY_ID` from the
@@ -35,7 +36,7 @@ environment. Supply secrets through an existing secret manager; never put a key 
 ```
 performance targets
 performance review prod-chat-reload
-performance runs prod-chat-reload
+performance runs prod-chat-reload --limit 20
 performance show RUN_ID
 ```
 

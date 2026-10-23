@@ -24,6 +24,7 @@ const plugin = definePlugin({
       try { await reconcile(ctx); } finally { ticking = false; }
     });
     ctx.data.register("runs", (params) => operations(ctx, uuid(params.companyId)).list(params));
+    ctx.data.register("run", (params) => operations(ctx, uuid(params.companyId)).get(params));
     ctx.data.register("targets", (params) => operations(ctx, uuid(params.companyId)).targets());
     ctx.actions.register("request_review", (params, context) => operations(ctx, uuid(context.companyId)).request(params, "manual"));
     for (const declaration of TOOLS) {

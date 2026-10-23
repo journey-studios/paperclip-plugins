@@ -27,11 +27,7 @@ function loadCharts(): Promise<EChartsModule> {
  return pending;
 }
 
-type Cohort = { cache: string; score: number; lcp: number; fcp: number; tbt: number; cls: number; bytes: number; requests: number; uiReadyMs: number | null };
-type Run = { id: string; target_key: string; title: string; environment: string; scenario: string; profile: string; status: string; source: string; created_at: string; error_code: string | null;
-  result: null | { buildId: string; lighthouseVersion: string; chromeVersion: string; cohorts: Cohort[]; samples: unknown[] } };
-type Target = { key: string; title: string; projectId: string; environment: string; scenario: string; profile: string; enabled: boolean; intervalMinutes: number };
-
+import type { Run } from "./contracts.js";
 const metrics: Record<string,string> = { score: "Performance · 0–100", lcp: "LCP · ms", fcp: "FCP · ms", tbt: "TBT · ms", cls: "CLS", bytes: "Transferência · bytes", requests: "Requisições", uiReadyMs: "Interface pronta · ms" };
 function chartOptions(runs: Run[], metric: string) {
   const groups = new Map<string, [number, number | null][]>();

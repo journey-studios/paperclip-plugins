@@ -30,5 +30,14 @@ test("migration, idempotent queue and company-filtered history use real PostgreS
     await assert.rejects(enqueue(ctx, companyId, "unknown", "command", "another-key"), /TARGET_NOT_FOUND/);
     assert.equal((await listRuns(ctx, companyId, { environment: "staging" })).length, 0);
     assert.equal((await listRuns(ctx, companyId, { targetKey: "' OR true --" })).length, 0);
+    await enqueue(ctx, companyId, "chat", "command", "second-page-key");
+    await db.query(`UPDATE ${ns}.runs SET created_at = $1::timestamptz WHERE company_id = $2`, ["2026-10-23 12:00:00.123456+00", companyId]);
+    const page1 = await listRuns(ctx, companyId, { limit: 1 });
+    const page2 = await listRuns(ctx, companyId, { limit: 1, before: page1[0].created_at, beforeId: page1[0].id });
+    assert.equal(page2.length, 1);
+    assert.notEqual(page1[0].id, page2[0].id);
+    assert.match(page1[0].created_at, /123456/);
+    assert.equal((await listRuns(ctx, companyId, { before: page2[0].created_at, beforeId: page2[0].id })).length, 0);
+
   } finally { await db.close(); }
 });

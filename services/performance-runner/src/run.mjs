@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { targetOf, validateResult } from "../../../plugins/performance-observatory/src/contract.js";
 import { sampleOf } from "./metrics.mjs";
+import session from "./session.cjs";
 const exec = promisify(execFile);
 process.umask(0o077);
 const base = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,7 @@ async function anchor(target) {
   if (target.authProfile !== "public") {
     const { cookies = [] } = JSON.parse(await fs.readFile("/auth/storage-state.json", "utf8"));
     const hostname = new URL(target.url).hostname;
-    const cookie = cookies.filter((c) => hostname === c.domain.replace(/^\./, "") || (c.domain.startsWith(".") && hostname.endsWith(c.domain)))
+    const cookie = session.cookiesForHost(cookies, hostname)
       .map((c) => `${c.name}=${c.value}`).join("; ");
     headers = { ...headers, cookie };
   }
@@ -62,6 +63,7 @@ async function main() {
       await fs.mkdir(cwd, { mode: 0o700 });
       // LHCI 0.15 joins this path to the collection CWD, including absolute paths.
       await fs.copyFile(path.join(base, "prepare.cjs"), path.join(cwd, "prepare.cjs"));
+      await fs.copyFile(path.join(base, "session.cjs"), path.join(cwd, "session.cjs"));
       const proofFile = path.join(cwd, "proof.json");
       const inputFile = path.join(cwd, "input.json");
       await fs.writeFile(inputFile, JSON.stringify({ target, cache, proofFile }), { mode: 0o600 });
