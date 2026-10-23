@@ -2,6 +2,7 @@ import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { validateConfig } from "./config.js";
 import { handleIssueUpdated } from "./publisher.js";
 import { handleVerdictComment, retryFailedVerdicts } from "./verdict-publisher.js";
+import { runRepairs } from "./verdict-repair.js";
 
 const companyLocks = new Map();
 
@@ -49,6 +50,10 @@ const plugin = definePlugin({
     ctx.jobs.register("retry-failed", async () => {
       const results = await retryFailedVerdicts(ctx);
       if (results.length) ctx.logger.info("github-pr-review-sync: retried failed verdicts", { count: results.length });
+    });
+    ctx.jobs.register("repair-rejected", async () => {
+      const results = await runRepairs(ctx);
+      if (results.length) ctx.logger.info("github-pr-review-sync: verdict repairs", { results });
     });
     ctx.logger.info("github-pr-review-sync: worker ready");
   },

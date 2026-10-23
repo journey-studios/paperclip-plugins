@@ -2,6 +2,7 @@ import { companyPublicOrigin, resolveReviewBotToken } from "./config.js";
 import { fetchAuthenticatedLogin, fetchPull, publicationMarker, submitFormalReview } from "./github-api.js";
 import { getReceipt, listRetryableReceipts, upsertReceipt } from "./receipt-store.js";
 import { buildReceiptKey, parsePullReference } from "./review-sync-core.js";
+import { MAX_REPAIRS, requestRepair } from "./verdict-repair.js";
 import {
   INTAKE_ORIGIN_KIND,
   buildVerdictBody,
@@ -22,6 +23,7 @@ const defaultDeps = {
   getReceipt,
   upsertReceipt,
   listRetryableReceipts,
+  requestRepair,
 };
 
 const message = (error) => (error instanceof Error ? error.message : String(error));
@@ -35,6 +37,13 @@ async function note(ctx, issue, text) {
       error: message(error),
     });
   }
+}
+
+function rejectionNote(error, repair) {
+  const base = `The verdict block was rejected (${error}).`;
+  if (repair.queued) return `${base} The reviewer will be asked to post a corrected block.`;
+  if (repair.reason === "limit_reached") return `${base} The reviewer was already asked ${MAX_REPAIRS} times to correct it; review this pull request by hand.`;
+  return `${base} Post one valid block to publish the review.`;
 }
 
 /**
@@ -57,8 +66,9 @@ export async function processVerdictComment(ctx, { companyId, issueId, commentId
   const parsed = parseVerdict(comment.body);
   if (!parsed.ok) {
     if (parsed.error === "no_verdict") return { skipped: "no_verdict" };
-    await note(ctx, issue, `The verdict block was rejected (${parsed.error}). Post one valid block to publish the review.`);
-    return { rejected: parsed.error };
+    const repair = await deps.requestRepair(ctx, { companyId, issueId, commentId, error: parsed.error });
+    await note(ctx, issue, rejectionNote(parsed.error, repair));
+    return { rejected: parsed.error, repair: repair.queued };
   }
   const { verdict } = parsed;
 
