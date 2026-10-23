@@ -1,0 +1,11 @@
+**
+!services
+!services/performance-runner
+!services/performance-runner/package.json
+!services/performance-runner/pnpm-lock.yaml
+!services/performance-runner/src
+!services/performance-runner/src/**
+!plugins
+!plugins/performance-observatory
+!plugins/performance-observatory/src
+!plugins/performance-observatory/src/contract.js
