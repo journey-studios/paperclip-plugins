@@ -1,10 +1,11 @@
 # PR review benchmark
 
 Measure changes to the review system against frozen pull requests, repeated runs and an auditable reference set.
-The first delivery is an **offline measurement foundation**: corpus, experiment planner, output adapters, scorer
-and comparison. It does not invoke a model, create Paperclip tasks or publish GitHub comments. Live execution
-adapters and the first measured comparison are still required. Passing the tests here proves the measurement
-code, not an improvement to the reviewer.
+The tools include frozen corpus preparation, a paired experiment planner, isolated PR-Agent/OpenCode replay,
+ReviewBench judging integration, scoring and comparison. A separate canary exercises the real engines with a
+fake model. Neither passing tests nor passing that canary proves an improvement to the reviewer. The first
+paid comparison still requires fixed models, treatment configurations and a budget. See [REPLAY.md](REPLAY.md)
+for executable preparation, freezing, canary, review and judging instructions.
 
 ## Corpus and reference labels
 
@@ -76,10 +77,12 @@ The quoted multi-model method is useful for bootstrapping labels, with additiona
 4. Ask for human attention only on disagreements, consequential security claims and a small random audit sample.
    A new valid finding enters the **next** reference revision; the current comparison retains one fixed denominator.
 
-The benchmark does not currently generate or adjudicate these labels. Its scoring contract accepts the reviewed
-judgments. This avoids pretending an exact-text or line-distance heuristic measures semantic correctness.
+The benchmark does not currently generate reference labels for private PRs. Its scoring contract accepts
+evidence-backed judgments. This avoids pretending an exact-text or line-distance heuristic measures semantic correctness.
 [ReviewBench's judge](https://github.com/review-bench/ReviewBench/blob/main/docs/JUDGING.md) can match findings and
-validate new issues; importing that tool's detailed judgments into this local contract is a remaining adapter.
+validate new issues. The importer preserves its detailed judgments; `prepare-judge` adds export of the existing
+classifier rationale without changing prompts or judgments. Missing evidence and ambiguous many-to-many
+matches stay unresolved instead of inflating recall or becoming automatically false positives.
 Judge calls have their own cost and must be budgeted separately from reference generation and reviewer calls.
 
 ## Scoring contract
@@ -126,7 +129,7 @@ The paired delta uses macro recall. Bootstrap resamples PRs after averaging thei
 samples. Fixture trials cannot establish reviewer quality. An improvement in quality is not automatically an
 improvement in cost or speed: inspect the accompanying measurements and the cost basis.
 
-## Commands (Node 24.11+, no dependencies for the offline tools)
+## Commands (Node 24.11+, Python 3 for gateway tests, Docker for replay)
 
 ```sh
 pnpm test:review-bench
@@ -157,7 +160,9 @@ or hosted connectors. A fresh container with a model-host-only network is the in
 The deployed triage service currently reads the live PR and default-branch rules: calling it on a historical
 PR number is **not** a frozen baseline. A replay adapter must supply the pinned patches/rules to the same
 reviewer engine first. Likewise, Thermo replay must retain its real instructions/tools while replacing
-publication with a local output file. Neither live adapter is implemented by these offline tools.
+publication with a local output file. The replay adapters implement these operational changes; measure their
+latency separately from production queueing, publication and warm sessions. Read-only tools and a model-only
+network are fixed replay conditions, rather than claims of exact production environment parity.
 
 ## Validation and first measured run
 
@@ -166,10 +171,12 @@ inputs, reference provenance, schedule pairing, missing trials, wrong commits, m
 usage, fixture leakage into claims, adapter failures and the real corpus schedule. A synthetic comparison can
 validate the machinery; it is never a model leaderboard or evidence that a change helped.
 
-Before the first paid run: implement the two replay adapters, pin their effective models/configs, select the
-judge and set separate ceilings for reference generation, reviewing and judging. Start with one PR through
+Before the first paid run: pin effective models/configs, select the judge and set separate ceilings for reference
+generation, reviewing and judging. The adapters enforce call/token bounds; dollar ceilings require known pricing
+and billing reconciliation. Start with one PR through
 every treatment, verify isolation/coverage/usage, then execute the development pilot. Expand and freeze the
-holdout after choosing one candidate. Model calls have not been run as part of preparing this foundation.
+holdout after choosing one candidate. The fixture canary uses the actual engines with a deterministic fake backend;
+it performs no provider inference and cannot establish a quality improvement.
 
 References: [ReviewBench](https://github.com/review-bench/ReviewBench),
 [offline evaluation limits](https://github.com/review-bench/ReviewBench/blob/main/docs/OFFLINE_EVAL.md),

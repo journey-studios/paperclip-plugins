@@ -20,3 +20,4 @@ secrets/
 .native-test-output/
 .pnpm-store/
 .review-bench/
+__pycache__/

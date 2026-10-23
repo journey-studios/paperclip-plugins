@@ -65,7 +65,11 @@ export function buildPlan(study, corpus) {
     repositorySplits.set(item.repo, item.split);
   }
   requireValue(["development", "holdout"].includes(study.split), "Select development or holdout explicitly");
-  const selected = corpus.cases.filter((item) => item.split === study.split);
+  if (study.caseIds !== undefined) {
+    requireValue(Array.isArray(study.caseIds) && study.caseIds.length > 0 && new Set(study.caseIds).size === study.caseIds.length, "Invalid canary case selection");
+    requireValue(study.caseIds.every((id) => corpus.cases.some((item) => item.id === id && item.split === study.split)), "Canary cases must belong to the selected split");
+  }
+  const selected = corpus.cases.filter((item) => item.split === study.split && (!study.caseIds || study.caseIds.includes(item.id)));
   requireValue(selected.length > 0, "Selected split is empty");
   const jobs = [];
   const random = randomFor(study.seed);
