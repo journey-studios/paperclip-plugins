@@ -92,7 +92,15 @@ export function validateResult(value, target) {
     if (cache === "warm") goal = 94;
     return { cache, count: 3, goal, goalPassed: means.score > goal, ...means };
   });
-  return { schema: report.schema, lighthouseVersion: report.lighthouseVersion, chromeVersion: report.chromeVersion.slice(0, 100),
+  let execution = null;
+  if (report.execution && typeof report.execution.image === "string" && /^sha256:[a-f0-9]{64}$/.test(report.execution.image)) {
+    const source = report.execution;
+    execution = { image: source.image };
+    for (const key of ["cpuLimit", "memoryLimitMiB", "hostLoadBefore", "hostLoadAfter", "durationMs"]) {
+      if (Number.isFinite(source[key]) && source[key] >= 0) execution[key] = source[key];
+    }
+  }
+  return { schema: report.schema, lighthouseVersion: report.lighthouseVersion, chromeVersion: report.chromeVersion.slice(0, 100), execution,
     buildId: samples[0].buildId, samples, cohorts, gatePassed: cohorts.every((c) => c.goalPassed),
     collector: "lhci-standalone", readinessScope: "audited-navigation-dom", noSessionControlPassed: report.noSessionControlPassed === true };
 }

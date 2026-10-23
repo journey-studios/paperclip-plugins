@@ -13,7 +13,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test test/*.spec.mjs",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "typecheck": "pnpm type-check"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",

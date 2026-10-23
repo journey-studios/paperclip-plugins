@@ -71,7 +71,8 @@ def run_one(folder, state):
             started = subprocess.run(args, capture_output=True, timeout=45)
             if started.returncode:
                 raise ValueError("EXECUTOR_START_FAILED")
-            state.update(status="running", startedAt=time.time())
+            state.update(status="running", startedAt=time.time(), executorImage=IMAGE,
+                         hostLoadBefore=os.getloadavg()[0])
             write(folder / "state.json", state)
         try:
             subprocess.run(["docker", "wait", name], capture_output=True, timeout=1500)
@@ -83,6 +84,11 @@ def run_one(folder, state):
         result = read(result_file)
         if result.get("ok") is not True:
             raise ValueError(result.get("errorCode", "COLLECTION_FAILED"))
+        result["result"]["execution"] = {
+            "image": state.get("executorImage"), "cpuLimit": 2, "memoryLimitMiB": 3072,
+            "hostLoadBefore": state.get("hostLoadBefore"), "hostLoadAfter": os.getloadavg()[0],
+            "durationMs": (time.time() - state["startedAt"]) * 1000,
+        }
         state.update(status="completed", result=result["result"], finishedAt=time.time())
     except Exception as error:
         code = str(error)
