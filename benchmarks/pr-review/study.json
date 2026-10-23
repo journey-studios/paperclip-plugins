@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "review-pilot-v1",
+  "seed": "journey-review-pilot-v1",
+  "repetitions": 3,
+  "split": "development",
+  "layers": ["triage", "thermo"],
+  "baseline": "baseline",
+  "primaryCandidate": "candidate-a",
+  "policy": { "minRecallGain": 0.05, "precisionMargin": 0.02 },
+  "treatments": [
+    { "id": "baseline", "description": "Snapshot of the deployed reviewer; record its exact revision and resolved model" },
+    { "id": "candidate-a", "description": "One proposed change; set its hypothesis and pins before collecting results" },
+    { "id": "candidate-b", "description": "One alternative; development-only exploration until preselected for a new holdout" }
+  ]
+}

@@ -19,3 +19,4 @@ secrets/
 
 .native-test-output/
 .pnpm-store/
+.review-bench/
