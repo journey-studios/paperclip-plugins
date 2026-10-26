@@ -14,7 +14,7 @@ The tool receives identifiers, text, evidence and media URLs. OAuth tokens are e
 
 Draft input: `text`, `platforms` (`instagram`, `facebook_page`, `threads`, `x`), optional explicit `targets: [{platform, accountId}]`, per-platform customizations, `mediaUrls`, `linkUrl`, `campaign`, `idempotencyKey`, `dryRun` and `metadata.factualEvidence: [{claim, sourceUrl, releaseStatus: "released"}]`. Product evidence must be an allowed Tessel source; a human checks the claims before approval. Autonomous campaigns additionally require operator-approved hashes of complete evidence records in `verifiedEvidenceHashes`.
 
-Images are produced by the existing Visual Production Specialist and hosted on operator-approved HTTPS media hosts. The publisher validates and uploads those assets; it does not introduce another image-generation provider or invent product screenshots. Public media hosts require `mediaAllowedHosts`; downloads use bounded binary HTTPS with pinned public DNS, no redirects and no internal IPs.
+Images must be produced by the existing Visual Production Specialist and hosted on operator-approved HTTPS media hosts. Image generation and hosting require their own verified agent tools and credentials. The publisher validates and uploads those assets; it does not introduce another image-generation provider or invent product screenshots. Instagram images require JPEG, at most 8 MiB and aspect ratio 0.8–1.91; publication inspects the MIME type and size, while dimensions remain explicitly unverified locally. Public media hosts require `mediaAllowedHosts`; downloads use bounded binary HTTPS with pinned public DNS, no redirects and no internal IPs.
 
 ## Telegram and scheduling
 
@@ -26,7 +26,7 @@ Idempotency, destination-content claims, version hashes, atomic execution claims
 
 ## OAuth setup
 
-Install the reviewed bundle first, then call authenticated `GET /api/plugins/journey-studios.social-publisher/api/status?companyId=COMPANY_UUID`. Register only the exact `oauth[].callbackUrl` returned by that running deployment. Each callback includes the company query parameter and requires the initiating human's authenticated Paperclip browser session. An unauthenticated 401 is expected; a public 404 is not proof of a callback.
+Install the reviewed bundle first, then call authenticated `GET /api/plugins/journey-studios.social-publisher/api/status?companyId=COMPANY_UUID`. Register only the exact `oauth[].callbackUrl` returned by that running deployment. Each callback includes the company query parameter and requires the initiating human's authenticated Paperclip browser session. An unauthenticated 401/403 is expected; the authenticated handler must also be verified, and a public 404 is not proof of a callback.
 
 One Meta Developer App is named **Tessel Social Publisher**. Enable Instagram, Facebook Pages and Threads only if that combination is supported by the actual console. If Meta disallows it, record the restriction before proposing another app. Product-specific Instagram/Threads IDs and secrets may differ from the central app.
 

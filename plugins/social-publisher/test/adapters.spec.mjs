@@ -75,6 +75,92 @@ test("Instagram rejects text-only, excessive hashtags, and a caption over its li
   assert.equal(adapter.validate({ text: "Hello #tessel", mediaUrls: [image] }).valid, true);
 });
 
+test("Instagram rejects known incompatible image formats and preserves JPEG support", () => {
+  const adapter = new InstagramAdapter();
+  for (const url of [
+    "https://cdn.tessel.app/logo-light.png",
+    "https://cdn.tessel.app/logo.PNG?version=2",
+    "https://cdn.tessel.app/logo.webp",
+    "https://cdn.tessel.app/logo.avif",
+  ]) {
+    const validation = adapter.validate({ text: "Image preview", mediaUrls: [url] });
+    assert.equal(validation.valid, false);
+    assert.ok(validation.errors.some((error) => error.includes("requires JPEG")));
+  }
+  for (const url of [image, "https://cdn.tessel.app/photo.JPEG?version=2"]) {
+    assert.equal(adapter.validate({ text: "Image preview", mediaUrls: [url] }).valid, true);
+  }
+  assert.equal(
+    adapter.validate({ text: "Image preview", mediaUrls: [image], mediaMimeTypes: ["image/png"] }).valid,
+    false,
+  );
+});
+
+test("Instagram rejects a PNG before media or provider requests", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => new InstagramAdapter().publish({
+      ...context("instagram", { text: "Preview", mediaUrls: ["https://cdn.tessel.app/logo-light.png"] }),
+      mediaFetch: async () => { calls++; },
+      fetchImpl: async () => { calls++; },
+    }),
+    (error) => error.code === "instagram_content_invalid",
+  );
+  assert.equal(calls, 0);
+});
+
+test("Instagram requires MIME inspection for extensionless media and reports unverified dimensions", async () => {
+  const options = context("instagram", { text: "Preview", mediaUrls: ["https://cdn.tessel.app/media/123"] });
+  const adapter = new InstagramAdapter();
+  const validation = adapter.validate(options.content);
+  assert.equal(validation.valid, true);
+  assert.ok(validation.warnings.some((warning) => warning.includes("unverified MIME")));
+  assert.deepEqual(validation.mediaRequirements, {
+    imageMimeType: "image/jpeg", maxImageBytes: 8 * 1024 * 1024,
+    minAspectRatio: 0.8, maxAspectRatio: 1.91, dimensionsVerified: false,
+  });
+  let providerCalls = 0;
+  await assert.rejects(
+    () => adapter.publish({ ...options, fetchImpl: async () => { providerCalls++; } }),
+    (error) => error.code === "instagram_image_mime_unverified",
+  );
+  await assert.rejects(
+    () => adapter.publish({ ...options, mediaFetch: async () => new Response("png", { headers: { "content-type": "image/png" } }), fetchImpl: async () => { providerCalls++; } }),
+    (error) => error.code === "instagram_image_requires_jpeg",
+  );
+  assert.equal(providerCalls, 0);
+});
+
+test("Instagram confirms JPEG MIME and the actual size through the existing media transport", async () => {
+  const options = context("instagram", { text: "JPEG", mediaUrls: ["https://cdn.tessel.app/media/123"] });
+  let mediaReads = 0;
+  const receipt = await new InstagramAdapter().publish({
+    ...options,
+    mediaFetch: async () => {
+      mediaReads++;
+      return new Response(new Uint8Array([255, 216, 255, 217]), { headers: { "content-type": "image/jpeg" } });
+    },
+    fetchImpl: async (url) => {
+      if (url.endsWith("/media")) return json({ id: "container-1" });
+      if (url.includes("status_code")) return json({ status_code: "FINISHED" });
+      if (url.endsWith("/media_publish")) return json({ id: "post-1" });
+      return json({ permalink: "https://www.instagram.com/p/actual-code/" });
+    },
+  });
+  assert.equal(mediaReads, 1);
+  assert.equal(receipt.platformPostId, "post-1");
+  let providerCalls = 0;
+  await assert.rejects(
+    () => new InstagramAdapter().publish({
+      ...options,
+      mediaFetch: async () => new Response(new Uint8Array(8 * 1024 * 1024 + 1), { headers: { "content-type": "image/jpeg" } }),
+      fetchImpl: async () => { providerCalls++; },
+    }),
+    (error) => error.code === "instagram_image_too_large",
+  );
+  assert.equal(providerCalls, 0);
+});
+
 test("media publishing refuses missing or wildcard host allowlists before any request", async () => {
   const adapter = new InstagramAdapter();
   for (const allowed of [[], ["*.tessel.app"], ["other.tessel.app"]]) {
