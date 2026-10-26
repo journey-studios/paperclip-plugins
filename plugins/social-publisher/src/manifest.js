@@ -16,6 +16,7 @@ const secret = object(
 );
 const platform = { type: "string", enum: ["instagram", "facebook_page", "threads", "x"] };
 const mediaUrls = { type: "array", items: { type: "string", format: "uri" }, maxItems: 10 };
+const mediaRefs = { type: "array", items: object({ id: uuid }, ["id"]), maxItems: 10 };
 const platforms = { type: "array", items: platform, minItems: 1, maxItems: 4, uniqueItems: true };
 const draft = {
   idempotencyKey: { type: "string", minLength: 1, maxLength: 160 },
@@ -33,11 +34,13 @@ const draft = {
     additionalProperties: object({
       text,
       mediaUrls,
+      mediaRefs,
       linkUrl: { type: "string", format: "uri" },
       mediaTypes: { type: "array", items: { type: "string", enum: ["image", "video"] } },
     }),
   },
   mediaUrls,
+  mediaRefs,
   linkUrl: { type: "string", format: "uri" },
   dryRun: { type: "boolean", default: true },
   metadata: { type: "object", additionalProperties: true },
@@ -150,6 +153,14 @@ const route = (routeKey, method, path, auth = "board") => ({
   companyResolution: { from: "query", key: "companyId" },
 });
 const config = {
+  mediaStorage: object({
+    provider: { type: "string", enum: ["backblaze", "aws", "r2", "s3"] },
+    endpoint: { type: "string", format: "uri" }, region: text, bucket: text, prefix: text,
+    forcePathStyle: { type: "boolean" },
+    urlTtlSeconds: { type: "integer", minimum: 60, maximum: 900, default: 300 },
+    maxUploadBytes: { type: "integer", minimum: 1, maximum: 67108864 },
+    accessKeyIdRef: secret, secretAccessKeyRef: secret, sessionTokenRef: secret,
+  }, ["provider", "region", "bucket", "accessKeyIdRef", "secretAccessKeyRef"]),
   requestMetricsPermissions: { type: "boolean", default: false },
   metricsCacheTtlSeconds: { type: "integer", minimum: 300, maximum: 86400, default: 3600 },
   xMetricsReadCostCents: { type: "integer", minimum: 0 },
@@ -182,6 +193,7 @@ const config = {
     items: { type: "string", pattern: "^[a-z0-9][a-z0-9.-]+$" },
     maxItems: 20,
   },
+  maxMediaBytes: { type: "integer", minimum: 1, maximum: 26214400 },
   approvalTtlSeconds: { type: "integer", minimum: 60, maximum: 86400, default: 86400 },
   maxAttempts: { type: "integer", minimum: 1, maximum: 5, default: 3 },
   telegramNotificationsEnabled: { type: "boolean", default: true },
@@ -196,7 +208,7 @@ const config = {
 export default {
   id: "journey-studios.social-publisher",
   apiVersion: 1,
-  version: "0.2.3",
+  version: "0.2.4",
   displayName: "Tessel Social Publisher",
   description:
     "OAuth independente por produto, publicação governada, aprovação Telegram nativa, agendamento durável e recibos reais.",
@@ -223,8 +235,10 @@ export default {
     "issue.interactions.read",
     "issue.comments.create",
     "chat.publications.publish_existing_comment",
+    "ui.page.register",
   ],
-  entrypoints: { worker: "./dist/worker.js" },
+  entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
+  ui: { slots: [{ type: "page", id: "social-media-preview", displayName: "Prévia da imagem", exportName: "SocialMediaPreviewPage", routePath: "social-media-preview" }] },
   database: {
     namespaceSlug: "social_publisher",
     migrationsDir: "migrations",
@@ -240,6 +254,9 @@ export default {
   instanceConfigSchema: object(config),
   tools: ALL_TOOLS,
   apiRoutes: [
+    route("media-enroll", "POST", "/media/enroll"),
+    route("media-list", "GET", "/media"),
+    route("media-preview", "GET", "/media/:mediaId/preview"),
     route("status", "GET", "/status"),
     route("accounts-list", "GET", "/accounts"),
     route("account-update", "PATCH", "/accounts/:accountId"),

@@ -1,3 +1,5 @@
+import { normalizeConfig as normalizeMediaStorage } from "../../s3-storage/src/config.js";
+
 export class ConfigError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -55,6 +57,14 @@ export function parseConfig(rawConfig = {}) {
   }
   const graphApiVersion = rawConfig.graphApiVersion || "v25.0";
   if (!/^v[2-9][0-9]\.0$/.test(graphApiVersion)) throw new ConfigError("Invalid graphApiVersion");
+  if (rawConfig.mediaStorage !== undefined) {
+    try {
+      const storage = normalizeMediaStorage(rawConfig.mediaStorage);
+      if (!storage.configured) throw new Error("not configured");
+    } catch {
+      throw new ConfigError("mediaStorage must contain the existing S3 configuration and secret references");
+    }
+  }
   return {
     ...rawConfig,
     killSwitch: rawConfig.killSwitch !== false,

@@ -6,6 +6,7 @@ import { updateAccount, appendAuditLog } from "./catalog.js";
 import { reconcileTelegramApprovals } from "./telegram-sync.js";
 import { runEditorial } from "./editorial.js";
 import { collectPostMetrics } from "./metrics.js";
+import { enrollMedia, listEnrolledMedia, getMediaPreview } from "./media.js";
 
 const canonicalTool = (name) =>
   ({
@@ -116,6 +117,9 @@ const plugin = {
       founder(actor, config);
       return await serial(companyId, async () => {
         let data;
+        if (routeKey === "media-enroll") data = await enrollMedia(active, companyId, input.body, actor, config);
+        if (routeKey === "media-list") data = await listEnrolledMedia(active, companyId);
+        if (routeKey === "media-preview") data = await getMediaPreview(active, companyId, input.params.mediaId, actor, config);
         if (routeKey === "status")
           data = {
             companyId,

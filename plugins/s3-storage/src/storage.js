@@ -285,6 +285,82 @@ export async function signDownload(ctx, companyId, config, row) {
   });
 }
 
+/** Verify a finalized, content-addressed JPEG before a founder delegates it to social publishing. */
+export async function verifyFinalizedSocialImage(ctx, companyId, config, row) {
+  return withS3(ctx, companyId, config, async (client) => {
+    const abortSignal = AbortSignal.timeout(20_000);
+    const target = {
+      Bucket: row.bucket,
+      Key: row.objectKey,
+      ...(row.physicalVersionId ? { VersionId: row.physicalVersionId } : {}),
+    };
+    const head = await client.send(new HeadObjectCommand(target), { abortSignal });
+    if (Number(head.ContentLength) !== row.size || !head.ETag ||
+        head.ContentType?.split(";")[0].toLowerCase() !== "image/jpeg" ||
+        head.Metadata?.sha256 !== row.sha256 || head.Metadata?.objectid !== row.objectId) {
+      throw new StorageError("social_media_not_finalized", 422);
+    }
+    const response = await client.send(new GetObjectCommand({
+      ...target, IfMatch: head.ETag,
+      ...(head.VersionId ? { VersionId: head.VersionId } : {}),
+    }), { abortSignal });
+    const chunks = [];
+    const digest = createHash("sha256");
+    let size = 0;
+    try {
+      if (!response.Body || typeof response.Body[Symbol.asyncIterator] !== "function")
+        throw new StorageError("social_media_read_failed", 502);
+      for await (const part of response.Body) {
+        const bytes = Buffer.from(part);
+        size += bytes.length;
+        if (size > row.size || size > 8 * 1024 * 1024)
+          throw new StorageError("social_media_size_mismatch", 422);
+        digest.update(bytes);
+        chunks.push(bytes);
+      }
+    } finally {
+      response.Body?.destroy?.();
+    }
+    if (size !== row.size || digest.digest("hex") !== row.sha256)
+      throw new StorageError("social_media_digest_mismatch", 422);
+    const bytes = Buffer.concat(chunks);
+    const dimensions = socialJpegDimensions(bytes);
+    if (!dimensions || dimensions.width < 320 || dimensions.width > 1440 ||
+        dimensions.width / dimensions.height < 0.8 || dimensions.width / dimensions.height > 1.91)
+      throw new StorageError("social_media_jpeg_dimensions_invalid", 422);
+    return {
+      ...dimensions,
+      physicalVersionId: head.VersionId ?? row.physicalVersionId ?? null,
+      etag: head.ETag,
+    };
+  });
+}
+
+/** Parse bounded JPEG frame dimensions; MIME and extension alone cannot authorize private documents. */
+function socialJpegDimensions(bytes) {
+  if (bytes.length < 12 || bytes[0] !== 0xff || bytes[1] !== 0xd8 ||
+      bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) return null;
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset++] !== 0xff) return null;
+    while (bytes[offset] === 0xff) offset++;
+    const marker = bytes[offset++];
+    if (marker === 0xd9 || marker === 0xda) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) return null;
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || offset + length > bytes.length) return null;
+    if ([0xc0, 0xc1, 0xc2].includes(marker)) {
+      if (length < 8) return null;
+      return { height: bytes.readUInt16BE(offset + 3), width: bytes.readUInt16BE(offset + 5) };
+    }
+    offset += length;
+  }
+  return null;
+}
+
+export { socialJpegDimensions as jpegDimensions };
+
 /** Clean only the recorded temporary staging object; callers retain a lifecycle fallback. */
 export async function removeStagingObject(ctx, companyId, config, row) {
   await withS3(ctx, companyId, config, (client) =>

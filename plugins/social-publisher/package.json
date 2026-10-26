@@ -1,6 +1,6 @@
 {
   "name": "@journey-studios/paperclip-social-publisher",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": false,
   "type": "module",
   "engines": {
@@ -11,6 +11,7 @@
   "files": [
     "dist",
     "migrations",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -21,7 +22,8 @@
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",

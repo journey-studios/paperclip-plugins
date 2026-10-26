@@ -58,6 +58,8 @@ export function publicHttpsUrl(value) {
 
 export function mediaItems(content = {}) {
   const urls = Array.isArray(content.mediaUrls) ? content.mediaUrls : [];
+  if (!urls.length && Array.isArray(content.mediaRefs))
+    return content.mediaRefs.map((ref) => ({ url: null, kind: "image", altText: null, ref }));
   return urls.map((url, index) => {
     const declared = content.mediaTypes?.[index] || content.mediaMimeTypes?.[index];
     let kind = "image";
@@ -85,7 +87,7 @@ export function validateBase(content = {}, { maxChars, maxMedia, requireMedia = 
   if (content.linkUrl && !publicHttpsUrl(content.linkUrl))
     errors.push("Link must use a public secure HTTPS URL");
   for (const [index, item] of media.entries()) {
-    if (!publicHttpsUrl(item.url))
+    if (!item.ref && !publicHttpsUrl(item.url))
       errors.push(`Media item ${index + 1} must use a public secure HTTPS URL`);
   }
   return {
@@ -218,11 +220,13 @@ export async function requestJson(
 }
 
 export function checkpointOf(platform, account, content, idempotencyKey, resume) {
+  // Renewed storage capabilities are transport data. Resume is bound to the enrolled bytes and identity.
+  const stableContent = content.mediaRefs?.length ? { ...content, mediaUrls: [] } : content;
   const base = {
     platform,
     accountExternalId: account.accountIdExternal,
     idempotencyKey: idempotencyKey || null,
-    contentHash: createHash("sha256").update(JSON.stringify(content)).digest("hex"),
+    contentHash: createHash("sha256").update(JSON.stringify(stableContent)).digest("hex"),
   };
   if (resume) {
     for (const key of Object.keys(base)) {

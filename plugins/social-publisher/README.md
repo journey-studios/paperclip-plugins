@@ -6,7 +6,7 @@ Paperclip SDK v1 plugin for Instagram Professional (Instagram Login), Facebook P
 
 `dryRunOnly: true`, `killSwitch: true`; new accounts have `policy: disabled`, account kill switch active and an empty agent allowlist. `tessel-social-daily` always requires a human decision even if an account separately allows autonomous campaigns. No setup, test or dry run publishes publicly.
 
-The tool receives identifiers, text, evidence and media URLs. OAuth tokens are encrypted with AES-256-GCM in the plugin namespace; the 32-byte encryption key and application secrets are references to Paperclip's secrets manager. Tokens and provider response bodies never reach tools, issue comments or logs. Keep the encryption key: changing it requires re-encryption or reconnection.
+The tool receives identifiers, text, evidence and approved media references or media URLs. OAuth tokens are encrypted with AES-256-GCM in the plugin namespace; the 32-byte encryption key and application secrets are references to Paperclip's secrets manager. Tokens and provider response bodies never reach tools, issue comments or logs. Keep the encryption key: changing it requires re-encryption or reconnection.
 
 ## Agent workflow
 
@@ -14,7 +14,9 @@ The tool receives identifiers, text, evidence and media URLs. OAuth tokens are e
 
 Draft input: `text`, `platforms` (`instagram`, `facebook_page`, `threads`, `x`), optional explicit `targets: [{platform, accountId}]`, per-platform customizations, `mediaUrls`, `linkUrl`, `campaign`, `idempotencyKey`, `dryRun` and `metadata.factualEvidence: [{claim, sourceUrl, releaseStatus: "released"}]`. Product evidence must be an allowed Tessel source; a human checks the claims before approval. Autonomous campaigns additionally require operator-approved hashes of complete evidence records in `verifiedEvidenceHashes`.
 
-Images must be produced by the existing Visual Production Specialist and hosted on operator-approved HTTPS media hosts. Image generation and hosting require their own verified agent tools and credentials. The publisher validates and uploads those assets; it does not introduce another image-generation provider or invent product screenshots. Instagram images require JPEG, at most 8 MiB and aspect ratio 0.8–1.91; publication inspects the MIME type and size, while dimensions remain explicitly unverified locally. Public media hosts require `mediaAllowedHosts`; downloads use bounded binary HTTPS with pinned public DNS, no redirects and no internal IPs.
+Images must be produced by the existing Visual Production Specialist and hosted on operator-approved HTTPS media hosts. Image generation requires its own verified agent tools and credentials. The publisher does not introduce another image-generation provider or invent product screenshots. Instagram images require JPEG, at most 8 MiB and aspect ratio 0.8–1.91. Public media hosts require `mediaAllowedHosts`; downloads use bounded binary HTTPS with pinned public DNS, no redirects and no internal IPs. Raw URLs verify MIME and size but leave dimensions unverified.
+
+For private editorial JPEGs, reuse the existing S3 Storage uploader and enroll the finalized object through the founder-only media endpoint. Drafts then use `mediaRefs: [{id: "MEDIA_ID"}]` with the matching `projectId`. Enrollment verifies streamed SHA-256, size, JPEG dimensions and the provider version. Approval binds this immutable identity; an authenticated preview page refreshes short-lived read links without putting capabilities in tools or Telegram payloads. See [media references and setup](docs/media-references.md). Agent image generation and founder enrollment remain separate capabilities.
 
 ## Telegram and scheduling
 

@@ -24,6 +24,17 @@ const uploadSchema = {
   type: "object", properties: uploadProperties,
   required: ["idempotencyKey", "filename", "contentType", "size", "sha256"], additionalProperties: false,
 };
+const imageUploadSchema = {
+  type: "object",
+  properties: {
+    ...uploadProperties,
+    contentType: { type: "string", const: "image/jpeg" },
+    size: { type: "integer", minimum: 1, maximum: 524288 },
+    imageBase64: { type: "string", minLength: 4, maxLength: 699052 },
+  },
+  required: [...uploadSchema.required, "imageBase64"],
+  additionalProperties: false,
+};
 const objectIdSchema = {
   type: "object", properties: { objectId: uuid }, required: ["objectId"], additionalProperties: false,
 };
@@ -44,7 +55,7 @@ const route = (routeKey, method, path) => ({
 const manifest = {
   id: "journey-studios.s3-storage",
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.2.2",
   displayName: "S3 Storage",
   description: "Private, company-scoped S3-compatible media storage for AWS S3, Cloudflare R2 and Backblaze B2.",
   author: "Journey Studios",
@@ -89,6 +100,7 @@ const manifest = {
     route("connection-test", "POST", "/connection-test"),
     route("objects-list", "GET", "/objects"),
     route("upload-prepare", "POST", "/uploads"),
+    route("image-upload", "POST", "/images/upload"),
     route("upload-finalize", "POST", "/uploads/:objectId/finalize"),
     route("object-download", "GET", "/objects/:objectId/download"),
     route("bucket-create", "POST", "/buckets"),
@@ -104,6 +116,7 @@ const manifest = {
     { name: "s3_storage_test_connection", displayName: "Test S3 Storage Connection", description: "Verify credentials and bucket access without changing storage.", parametersSchema: { type: "object", properties: {}, additionalProperties: false } },
     { name: "s3_storage_list_objects", displayName: "List Stored Media", description: "List ready media metadata visible to this company, optionally limited to a project.", parametersSchema: listSchema },
     { name: "s3_storage_prepare_upload", displayName: "Prepare Media Upload", description: "Create an idempotent upload intent and a short-lived direct-to-provider PUT URL. Upload bytes to that URL, then finalize.", parametersSchema: uploadSchema },
+    { name: "s3_storage_upload_image", displayName: "Upload Private JPEG", description: "Validate and upload one JPEG of at most 512 KiB as base64 to the existing company storage. The server prepares, uploads and verifies it; returns catalog metadata only, never provider URLs or credentials. Replaying the same key reconciles without repeating PUT.", parametersSchema: imageUploadSchema },
     { name: "s3_storage_finalize_upload", displayName: "Finalize Media Upload", description: "Stream and hash the uploaded provider object, then publish an immutable content-addressed copy to the catalog.", parametersSchema: objectIdSchema },
     { name: "s3_storage_read_link", displayName: "Create Media Read Link", description: "Create a short-lived private download URL for one ready media object in this company.", parametersSchema: objectIdSchema },
     { name: "s3_storage_create_bucket", displayName: "Create Storage Bucket", description: "Create a provider bucket only when provisioning is explicitly enabled in company settings.", parametersSchema: bucketSchema },

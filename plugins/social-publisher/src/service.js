@@ -3,6 +3,7 @@ import { getAdapter } from "./adapters/index.js";
 import { loadConfig } from "./config.js";
 import { resolveAccountCredentials, refreshOAuthAccount } from "./oauth.js";
 import { makeFetch, makeMediaFetch } from "./transport.js";
+import { expandDraftMedia, selectedMedia, verifyMediaReferences, resolvePublicationMedia } from "./media.js";
 import {
   listAccounts,
   getAccount,
@@ -166,15 +167,17 @@ export function trackedUrl(raw, post, target) {
 }
 export function channelContent(post, target) {
   const custom = post.platformCustomizations?.[target.platform] ?? {};
+  const media = selectedMedia(post, target.platform);
   const url = trackedUrl(custom.linkUrl ?? post.linkUrl, post, target);
   let text = custom.text ?? post.text;
   const original = custom.linkUrl ?? post.linkUrl;
   if (url && original && text.includes(original)) text = text.split(original).join(url);
   return {
     text,
-    mediaUrls: custom.mediaUrls ?? post.mediaUrls ?? [],
+    mediaUrls: media.urls,
     linkUrl: url,
-    mediaTypes: custom.mediaTypes,
+    mediaTypes: media.refs.length ? media.refs.map(() => "image") : custom.mediaTypes,
+    ...(media.refs.length ? { mediaRefs: media.refs, mediaMimeTypes: media.refs.map((ref) => ref.contentType) } : {}),
   };
 }
 function receiptKey(target) {
@@ -214,6 +217,7 @@ export async function serviceCreateDraft(
   authorize(actor, config);
   if (!revisionContext && (args.rootPostId !== undefined || args.version !== undefined))
     throw new CatalogError("REVISION_API_REQUIRED");
+  args = await expandDraftMedia(ctx, companyId, args, Boolean(revisionContext));
   const validation = validateContentForPlatforms(args, args.platforms);
   if (!validation.valid) throw new CatalogError(`CONTENT_INVALID: ${validation.errors.join("; ")}`);
   const dryRun = args.dryRun !== false;
@@ -256,6 +260,7 @@ export async function serviceValidatePost(ctx, companyId, args, providedConfig) 
     post = await getPost(ctx, companyId, args.postId);
     if (!post) throw new CatalogError("POST_NOT_FOUND", 404);
   }
+  await verifyMediaReferences(ctx, companyId, post);
   const validation = validateContentForPlatforms(post, post.platforms);
   if (Array.isArray(post.targets)) {
     for (const target of post.targets) {
@@ -298,6 +303,7 @@ export async function servicePreviewPost(ctx, companyId, args, providedConfig) {
     const content = channelContent(post, target);
     previews[target.platform] = {
       ...getAdapter(target.platform).preview(content),
+      ...(content.mediaRefs?.length ? { mediaRefs: content.mediaRefs, humanPreview: "private_telegram_approval" } : {}),
       accountId: target.accountId,
       trackingUrl: content.linkUrl,
       internalPostId: post.rootPostId ?? post.id,
@@ -434,6 +440,7 @@ export async function serviceReviseDraft(ctx, companyId, args, actor, providedCo
     platforms: args.platforms ?? previous.platforms,
     platformCustomizations: args.platformCustomizations ?? previous.platformCustomizations,
     mediaUrls: args.mediaUrls ?? previous.mediaUrls,
+    mediaRefs: args.mediaRefs ?? previous.mediaRefs,
     linkUrl: args.linkUrl ?? previous.linkUrl,
     campaign: previous.campaign,
     projectId: previous.projectId,
@@ -444,6 +451,7 @@ export async function serviceReviseDraft(ctx, companyId, args, actor, providedCo
     version: previous.version + 1,
     idempotencyKey: `${previous.rootPostId}:v${previous.version + 1}`,
   };
+  Object.assign(next, await expandDraftMedia(ctx, companyId, next, true));
   const validation = validateContentForPlatforms(next, next.platforms);
   if (!validation.valid) throw new CatalogError("CONTENT_INVALID");
   next.targets = await targetsFor(ctx, companyId, next, next.dryRun);
@@ -715,11 +723,25 @@ export async function servicePublishPost(ctx, companyId, args, actor, providedCo
       });
       continue;
     }
+    let publicationContent;
+    try {
+      publicationContent = await resolvePublicationMedia(ctx, companyId, channelContent(post, target), config);
+    } catch (error) {
+      const retryable = [502, 503].includes(error.status) && receipt.attemptCount < maxAttempts;
+      await recordReceipt(ctx, companyId, {
+        ...receipt,
+        status: retryable ? "retry" : "blocked",
+        errorCode: "MEDIA_PREPARATION_FAILED",
+        errorMessage: "Enrolled media could not be verified before provider publication",
+        nextAttemptAt: retryable ? new Date(Date.now() + 60000).toISOString() : null,
+      });
+      continue;
+    }
     try {
       const adapter = getAdapter(target.platform);
       const response = await adapter.publish({
         account: { ...prepared.account, credentials: prepared.credentials },
-        content: channelContent(post, target),
+        content: publicationContent,
         idempotencyKey: `${post.id}:${key}:v${post.version}`,
         fetchImpl: fetchImpl ?? makeFetch(ctx),
         mediaFetch: makeMediaFetch(config.mediaAllowedHosts ?? []),

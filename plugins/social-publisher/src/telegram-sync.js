@@ -1,5 +1,6 @@
 import { getPost, tablePrefix } from "./catalog.js";
 import { composeText } from "./adapters/common.js";
+import { approvalMediaLinks } from "./media.js";
 
 const scope = (companyId, postId) => ({
   scopeKind: "company",
@@ -7,7 +8,7 @@ const scope = (companyId, postId) => ({
   stateKey: `approval:${postId}`,
 });
 
-export async function approvalPreview(post) {
+export async function approvalPreview(post, mediaLinks = []) {
   const { channelContent } = await import("./service.js");
   const lines = [
     post.dryRun
@@ -26,8 +27,13 @@ export async function approvalPreview(post) {
       composeText(content),
     );
     for (const url of content.mediaUrls) lines.push(`Mídia: ${url}`);
+    for (const ref of content.mediaRefs ?? [])
+      lines.push(`JPEG ${ref.width}×${ref.height} · SHA-256 ${ref.sha256}`);
     if (content.linkUrl) lines.push(`CTA: ${content.linkUrl}`);
   }
+  for (const link of mediaLinks) lines.push(
+    "", `Ver JPEG ${link.media.sha256} (acesso autenticado do fundador):`, link.previewUrl,
+  );
   lines.push("", "As afirmações e fontes devem ser verificadas antes de aprovar.");
   for (const evidence of post.metadata?.factualEvidence ?? [])
     lines.push(`${evidence.claim} — ${evidence.sourceUrl}`);
@@ -49,7 +55,7 @@ export async function requestPostApproval(ctx, companyId, post, _validation, con
     !conversation.originId?.includes(":telegram:")
   )
     throw new Error("TELEGRAM_CONVERSATION_REQUIRED");
-  const preview = await approvalPreview(post);
+  const preview = await approvalPreview(post, await approvalMediaLinks(ctx, companyId, post, config));
   // Native Paperclip owns the paired human, private chat, random callback tokens and anti-replay transaction.
   const interaction = await ctx.issues.askUserQuestions(
     conversation.id,

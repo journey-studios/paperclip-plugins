@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { getAdapter } from "./adapters/index.js";
 import { canonical, contentHash, PLATFORMS } from "./catalog.js";
+import { selectedMedia } from "./media.js";
 
 export class PolicyError extends Error {
   constructor(message, code = "policy_denied", status = 403) {
@@ -104,9 +105,11 @@ export function validateContentForPlatforms(content, platforms) {
     }
     try {
       const override = content.platformCustomizations?.[platform] ?? {};
+      const selected = selectedMedia(content, platform);
       const channelContent = {
         text: override.text ?? content.text,
-        mediaUrls: override.mediaUrls ?? content.mediaUrls ?? [],
+        mediaUrls: selected.urls,
+        ...(selected.refs.length ? { mediaRefs: selected.refs, mediaMimeTypes: selected.refs.map((ref) => ref.contentType) } : {}),
         linkUrl: override.linkUrl ?? content.linkUrl,
       };
       const result = getAdapter(platform).validate(channelContent);

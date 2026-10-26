@@ -36,6 +36,7 @@ export function contentHash(post) {
       canonical({
         text: post.text,
         mediaUrls: post.mediaUrls ?? [],
+        ...(post.mediaRefs?.length ? { mediaRefs: post.mediaRefs } : {}),
         platformCustomizations: post.platformCustomizations ?? {},
         linkUrl: post.linkUrl ?? null,
         campaign: post.campaign ?? null,
@@ -47,7 +48,7 @@ export function contentHash(post) {
     .digest("hex");
 }
 const accountColumns = `id, company_id AS "companyId", platform, account_name AS "accountName", account_id_external AS "accountIdExternal", credentials_ref AS "credentialsRef", scopes, policy, autonomous_opt_in AS "autonomousOptIn", kill_switch AS "killSwitch", daily_limit AS "dailyLimit", CASE WHEN last_reset_date = to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD') THEN posts_today ELSE 0 END AS "postsToday", status, verification_status AS "verificationStatus", verified_at AS "verifiedAt", allowed_agent_ids AS "allowedAgentIds", api_cost_approved AS "apiCostApproved", estimated_post_cost_cents AS "estimatedPostCostCents", daily_cost_limit_cents AS "dailyCostLimitCents", last_error AS "lastError", created_at AS "createdAt", updated_at AS "updatedAt"`;
-const postColumns = `id, company_id AS "companyId", project_id AS "projectId", idempotency_key AS "idempotencyKey", root_post_id AS "rootPostId", version, content_hash AS "contentHash", campaign, default_text AS text, platforms, targets, platform_customizations AS "platformCustomizations", media_urls AS "mediaUrls", link_url AS "linkUrl", dry_run AS "dryRun", status, scheduled_at AS "scheduledAt", next_attempt_at AS "nextAttemptAt", published_at AS "publishedAt", approved_at AS "approvedAt", approved_by AS "approvedBy", approval_hash AS "approvalHash", approval_expires_at AS "approvalExpiresAt", approval_request_id AS "approvalRequestId", decision_reason AS "decisionReason", created_by_type AS "createdByType", created_by_id AS "createdById", created_by_run_id AS "createdByRunId", metadata, created_at AS "createdAt", updated_at AS "updatedAt"`;
+const postColumns = `id, company_id AS "companyId", project_id AS "projectId", idempotency_key AS "idempotencyKey", root_post_id AS "rootPostId", version, content_hash AS "contentHash", campaign, default_text AS text, platforms, targets, platform_customizations AS "platformCustomizations", media_urls AS "mediaUrls", media_refs AS "mediaRefs", link_url AS "linkUrl", dry_run AS "dryRun", status, scheduled_at AS "scheduledAt", next_attempt_at AS "nextAttemptAt", published_at AS "publishedAt", approved_at AS "approvedAt", approved_by AS "approvedBy", approval_hash AS "approvalHash", approval_expires_at AS "approvalExpiresAt", approval_request_id AS "approvalRequestId", decision_reason AS "decisionReason", created_by_type AS "createdByType", created_by_id AS "createdById", created_by_run_id AS "createdByRunId", metadata, created_at AS "createdAt", updated_at AS "updatedAt"`;
 const receiptColumns = `id, post_id AS "postId", company_id AS "companyId", platform, account_id AS "accountId", destination_key AS "destinationKey", status, platform_post_id AS "platformPostId", platform_post_url AS "platformPostUrl", error_message AS "errorMessage", error_code AS "errorCode", checkpoint, attempt_count AS "attemptCount", next_attempt_at AS "nextAttemptAt", cost_cents AS "costCents", CASE WHEN status='dry_run' THEN 'VERIFIED_NO_PROVIDER_WRITE' WHEN cost_cents IS NULL THEN 'UNKNOWN' ELSE 'ESTIMATED' END AS "costStatus", CASE WHEN status='dry_run' THEN 0 ELSE NULL END AS "actualCostCents", CASE WHEN status<>'dry_run' THEN cost_cents ELSE NULL END AS "estimatedCostCents", attempted_at AS "attemptedAt"`;
 export async function listAccounts(ctx, companyId) {
   return ctx.db.query(
@@ -177,7 +178,7 @@ export async function createPost(ctx, companyId, data, actor) {
     .update(String(data.text).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase())
     .digest("hex");
   await ctx.db.execute(
-    `INSERT INTO ${schema}.social_posts (id,company_id,project_id,idempotency_key,root_post_id,version,content_hash,semantic_hash,campaign,default_text,platforms,targets,platform_customizations,media_urls,link_url,dry_run,status,created_by_type,created_by_id,created_by_run_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,'draft',$17,$18,$19,$20::jsonb) ON CONFLICT (company_id,idempotency_key) DO NOTHING`,
+    `INSERT INTO ${schema}.social_posts (id,company_id,project_id,idempotency_key,root_post_id,version,content_hash,semantic_hash,campaign,default_text,platforms,targets,platform_customizations,media_urls,link_url,dry_run,status,created_by_type,created_by_id,created_by_run_id,metadata,media_refs) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,'draft',$17,$18,$19,$20::jsonb,$21::jsonb) ON CONFLICT (company_id,idempotency_key) DO NOTHING`,
     [
       id,
       assertUuid(companyId),
@@ -199,6 +200,7 @@ export async function createPost(ctx, companyId, data, actor) {
       actor.actorId,
       actor.runId ?? null,
       JSON.stringify(data.metadata ?? {}),
+      JSON.stringify(data.mediaRefs ?? []),
     ],
   );
   const rows = await ctx.db.query(
@@ -366,6 +368,7 @@ export async function claimDestinationContent(ctx, companyId, accountId, postId,
       canonical({
         text,
         mediaUrls: (content.mediaUrls ?? []).map(stripTracking),
+        ...(content.mediaRefs?.length ? { mediaRefs: content.mediaRefs } : {}),
         linkUrl: content.linkUrl ? stripTracking(content.linkUrl) : null,
       }),
     )

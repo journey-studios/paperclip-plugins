@@ -1,0 +1,59 @@
+{
+  "id": "b9649fc2-879e-43e6-9778-6b87229644c7",
+  "companyId": "36a19923-c66d-4341-bf06-bb7e83bc5890",
+  "projectId": "d5ac475f-b32b-43f1-9024-331fcc6c35b0",
+  "idempotencyKey": "tessel-social-integration-dry-run-text-2026-10-26-v2",
+  "rootPostId": "b9649fc2-879e-43e6-9778-6b87229644c7",
+  "version": 1,
+  "contentHash": "713b8b63a2d1c39cb4c39c6aed58ad39df5ccb043e397f4d070c37985a116621",
+  "campaign": "tessel-social-daily",
+  "text": "Organize suas campanhas de RPG com o Tessel. Conheça o projeto: https://www.tessel.app/",
+  "platforms": [
+    "facebook_page",
+    "threads",
+    "x"
+  ],
+  "targets": [
+    {
+      "platform": "facebook_page",
+      "accountId": null
+    },
+    {
+      "platform": "threads",
+      "accountId": null
+    },
+    {
+      "platform": "x",
+      "accountId": null
+    }
+  ],
+  "platformCustomizations": {},
+  "mediaUrls": [],
+  "linkUrl": "https://www.tessel.app/",
+  "dryRun": true,
+  "status": "pending_approval",
+  "scheduledAt": "2026-10-26 21:32:34.215+00",
+  "nextAttemptAt": null,
+  "publishedAt": null,
+  "approvedAt": null,
+  "approvedBy": null,
+  "approvalHash": null,
+  "approvalExpiresAt": "2026-10-27 21:30:36.649+00",
+  "approvalRequestId": "55fbfc5c-63bd-4b0a-b892-25c017f137ec",
+  "decisionReason": null,
+  "createdByType": "agent",
+  "createdById": "78a9ac03-64cc-4da8-8f6c-3da19a748cbd",
+  "createdByRunId": "b7205d06-7c48-4ea9-ae54-ee9757ef2a78",
+  "metadata": {
+    "factualEvidence": [
+      {
+        "id": "tessel-public-home-20261026",
+        "claim": "O Tessel é uma plataforma de gerenciamento de campanhas de RPG.",
+        "sourceUrl": "https://www.tessel.app/",
+        "releaseStatus": "released"
+      }
+    ]
+  },
+  "createdAt": "2026-10-26 21:30:30.447427+00",
+  "updatedAt": "2026-10-26 21:30:37.556734+00"
+}

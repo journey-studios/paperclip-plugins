@@ -47,11 +47,15 @@ The plugin does not set ACLs, which keeps the object operations portable across 
 
 ## Upload lifecycle
 
-Uploads use a short-lived signed `PUT` directly to the provider. Media bytes never pass through Paperclip's JSON API and are never sent as base64. Generate one UUID `idempotencyKey` per logical upload and reuse it across retries. Reusing a key with different file metadata or a different SHA-256 returns a conflict.
+The standard upload workflow uses a short-lived signed `PUT` directly to the provider. Generate one UUID `idempotencyKey` per logical upload and reuse it across retries. Reusing a key with different file metadata or a different SHA-256 returns a conflict.
 
 1. `POST /api/plugins/journey-studios.s3-storage/api/uploads?companyId=<uuid>` with `{ "idempotencyKey": "<uuid>", "projectId": "<optional-project-uuid>", "filename": "clip.webm", "contentType": "video/webm", "size": 1234, "sha256": "<64-lowercase-hex>" }`.
 2. `PUT` the exact bytes to `uploadUrl`, sending the returned `content-type` and `content-length` headers. The signed upload targets a private staging key.
 3. `POST /api/plugins/journey-studios.s3-storage/api/uploads/<objectId>/finalize?companyId=<uuid>` with `{}`.
+
+For native agents uploading JPEGs up to 512 KiB, use `s3_storage_upload_image` or Board `POST /images/upload` with the same metadata plus `imageBase64`. This bounded composite operation validates canonical base64, JPEG framing, dimensions, byte count and SHA-256 before executing the existing prepare → PUT → finalize implementation server-side. It returns verified object metadata without signed URLs or bytes. Native tool gateway redaction deliberately removes credential-like URL parameters, so agent clients must use this composite operation instead of forwarding a signed PUT URL. Existing Board/browser workflows remain available for larger media.
+
+Only the newly created intent performs a PUT. Ready retries verify the provider object and return metadata; pending retries reconcile the existing upload instead of blindly sending bytes again. An ambiguous PUT response is reconciled through finalization before success is reported.
 
 Finalization checks the provider object's length, streams the object to recompute SHA-256 within the configured size bound, and copies the verified bytes to an immutable company/project-scoped content-addressed key using the source ETag as a copy precondition. Only then does the catalog mark the record ready. A late signed PUT can recreate only the staging key, never overwrite the ready key. After catalog readiness, the plugin removes the exact verified staging version when the provider returns a version ID; on unversioned buckets it deletes the staging key. Configure a provider lifecycle rule to expire the configured prefix's `_staging/` objects and noncurrent versions after at least one day. This lifecycle rule handles abandoned uploads, writes made with a still-valid signed URL after cleanup, delete markers, and failed cleanup; immediate cleanup does not guarantee all staging bytes have been reclaimed from versioned storage.
 
@@ -71,7 +75,7 @@ For AWS S3, Backblaze B2, and generic S3 providers, native reconciliation requir
 
 ## Native agent tools and plugin MCP
 
-The worker registers status, connection test, list, prepare, finalize, read-link, and opt-in bucket-create tools with Paperclip. The board-authenticated MCP endpoint is:
+The worker registers eight tools with Paperclip: status, connection test, list, prepare, finalize, read-link, JPEG upload, and opt-in bucket creation. The board-authenticated MCP endpoint is:
 
 ```text
 POST /api/plugins/journey-studios.s3-storage/api/mcp?companyId=<company-uuid>
