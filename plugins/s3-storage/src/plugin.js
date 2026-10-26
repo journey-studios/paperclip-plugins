@@ -26,7 +26,7 @@ const handlers = {
   s3_storage_test_connection: (ctx, companyId, config) => testConnection(ctx, companyId, config),
   s3_storage_list_objects: (ctx, companyId, config, args) => listMedia(ctx, companyId, config, args),
   s3_storage_prepare_upload: (ctx, companyId, config, args, actor) => prepareUpload(ctx, companyId, config, args, actor),
-  s3_storage_upload_image: (ctx, companyId, config, args, actor) => uploadImage(ctx, companyId, config, args, actor),
+  s3_storage_write_image: (ctx, companyId, config, args, actor) => uploadImage(ctx, companyId, config, args, actor),
   s3_storage_finalize_upload: (ctx, companyId, config, args) => finalizeUpload(ctx, companyId, config, args.objectId),
   s3_storage_read_link: (ctx, companyId, config, args) => createReadLink(ctx, companyId, config, args.objectId),
   s3_storage_create_bucket: (ctx, companyId, config, args, actor) => provisionBucket(ctx, companyId, config, args, actor),
@@ -37,7 +37,7 @@ const toolBehavior = {
   s3_storage_test_connection: { readOnly: false, idempotent: false },
   s3_storage_list_objects: { readOnly: true, idempotent: true },
   s3_storage_prepare_upload: { readOnly: false, idempotent: true },
-  s3_storage_upload_image: { readOnly: false, idempotent: true },
+  s3_storage_write_image: { readOnly: false, idempotent: true },
   s3_storage_finalize_upload: { readOnly: false, idempotent: true },
   s3_storage_read_link: { readOnly: false, idempotent: false },
   s3_storage_create_bucket: { readOnly: false, idempotent: false },
@@ -84,9 +84,25 @@ function actorFromRun(runCtx) {
   return { actorType: "agent", actorId: runCtx.agentId, runId: runCtx.runId };
 }
 
+/** Keep the shared scalar limit everywhere except this schema-bounded binary image field. */
+function validateStorageToolArguments(tool, args) {
+  if (tool.name !== "s3_storage_write_image") return validateToolArguments(tool.inputSchema, args);
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const { imageBase64, ...metadata } = args;
+  const { imageBase64: imageSchema, ...properties } = tool.inputSchema.properties;
+  if (typeof imageBase64 !== "string" || imageBase64.length < imageSchema.minLength ||
+      imageBase64.length > imageSchema.maxLength) return false;
+  const metadataSchema = {
+    ...tool.inputSchema,
+    properties,
+    required: tool.inputSchema.required.filter((key) => key !== "imageBase64"),
+  };
+  return validateToolArguments(metadataSchema, metadata);
+}
+
 /** Validates declared input before dispatching a company-scoped storage tool. */
 async function invoke(ctx, companyId, config, tool, args, actor) {
-  if (!validateToolArguments(tool.inputSchema, args)) throw new StorageError("invalid_tool_arguments");
+  if (!validateStorageToolArguments(tool, args)) throw new StorageError("invalid_tool_arguments");
   return tool.execute(ctx, companyId, config, args, actor);
 }
 
@@ -135,7 +151,7 @@ function createMcpEndpoint(ctx) {
     const tool = byTool.get(params.name);
     if (!tool) return { status: 200, headers, body: rpcError(id, -32602, "Unknown tool") };
     const args = params.arguments ?? {};
-    if (!validateToolArguments(tool.inputSchema, args)) return { status: 200, headers, body: rpcError(id, -32602, "Invalid tool arguments") };
+    if (!validateStorageToolArguments(tool, args)) return { status: 200, headers, body: rpcError(id, -32602, "Invalid tool arguments") };
     try {
       const config = await loadConfig(ctx, companyId);
       const result = await invoke(ctx, companyId, config, tool, args, actor);
@@ -196,7 +212,7 @@ const plugin = definePlugin({
           const companyId = parseUuid(runCtx.companyId, "company_id");
           const config = await loadConfig(ctx, companyId);
           const args = params && typeof params === "object" && !Array.isArray(params) ? { ...params } : {};
-          if (["s3_storage_prepare_upload", "s3_storage_upload_image", "s3_storage_list_objects"].includes(tool.name) &&
+          if (["s3_storage_prepare_upload", "s3_storage_write_image", "s3_storage_list_objects"].includes(tool.name) &&
               args.projectId === undefined && runCtx.projectId) args.projectId = runCtx.projectId;
           const result = await invoke(ctx, companyId, config, tool, args, actor);
           return { content: JSON.stringify(result), data: result };
@@ -230,7 +246,7 @@ const plugin = definePlugin({
         return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_list_objects"), args, actor) };
       }
       if (input.routeKey === "upload-prepare") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_prepare_upload"), input.body, actor) };
-      if (input.routeKey === "image-upload") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_upload_image"), input.body, actor) };
+      if (input.routeKey === "image-upload") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_write_image"), input.body, actor) };
       if (input.routeKey === "upload-finalize") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_finalize_upload"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "object-download") return { status: 200, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_read_link"), { objectId: input.params.objectId }, actor) };
       if (input.routeKey === "bucket-create") return { status: 201, headers: { "cache-control": "no-store" }, body: await invoke(ctx, companyId, config, byTool.get("s3_storage_create_bucket"), input.body, actor) };

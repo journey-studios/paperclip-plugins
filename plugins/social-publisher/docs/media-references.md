@@ -12,7 +12,7 @@ objects**, never secret values, into Social Publisher's `mediaStorage` config:
 optional `sessionTokenRef`. These references are resolved only server-side with
 company scope and the nested `mediaStorage.*` configuration paths.
 
-Upload through S3 Storage's `s3_storage_upload_image` native tool for JPEGs up to
+Upload through S3 Storage's `s3_storage_write_image` native tool for JPEGs up to
 512 KiB, or its Board prepare → signed PUT → finalize workflow for larger files,
 explicitly selecting the campaign's project. The composite tool keeps signed
 capabilities inside the server; native gateway redaction makes the legacy signed

@@ -16,6 +16,20 @@ const payload = (overrides = {}) => ({
   size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
   imageBase64: bytes.toString("base64"), ...overrides,
 });
+// JPEG APP1 metadata pads an otherwise unchanged valid image without a large repository fixture.
+const padding = Buffer.alloc(12_000);
+const app1 = Buffer.alloc(padding.length + 4);
+app1[0] = 0xff;
+app1[1] = 0xe1;
+app1.writeUInt16BE(padding.length + 2, 2);
+padding.copy(app1, 4);
+const largeBytes = Buffer.concat([bytes.subarray(0, 2), app1, bytes.subarray(2)]);
+const largePayload = (overrides = {}) => payload({
+  size: largeBytes.length,
+  sha256: createHash("sha256").update(largeBytes).digest("hex"),
+  imageBase64: largeBytes.toString("base64"),
+  ...overrides,
+});
 const rawConfig = {
   provider: "s3", endpoint: "https://objects.example.test", region: "us-east-1", bucket: "journey-media",
   accessKeyIdRef: { type: "secret_ref", secretId: KEY_ID },
@@ -156,15 +170,90 @@ test("composed image uploads use existing private S3 storage and recover without
 
   await t.test("board API and native tool expose the composed upload with metadata-only results", async () => {
     await plugin.definition.setup(ctx);
-    assert.equal(manifest.version, "0.2.2"); assert.equal(tools.size, 8);
+    assert.equal(manifest.version, "0.2.3"); assert.equal(tools.size, 8);
     const response = await plugin.definition.onApiRequest({
       routeKey: "image-upload", method: "POST", path: "/images/upload", params: {}, query: { companyId: COMPANY }, companyId: COMPANY,
       actor: { actorType: "user", actorId: actor.actorId }, body: payload(), headers: {},
     });
     assert.equal(response.status, 200); safeResult(response.body);
-    const registered = tools.get("s3_storage_upload_image"); assert.ok(registered);
+    const registered = tools.get("s3_storage_write_image"); assert.ok(registered);
+    assert.equal(tools.has("s3_storage_upload_image"), false);
     const native = await registered.handler(payload(), { companyId: COMPANY, projectId: PROJECT, agentId: "agent-1", runId: "run-1" });
     assert.equal(native.error, undefined); safeResult(native.data);
     assert.doesNotMatch(JSON.stringify(entries), /https?:\/\/|X-Amz-|imageBase64|fixture-access-key|fixture-secret-key/);
+  });
+
+  const boardInput = (routeKey, body) => ({
+    routeKey, method: "POST", path: routeKey === "mcp" ? "/mcp" : "/images/upload",
+    params: {}, query: { companyId: COMPANY }, companyId: COMPANY,
+    actor: { actorType: "user", actorId: actor.actorId }, body, headers: {},
+  });
+  const mcpBody = (args, name = "s3_storage_write_image") => ({
+    jsonrpc: "2.0", id: randomUUID(), method: "tools/call", params: { name, arguments: args },
+  });
+  const runContext = { companyId: COMPANY, projectId: PROJECT, agentId: "agent-1", runId: "run-1" };
+
+  await t.test("a JPEG base64 payload above the shared 5000-character limit succeeds through SDK, board API and MCP", async () => {
+    assert.ok(largePayload().imageBase64.length > 5000);
+    const native = await tools.get("s3_storage_write_image").handler(largePayload(), runContext);
+    assert.equal(native.error, undefined);
+    safeResult(native.data);
+    assert.equal(native.data.object.size, largeBytes.length);
+    assert.deepEqual(fixture.objects.get(native.data.object.objectKey).bytes, largeBytes);
+
+    const api = await plugin.definition.onApiRequest(boardInput("image-upload", largePayload()));
+    assert.equal(api.status, 200);
+    safeResult(api.body);
+    assert.equal(api.body.object.size, largeBytes.length);
+
+    const mcp = await plugin.definition.onApiRequest(boardInput("mcp", mcpBody(largePayload())));
+    assert.equal(mcp.body.error, undefined);
+    assert.equal(mcp.body.result.isError, false);
+    safeResult(mcp.body.result.structuredContent);
+    assert.equal(mcp.body.result.structuredContent.object.size, largeBytes.length);
+  });
+
+  await t.test("oversized imageBase64 and large metadata fail closed on every plugin entrypoint before DB or provider writes", async () => {
+    const beforeRows = (await db.query(`SELECT count(*)::int AS count FROM ${schema}.objects`)).rows[0].count;
+    const beforeRequests = fixture.requests.length;
+    for (const args of [largePayload({ imageBase64: "A".repeat(699056) }), largePayload({ filename: "x".repeat(6000) })]) {
+      const native = await tools.get("s3_storage_write_image").handler(args, runContext);
+      assert.equal(native.error, "invalid tool arguments");
+      const api = await plugin.definition.onApiRequest(boardInput("image-upload", args));
+      assert.equal(api.status, 400);
+      assert.equal(api.body.error, "invalid_tool_arguments");
+      const mcp = await plugin.definition.onApiRequest(boardInput("mcp", mcpBody(args)));
+      assert.equal(mcp.body.error.code, -32602);
+    }
+    assert.equal((await db.query(`SELECT count(*)::int AS count FROM ${schema}.objects`)).rows[0].count, beforeRows);
+    assert.equal(fixture.requests.length, beforeRequests);
+  });
+
+  await t.test("the binary-field exception preserves service checksum validation and never applies to other tools", async () => {
+    const beforeRows = (await db.query(`SELECT count(*)::int AS count FROM ${schema}.objects`)).rows[0].count;
+    const beforeRequests = fixture.requests.length;
+    const changedDigest = largePayload({ sha256: "0".repeat(64) });
+    const native = await tools.get("s3_storage_write_image").handler(changedDigest, runContext);
+    assert.equal(native.error, "image digest mismatch");
+    const api = await plugin.definition.onApiRequest(boardInput("image-upload", changedDigest));
+    assert.equal(api.body.error, "image_digest_mismatch");
+    const mcp = await plugin.definition.onApiRequest(boardInput("mcp", mcpBody(changedDigest)));
+    assert.equal(mcp.body.result.isError, true);
+    assert.equal(mcp.body.result.content[0].text, "image digest mismatch");
+
+    const foreignTool = await tools.get("s3_storage_prepare_upload").handler(largePayload(), runContext);
+    assert.equal(foreignTool.error, "invalid tool arguments");
+    const foreignMcp = await plugin.definition.onApiRequest(boardInput("mcp", mcpBody(largePayload(), "s3_storage_prepare_upload")));
+    assert.equal(foreignMcp.body.error.code, -32602);
+    assert.equal((await db.query(`SELECT count(*)::int AS count FROM ${schema}.objects`)).rows[0].count, beforeRows);
+    assert.equal(fixture.requests.length, beforeRequests);
+  });
+
+  await t.test("the old image-upload tool name is not callable through MCP", async () => {
+    const beforeRequests = fixture.requests.length;
+    const response = await plugin.definition.onApiRequest(boardInput("mcp", mcpBody(largePayload(), "s3_storage_upload_image")));
+    assert.equal(response.body.error.code, -32602);
+    assert.equal(response.body.error.message, "Unknown tool");
+    assert.equal(fixture.requests.length, beforeRequests);
   });
 });
