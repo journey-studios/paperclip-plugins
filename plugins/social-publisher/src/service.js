@@ -967,9 +967,10 @@ export async function serviceReconcilePost(ctx, companyId, args, actor, provided
           errorMessage: null,
         });
     } catch {
+      const { destinationKey } = receipt;
       await audit(ctx, companyId, post, actor, "reconciliation_unresolved", {
         platform: receipt.platform,
-        destinationKey: receipt.destinationKey,
+        destinationKey,
       });
     }
   }
