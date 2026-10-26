@@ -51,6 +51,7 @@ jobs:
             .package-output/journey-studios-paperclip-social-publisher-*.tgz
             .package-output/journey-studios-paperclip-s3-storage-*.tgz
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
           compression-level: 0
 
