@@ -30,6 +30,8 @@ See the [compatibility guide](docs/compatibility.md), [release guide](docs/relea
 
 - [`@journey-studios/performance-observatory`](plugins/performance-observatory/README.md): scheduled and on-demand Lighthouse reviews, ephemeral VPS executors, environment-separated charts, native agent tools and an authenticated external CLI/API.
 
+- [`@journey-studios/paperclip-social-publisher`](plugins/social-publisher/README.md): independent OAuth for Instagram, Facebook Pages, Threads and X, native agent tools, version-bound Telegram approval, durable scheduling and verified receipts. New installations are restricted to dry runs.
+
 ## Administrative MCP tools
 
 The optional [plugin MCP bridge](services/plugin-mcp-bridge/README.md) adds five Observatory tools and six Project Dashboards tools (list, read, status, create/update, validate) to the official Paperclip MCP server through a separate stdio process. It calls company-scoped plugin APIs, preserves the official server's tools and protocol, and requires no change to Paperclip Core or its Tool Gateway. The plugin worker receives no board API key. The bridge and plugin can be disabled independently.
