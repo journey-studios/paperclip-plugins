@@ -123,6 +123,9 @@ test("draft references are expanded server-side, scoped to project and hash, and
   ]) await assert.rejects(serviceCreateDraft(f.ctx, f.companyId, draftInput({ projectId: f.projectId, platforms: ["instagram"], ...input }), f.actor, f.config));
   const { post, validation } = await f.draft();
   assert.equal(validation.publicationReady, true);
+  assert.equal(validation.platforms.instagram.mediaRequirements.dimensionsVerified, true);
+  assert.equal(validation.platforms.instagram.mediaRequirements.verificationSource, "founder_enrolled_s3_jpeg");
+  assert.ok(!validation.platforms.instagram.warnings.some((warning) => warning.includes("not verified by URL validation")));
   assert.deepEqual(post.mediaRefs, [media]);
   const preview = await servicePreviewPost(f.ctx, f.companyId, { postId: post.id }, f.config);
   assert.deepEqual(preview.previews.instagram.mediaRefs, [media]);
@@ -159,9 +162,9 @@ test("issue-readable interactions persist only a stable authenticated page link,
   const f = await fixture(t);
   const { post } = await f.draft();
   const interactions = [];
-  f.ctx.issues.askUserQuestions = async (issueId, body) => {
+  f.ctx.issues.askUserQuestions = async (issueId, body, companyId, actor) => {
     interactions.push(body);
-    return { id: "native-media-test", companyId: f.companyId, issueId };
+    return { ...body, id: "native-media-test", companyId: f.companyId, issueId, kind: "ask_user_questions", status: "pending", createdByAgentId: actor.authorAgentId };
   };
   // GET /issues/:id/interactions exposes stored payloads to issue readers, regardless of human_only resolution.
   f.ctx.issues.listInteractions = async () => interactions;
@@ -284,7 +287,7 @@ test("media enrollment is a founder Board route and does not expand the native a
   f.ctx.jobs = { register() {} };
   await plugin.setup(f.ctx);
   assert.equal(tools.size, 19);
-  assert.equal(manifest.version, "0.2.4");
+  assert.equal(manifest.version, "0.2.5");
   assert.ok(![...tools.keys()].some((name) => /media.*enroll/i.test(name)));
   for (const actor of [f.actor, { actorType: "user", actorId: "another-board-member" }]) {
     const denied = await plugin.onApiRequest({ companyId: f.companyId, routeKey: "media-enroll", body: f.input, actor });

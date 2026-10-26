@@ -1,0 +1,2 @@
+ALTER TABLE plugin_social_publisher_f5a795450a.social_posts DROP CONSTRAINT IF EXISTS social_posts_status_check;
+ALTER TABLE plugin_social_publisher_f5a795450a.social_posts ADD CONSTRAINT social_posts_status_check CHECK(status IN ('draft','pending_approval','approval_expired','approved','scheduled','publishing','published','partially_published','failed','cancelled','rejected','revision_requested','superseded','dry_run_completed','retry','unknown'));

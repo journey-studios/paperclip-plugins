@@ -47,7 +47,10 @@ export async function databaseContext(overrides = {}) {
         originKind: "chat_channel",
         originId: "native:telegram:test",
       }),
-      askUserQuestions: async (issueId) => ({ id: "native-test", issueId, companyId }),
+      askUserQuestions: async (issueId, input, companyId, actor) => ({
+        ...input, id: "native-test", issueId, companyId, kind: "ask_user_questions", status: "pending", createdByAgentId: actor.authorAgentId,
+      }),
+      listInteractions: async () => [],
       createComment: async () => ({ id: randomUUID() }),
     },
     chat: { publishComment: async () => ({ id: randomUUID(), state: "published" }) },

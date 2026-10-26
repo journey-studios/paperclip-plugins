@@ -29,7 +29,7 @@ export function evaluateChannelPolicy(account, post, options = {}) {
     policy: account?.policy ?? "approval_required",
   });
   if (
-    ["cancelled", "rejected", "superseded", "revision_requested", "unknown", "failed"].includes(
+    ["cancelled", "rejected", "superseded", "revision_requested", "approval_expired", "unknown", "failed"].includes(
       post.status,
     )
   )

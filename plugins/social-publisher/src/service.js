@@ -33,7 +33,7 @@ import {
   factualEvidenceStatus,
   sameTargets,
 } from "./governance.js";
-import { notifyPublicationReceipt, requestPostApproval } from "./telegram-sync.js";
+import { notifyPublicationReceipt, requestPostApproval, preparePostApproval, expirePostApproval } from "./telegram-sync.js";
 
 export function getExactOAuthUrls(baseUrl = "https://paper.journeystudios.com.br") {
   const base = baseUrl.replace(/\/+$/, "");
@@ -264,7 +264,14 @@ export async function serviceValidatePost(ctx, companyId, args, providedConfig) 
   const validation = validateContentForPlatforms(post, post.platforms);
   if (Array.isArray(post.targets)) {
     for (const target of post.targets) {
-      const exact = getAdapter(target.platform).validate(channelContent(post, target));
+      const content = channelContent(post, target);
+      const exact = getAdapter(target.platform).validate(content);
+      // verifyMediaReferences above checked the immutable founder-enrolled JPEG identity and dimensions.
+      if (target.platform === "instagram" && content.mediaRefs?.length && exact.mediaRequirements) {
+        exact.mediaRequirements.dimensionsVerified = true;
+        exact.mediaRequirements.verificationSource = "founder_enrolled_s3_jpeg";
+        exact.warnings = (exact.warnings ?? []).filter((warning) => !warning.includes("not verified by URL validation"));
+      }
       validation.platforms[target.platform] = exact;
       if (!exact.valid) {
         validation.valid = false;
@@ -334,31 +341,34 @@ export async function serviceRequestApproval(ctx, companyId, args, actor, provid
   if (!validation.publicationReady) throw new CatalogError("CONTENT_OR_FACTUAL_EVIDENCE_NOT_READY");
   if (contentHash(post) !== post.contentHash)
     throw new CatalogError("POST_CONTENT_INTEGRITY_FAILURE", 409);
+  const deadline = post.status === "draft"
+    ? new Date(Date.now() + Math.min(86400, Math.max(60, config.approvalTtlSeconds ?? 86400)) * 1000).toISOString()
+    : post.approvalExpiresAt;
+  // Permanent presentation failures must leave new drafts outside the approval queue.
+  const prepared = await preparePostApproval(ctx, companyId, { ...post, approvalExpiresAt: deadline }, config);
   let pending = post;
   if (post.status === "draft")
     pending = await updatePostStatus(ctx, companyId, post.id, "pending_approval", {
-      approvalExpiresAt: new Date(
-        Date.now() + Math.min(86400, Math.max(60, config.approvalTtlSeconds ?? 86400)) * 1000,
-      ).toISOString(),
+      approvalExpiresAt: deadline,
       expectedStatuses: ["draft"],
     });
-  let delivery = null;
-  if (!pending.approvalRequestId) {
-    delivery = await requestPostApproval(ctx, companyId, pending, validation, config);
-    if (delivery?.interactionId)
-      pending = await updatePostStatus(ctx, companyId, pending.id, "pending_approval", {
-        approvalRequestId: delivery.interactionId,
-        expectedStatuses: ["pending_approval"],
-      });
-  }
-  await audit(ctx, companyId, pending, actor, "approval_requested", {
-    contentHash: pending.contentHash,
-    version: pending.version,
-    targets: pending.targets,
-    interactionId: pending.approvalRequestId,
-  });
+  const delivery = await requestPostApproval(ctx, companyId, pending, validation, config, prepared);
+  pending = await getPost(ctx, companyId, pending.id);
+  if (pending.status === "pending_approval" && delivery?.interactionId && pending.approvalRequestId !== delivery.interactionId)
+    pending = await updatePostStatus(ctx, companyId, pending.id, "pending_approval", {
+      approvalRequestId: delivery.interactionId,
+      expectedStatuses: ["pending_approval"],
+      expectedHash: pending.contentHash,
+    });
+  if (pending.status === "pending_approval" && (post.status === "draft" || post.approvalRequestId !== pending.approvalRequestId))
+    await audit(ctx, companyId, pending, actor, "approval_requested", {
+      contentHash: pending.contentHash,
+      version: pending.version,
+      targets: pending.targets,
+      interactionId: pending.approvalRequestId,
+    });
   return {
-    status: "pending_approval",
+    status: pending.status,
     post: pending,
     validation,
     approval: {
@@ -386,8 +396,10 @@ export async function serviceDecideApproval(ctx, companyId, args, actor, provide
     contentHash(post) !== post.contentHash
   )
     throw new CatalogError("APPROVAL_VERSION_OR_TARGET_MISMATCH", 409);
-  if (new Date(post.approvalExpiresAt).getTime() <= Date.now())
+  if (new Date(post.approvalExpiresAt).getTime() <= Date.now()) {
+    await expirePostApproval(ctx, companyId, post, "local_ttl_expired");
     throw new CatalogError("APPROVAL_EXPIRED", 409);
+  }
   if (!["approved", "rejected", "revision_requested"].includes(args.decision))
     throw new CatalogError("INVALID_DECISION");
   if (!args.interactionId || args.interactionId !== post.approvalRequestId)
@@ -429,6 +441,7 @@ export async function serviceReviseDraft(ctx, companyId, args, actor, providedCo
       "approved",
       "scheduled",
       "revision_requested",
+      "approval_expired",
       "rejected",
       "superseded",
     ].includes(previous.status)
@@ -518,6 +531,7 @@ export async function servicePublishPost(ctx, companyId, args, actor, providedCo
       "rejected",
       "superseded",
       "revision_requested",
+      "approval_expired",
       "failed",
     ].includes(post.status)
   )
@@ -903,7 +917,7 @@ export async function serviceCancelPost(ctx, companyId, args, actor, providedCon
   if (!post) throw new CatalogError("POST_NOT_FOUND", 404);
   authorize(actor, config, post);
   if (
-    !["draft", "pending_approval", "approved", "scheduled", "retry", "revision_requested"].includes(
+    !["draft", "pending_approval", "approved", "scheduled", "retry", "revision_requested", "approval_expired"].includes(
       post.status,
     )
   )

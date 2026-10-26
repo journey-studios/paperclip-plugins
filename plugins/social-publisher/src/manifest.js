@@ -208,7 +208,7 @@ const config = {
 export default {
   id: "journey-studios.social-publisher",
   apiVersion: 1,
-  version: "0.2.4",
+  version: "0.2.5",
   displayName: "Tessel Social Publisher",
   description:
     "OAuth independente por produto, publicação governada, aprovação Telegram nativa, agendamento durável e recibos reais.",
