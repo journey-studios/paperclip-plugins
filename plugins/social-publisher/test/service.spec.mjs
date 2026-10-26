@@ -921,3 +921,36 @@ test("failed pre-write refresh is an authorization block and founder can resume 
     await f.close();
   }
 });
+
+test("status compare-and-swap parameters comply with the host SDK scalar binding contract", async () => {
+  const f = await databaseContext();
+  try {
+    const execute = f.ctx.db.execute;
+    f.ctx.db.execute = (query, parameters) => {
+      assert.ok(
+        parameters.every((value) => !Array.isArray(value)),
+        "SDK arrays are SQL lists, not PostgreSQL array parameters",
+      );
+      return execute(query, parameters);
+    };
+    const post = await pending(f);
+    await approve(f, post);
+    await serviceSchedulePost(
+      f.ctx,
+      f.companyId,
+      { postId: post.id, scheduledAt: new Date(Date.now() + 60000).toISOString() },
+      f.actor,
+      f.config,
+    );
+    const result = await serviceCancelPost(
+      f.ctx,
+      f.companyId,
+      { postId: post.id },
+      f.actor,
+      f.config,
+    );
+    assert.equal(result.status, "cancelled");
+  } finally {
+    await f.close();
+  }
+});

@@ -244,8 +244,13 @@ export async function updatePostStatus(ctx, companyId, postId, status, extra = {
     }
   let condition = "";
   if (extra.expectedStatuses) {
-    values.push(extra.expectedStatuses);
-    condition = ` AND status = ANY($${values.length}::text[])`;
+    if (!extra.expectedStatuses.length) throw new CatalogError("EXPECTED_STATUS_REQUIRED");
+    // The SDK interpolates JS arrays as SQL lists, not PostgreSQL array parameters.
+    const placeholders = extra.expectedStatuses.map((status) => {
+      values.push(status);
+      return `$${values.length}`;
+    });
+    condition = ` AND status IN (${placeholders.join(",")})`;
   }
   if (extra.expectedHash) {
     values.push(extra.expectedHash);
