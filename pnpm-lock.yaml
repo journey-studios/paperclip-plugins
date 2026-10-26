@@ -290,6 +290,15 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  plugins/social-publisher:
+    devDependencies:
+      '@electric-sql/pglite':
+        specifier: 0.3.15
+        version: 0.3.15
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../.paperclip/packages/plugins/sdk
+
   plugins/storage-manager:
     devDependencies:
       '@paperclipai/plugin-sdk':

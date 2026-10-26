@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizeConfig, readiness, storageFingerprint, validBucketName } from "./config.js";
 import {
   createOrFindIntent,
@@ -16,11 +16,16 @@ import {
   signUpload,
   testBucketAccess,
   removeStagingObject,
+  jpegDimensions,
+  verifyPublishedNativeObject,
   verifyAndPublish,
 } from "./storage.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const MIME = /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+(?:;[^\r\n]{0,80})?$/;
+export const MAX_INLINE_IMAGE_BYTES = 512 * 1024;
+const MAX_INLINE_IMAGE_BASE64 = 4 * Math.ceil(MAX_INLINE_IMAGE_BYTES / 3);
+const IMAGE_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** Rejects non-record API/tool payloads before field-level validation. */
 function object(value, label = "request") {
@@ -124,12 +129,92 @@ export async function prepareUpload(ctx, companyId, config, value, actor) {
   await audit(ctx, companyId, "Prepared an S3-compatible media upload", "storage.upload_prepared", config, { objectId: row.objectId, projectId: row.projectId, size: row.size, sha256: row.sha256 });
   return {
     alreadyPresent: false,
+    intentCreated: row.objectId === objectId,
     objectId: row.objectId,
     objectKey: row.objectKey,
     size: Number(row.size),
     sha256: row.sha256,
     ...signed,
   };
+}
+
+/** Validate and privately upload one small JPEG without returning any provider credentials or URLs. */
+export async function uploadImage(ctx, companyId, config, value, actor, dependencies = {}) {
+  requireConfigured(config);
+  const raw = requireOnly(value, ["idempotencyKey", "projectId", "filename", "contentType", "size", "sha256", "imageBase64"], ["idempotencyKey", "filename", "contentType", "size", "sha256", "imageBase64"]);
+  const { imageBase64, ...fields } = raw;
+  const input = normalizeUpload(fields, config);
+  if (input.contentType !== "image/jpeg") throw new StorageError("image_jpeg_required");
+  if (input.size > MAX_INLINE_IMAGE_BYTES) throw new StorageError("image_size_out_of_range");
+  if (typeof imageBase64 !== "string" || !imageBase64 || imageBase64.length > MAX_INLINE_IMAGE_BASE64 || imageBase64.length % 4 !== 0 || !IMAGE_BASE64.test(imageBase64)) {
+    throw new StorageError("invalid_image_base64");
+  }
+  const bytes = Buffer.from(imageBase64, "base64");
+  if (bytes.length !== input.size || bytes.length > MAX_INLINE_IMAGE_BYTES) throw new StorageError("image_size_mismatch");
+  if (bytes.toString("base64") !== imageBase64) throw new StorageError("invalid_image_base64");
+  if (createHash("sha256").update(bytes).digest("hex") !== input.sha256) throw new StorageError("image_digest_mismatch");
+  const dimensions = jpegDimensions(bytes);
+  if (!dimensions || dimensions.width < 1 || dimensions.height < 1) throw new StorageError("image_jpeg_required");
+
+  const prepared = await prepareUpload(ctx, companyId, config, input, actor);
+  if (prepared.alreadyPresent) {
+    const row = await getObject(ctx, companyId, prepared.object.id);
+    await verifyPublishedNativeObject(ctx, companyId, config, { ...row, physicalKey: row.objectKey });
+    return { object: prepared.object, verified: true, alreadyPresent: true, reconciled: false, dimensions };
+  }
+
+  // The unique catalog insert authorizes exactly one PUT. A pending intent from an
+  // earlier invocation may still be in flight; HEAD/finalize is the only safe retry.
+  if (!prepared.intentCreated) {
+    const finalized = await reconcileImageUpload(ctx, companyId, config, prepared.objectId);
+    return { ...finalized, verified: true, alreadyPresent: true, reconciled: true, dimensions };
+  }
+  assertPreparedImageTarget(config, prepared);
+  let response;
+  try {
+    response = await (dependencies.fetchImpl ?? globalThis.fetch)(prepared.uploadUrl, {
+      method: "PUT",
+      headers: prepared.uploadHeaders,
+      body: bytes,
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    const finalized = await reconcileImageUpload(ctx, companyId, config, prepared.objectId);
+    return { ...finalized, verified: true, alreadyPresent: false, reconciled: true, dimensions };
+  }
+  // Provider response bodies can contain signed URLs and request credentials.
+  // Cancel them without reading or forwarding their contents.
+  try { await response.body?.cancel?.(); } catch { /* Metadata finalization remains authoritative. */ }
+  if (!response.ok) throw new StorageError("image_upload_rejected", 502);
+  const finalized = await finalizeUpload(ctx, companyId, config, prepared.objectId);
+  return { ...finalized, verified: true, alreadyPresent: false, reconciled: false, dimensions };
+}
+
+/** Reconcile a possibly completed PUT without issuing another write to staging. */
+async function reconcileImageUpload(ctx, companyId, config, objectId) {
+  try { return await finalizeUpload(ctx, companyId, config, objectId); }
+  catch (error) {
+    if (error instanceof StorageError && ["upload_size_mismatch", "upload_digest_mismatch", "storage_settings_changed"].includes(error.code)) throw error;
+    throw new StorageError("image_upload_outcome_unknown", 409);
+  }
+}
+
+/** Only an SDK-generated URL for the operator-configured endpoint can receive bytes. */
+export function assertPreparedImageTarget(config, prepared) {
+  let target;
+  try { target = new URL(prepared.uploadUrl); } catch { throw new StorageError("image_upload_target_invalid", 503); }
+  const expected = config.endpoint ? new URL(config.endpoint) : null;
+  const suffix = config.region?.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
+  const defaultHost = `s3.${config.region}.${suffix}`;
+  const hosts = expected
+    ? [expected.hostname, ...(config.forcePathStyle ? [] : [`${config.bucket}.${expected.hostname}`])]
+    : [defaultHost, `${config.bucket}.${defaultHost}`, `${config.bucket}.s3.${suffix}`];
+  if (prepared.uploadMethod !== "PUT" || target.protocol !== "https:" || target.username || target.password || target.hash ||
+      !hosts.includes(target.hostname) || target.port !== (expected?.port ?? "") ||
+      !target.searchParams.get("X-Amz-Signature") || !target.searchParams.get("X-Amz-Credential")) {
+    throw new StorageError("image_upload_target_invalid", 503);
+  }
 }
 
 /** Verifies staged bytes before publishing and marking the catalog row ready. */

@@ -1,0 +1,32 @@
+{
+  "name": "@journey-studios/paperclip-social-publisher",
+  "version": "0.2.5",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "license": "MIT",
+  "description": "Multi-platform governed direct and autonomous social publisher for Paperclip agents",
+  "files": [
+    "dist",
+    "migrations",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "node --test test/*.spec.mjs",
+    "typecheck": "node scripts/check.mjs"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@electric-sql/pglite": "0.3.15"
+  }
+}

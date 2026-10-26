@@ -43,6 +43,17 @@ jobs:
       - name: Build native S3 bridge image
         run: docker build -f services/s3-storage-bridge/Dockerfile -t paperclip-s3-storage-bridge:ci .
       - uses: ./.github/actions/secret-scan
+      - name: Save validated social deployment packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: social-publisher-packages-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .package-output/journey-studios-paperclip-social-publisher-*.tgz
+            .package-output/journey-studios-paperclip-s3-storage-*.tgz
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+          compression-level: 0
 
   storage-collector-node22:
     runs-on: ubuntu-latest
